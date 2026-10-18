@@ -6,6 +6,7 @@ pub mod herdr;
 pub mod hook;
 pub mod hub;
 pub mod proto;
+pub mod redact;
 pub mod runner;
 pub mod store;
 pub mod whatsapp;
