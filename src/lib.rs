@@ -4,5 +4,6 @@ pub mod config;
 pub mod herdr;
 pub mod hook;
 pub mod hub;
+pub mod proto;
 pub mod runner;
 pub mod store;
