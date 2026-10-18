@@ -19,6 +19,10 @@ fn session(id: &str, created_at: i64) -> SessionRecord {
         revision: 0,
         created_at,
         updated_at: created_at,
+        agent_name: Some(format!("sb-{id}")),
+        muted: false,
+        hook_failed: false,
+        error: None,
     }
 }
 
@@ -33,6 +37,7 @@ fn approval(id: &str, deadline: i64) -> ApprovalRecord {
         outcome: None,
         reason: None,
         decided_at: None,
+        delivery: None,
     }
 }
 
@@ -297,14 +302,12 @@ async fn expire_and_deny_pending_sweep_only_undecided() {
         .await
         .unwrap();
 
-    assert_eq!(
-        store.expire_approvals(60).await.unwrap(),
-        vec!["a1".to_string()]
-    );
-    assert_eq!(
-        store.deny_pending("s1", "runner_lost", 70).await.unwrap(),
-        1
-    );
+    let expired = store.expire_approvals(60).await.unwrap();
+    assert_eq!(expired.len(), 1);
+    assert_eq!(expired[0].id, "a1");
+    let denied = store.deny_pending("s1", "runner_lost", 70).await.unwrap();
+    assert_eq!(denied.len(), 1);
+    assert_eq!(denied[0].id, "a2");
     let a2 = store.get_approval("a2").await.unwrap().unwrap();
     assert_eq!(
         (a2.outcome, a2.reason.as_deref()),

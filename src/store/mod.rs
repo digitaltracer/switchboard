@@ -58,11 +58,13 @@ macro_rules! str_enum {
     };
 }
 
+// `exited`: the agent left its pane without a stop.
 str_enum!(Lifecycle, "lifecycle" {
     Starting => "starting",
     Running => "running",
     Stopping => "stopping",
     Stopped => "stopped",
+    Exited => "exited",
     Failed => "failed",
 });
 
@@ -76,6 +78,13 @@ str_enum!(OpState, "state" {
 str_enum!(Decision, "outcome" {
     Allow => "allow",
     Deny => "deny",
+});
+
+// `not_delivered`: the runner never took the decision, so the tool did not run.
+str_enum!(Delivery, "delivery" {
+    Delivered => "delivered",
+    NotDelivered => "not_delivered",
+    Unknown => "unknown",
 });
 
 #[derive(Debug, Clone, PartialEq)]
@@ -94,6 +103,32 @@ pub struct SessionRecord {
     pub revision: i64,
     pub created_at: i64,
     pub updated_at: i64,
+    pub agent_name: Option<String>,
+    pub muted: bool,
+    pub hook_failed: bool,
+    pub error: Option<String>,
+}
+
+/// Fields to change on a session; `None` leaves a field as it is. Every update bumps the revision.
+#[derive(Debug, Clone, Default)]
+pub struct SessionPatch {
+    pub lifecycle: Option<Lifecycle>,
+    pub agent_status: Option<String>,
+    pub hook_failed: Option<bool>,
+    pub muted: Option<bool>,
+    pub error: Option<String>,
+    pub branch: Option<String>,
+    pub worktree_path: Option<String>,
+    pub workspace_id: Option<String>,
+    pub pane_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NewOperation {
+    pub request_id: String,
+    pub kind: String,
+    pub fingerprint: String,
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -127,6 +162,7 @@ pub struct ApprovalRecord {
     pub outcome: Option<Decision>,
     pub reason: Option<String>,
     pub decided_at: Option<i64>,
+    pub delivery: Option<Delivery>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -140,6 +176,20 @@ pub enum DecideOutcome {
     /// Deadline passed; recorded as deny.
     Expired,
     NotFound,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct NotifySettings {
+    pub mute_all: bool,
+    pub imported_at: Option<i64>,
+    pub agents: Vec<NotifyAgent>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NotifyAgent {
+    pub name: String,
+    pub watched: bool,
+    pub muted: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -201,43 +251,48 @@ impl Store {
         fingerprint: &str,
         now: i64,
     ) -> Result<Begin> {
-        let (request_id, kind, fingerprint) = (
-            request_id.to_owned(),
-            kind.to_owned(),
-            fingerprint.to_owned(),
-        );
+        self.begin_session_operation(
+            NewOperation {
+                request_id: request_id.to_owned(),
+                kind: kind.to_owned(),
+                fingerprint: fingerprint.to_owned(),
+                session_id: None,
+            },
+            now,
+        )
+        .await
+    }
+
+    pub async fn begin_session_operation(&self, op: NewOperation, now: i64) -> Result<Begin> {
         self.call(move |c| {
             let tx = c.transaction()?;
-            let existing = tx
-                .query_row(
-                    "SELECT * FROM operations WHERE request_id = ?1",
-                    [&request_id],
-                    raw_operation,
-                )
-                .optional()?;
-            let begin = match existing {
-                Some(raw) => {
-                    let op = raw.finish()?;
-                    if op.kind != kind || op.fingerprint != fingerprint {
-                        return Err(StoreError::RequestIdReused(request_id));
-                    }
-                    Begin::Existing(op)
-                }
-                None => {
-                    tx.execute(
-                        "INSERT INTO operations (request_id, kind, fingerprint, state, created_at, updated_at)
-                         VALUES (?1, ?2, ?3, 'pending', ?4, ?4)",
-                        params![request_id, kind, fingerprint, now],
-                    )?;
-                    Begin::Started
-                }
-            };
+            let begin = begin_op(&tx, &op, now)?;
             tx.commit()?;
             Ok(begin)
         })
         .await
     }
 
+    /// Records a start's operation and its session in one transaction, before any runner call.
+    pub async fn begin_start(
+        &self,
+        op: NewOperation,
+        session: SessionRecord,
+        now: i64,
+    ) -> Result<Begin> {
+        self.call(move |c| {
+            let tx = c.transaction()?;
+            let begin = begin_op(&tx, &op, now)?;
+            if begin == Begin::Started {
+                insert_session(&tx, &session)?;
+            }
+            tx.commit()?;
+            Ok(begin)
+        })
+        .await
+    }
+
+    /// Settles an open operation; one already done or failed keeps its recorded outcome.
     pub async fn finish_operation(
         &self,
         request_id: &str,
@@ -245,15 +300,29 @@ impl Store {
         session_id: Option<&str>,
         result: Option<&Value>,
         now: i64,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let request_id = request_id.to_owned();
         let session_id = session_id.map(str::to_owned);
         let result = result.map(Value::to_string);
         self.call(move |c| {
-            c.execute(
+            let n = c.execute(
                 "UPDATE operations SET state = ?2, session_id = COALESCE(?3, session_id),
-                 result = ?4, updated_at = ?5 WHERE request_id = ?1",
+                 result = ?4, updated_at = ?5
+                 WHERE request_id = ?1 AND state IN ('pending', 'outcome_unknown')",
                 params![request_id, state.as_str(), session_id, result, now],
+            )?;
+            Ok(n == 1)
+        })
+        .await
+    }
+
+    /// Forgets an operation that never reached a runner, so a retry can run it.
+    pub async fn delete_operation(&self, request_id: &str) -> Result<()> {
+        let request_id = request_id.to_owned();
+        self.call(move |c| {
+            c.execute(
+                "DELETE FROM operations WHERE request_id = ?1 AND state = 'pending'",
+                [request_id],
             )?;
             Ok(())
         })
@@ -275,32 +344,58 @@ impl Store {
         .await
     }
 
+    /// Settles a session's open operations of `kind`, e.g. a start resolved by reconciliation.
+    pub async fn resolve_session_operations(
+        &self,
+        session_id: &str,
+        kind: &str,
+        state: OpState,
+        result: &Value,
+        now: i64,
+    ) -> Result<usize> {
+        let (session_id, kind, result) =
+            (session_id.to_owned(), kind.to_owned(), result.to_string());
+        self.call(move |c| {
+            Ok(c.execute(
+                "UPDATE operations SET state = ?3, result = ?4, updated_at = ?5
+                 WHERE session_id = ?1 AND kind = ?2 AND state IN ('pending', 'outcome_unknown')",
+                params![session_id, kind, state.as_str(), result, now],
+            )?)
+        })
+        .await
+    }
+
+    /// A session's operations of `kind` that are still pending or `outcome_unknown`.
+    pub async fn open_operations(&self, session_id: &str, kind: &str) -> Result<Vec<Operation>> {
+        let (session_id, kind) = (session_id.to_owned(), kind.to_owned());
+        self.call(move |c| {
+            let mut stmt = c.prepare(
+                "SELECT * FROM operations WHERE session_id = ?1 AND kind = ?2
+                 AND state IN ('pending', 'outcome_unknown') ORDER BY created_at",
+            )?;
+            let rows = stmt.query_map(params![session_id, kind], raw_operation)?;
+            let raws = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            raws.into_iter().map(RawOperation::finish).collect()
+        })
+        .await
+    }
+
+    /// After a hub restart nothing is still in flight: pending operations become `outcome_unknown`.
+    pub async fn mark_pending_unknown(&self, now: i64) -> Result<usize> {
+        self.call(move |c| {
+            Ok(c.execute(
+                "UPDATE operations SET state = 'outcome_unknown', updated_at = ?1 WHERE state = 'pending'",
+                [now],
+            )?)
+        })
+        .await
+    }
+
     // Sessions.
 
     pub async fn insert_session(&self, s: SessionRecord) -> Result<()> {
         self.call(move |c| {
-            c.execute(
-                "INSERT INTO sessions (id, project_id, machine_id, agent, prompt_sha256, branch,
-                 worktree_path, workspace_id, pane_id, lifecycle, agent_status, revision,
-                 created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
-                params![
-                    s.id,
-                    s.project_id,
-                    s.machine_id,
-                    s.agent,
-                    s.prompt_sha256,
-                    s.branch,
-                    s.worktree_path,
-                    s.workspace_id,
-                    s.pane_id,
-                    s.lifecycle.as_str(),
-                    s.agent_status,
-                    s.revision,
-                    s.created_at,
-                    s.updated_at
-                ],
-            )?;
+            insert_session(c, &s)?;
             Ok(())
         })
         .await
@@ -392,6 +487,60 @@ impl Store {
         .await
     }
 
+    pub async fn get_session_by_agent_name(&self, name: &str) -> Result<Option<SessionRecord>> {
+        let name = name.to_owned();
+        self.call(move |c| {
+            c.query_row(
+                "SELECT * FROM sessions WHERE agent_name = ?1",
+                [name],
+                raw_session,
+            )
+            .optional()?
+            .map(RawSession::finish)
+            .transpose()
+        })
+        .await
+    }
+
+    /// Applies `patch` and bumps the revision; `None` if there is no such session.
+    pub async fn update_session(
+        &self,
+        id: &str,
+        patch: SessionPatch,
+        now: i64,
+    ) -> Result<Option<SessionRecord>> {
+        let id = id.to_owned();
+        self.call(move |c| {
+            c.query_row(
+                "UPDATE sessions SET lifecycle = COALESCE(?2, lifecycle),
+                 agent_status = COALESCE(?3, agent_status), hook_failed = COALESCE(?4, hook_failed),
+                 muted = COALESCE(?5, muted), error = COALESCE(?6, error),
+                 branch = COALESCE(?7, branch), worktree_path = COALESCE(?8, worktree_path),
+                 workspace_id = COALESCE(?9, workspace_id), pane_id = COALESCE(?10, pane_id),
+                 revision = revision + 1, updated_at = ?11
+                 WHERE id = ?1 RETURNING *",
+                params![
+                    id,
+                    patch.lifecycle.map(Lifecycle::as_str),
+                    patch.agent_status,
+                    patch.hook_failed,
+                    patch.muted,
+                    patch.error,
+                    patch.branch,
+                    patch.worktree_path,
+                    patch.workspace_id,
+                    patch.pane_id,
+                    now
+                ],
+                raw_session,
+            )
+            .optional()?
+            .map(RawSession::finish)
+            .transpose()
+        })
+        .await
+    }
+
     // Approvals.
 
     pub async fn create_approval(&self, a: ApprovalRecord) -> Result<()> {
@@ -475,27 +624,249 @@ impl Store {
     }
 
     /// Denies every undecided approval whose deadline has passed.
-    pub async fn expire_approvals(&self, now: i64) -> Result<Vec<String>> {
+    pub async fn expire_approvals(&self, now: i64) -> Result<Vec<ApprovalRecord>> {
+        self.approvals_returning(
+            "UPDATE approvals SET outcome = 'deny', reason = 'expired', decided_at = ?1
+             WHERE outcome IS NULL AND deadline <= ?1 RETURNING *",
+            vec![now.into()],
+        )
+        .await
+    }
+
+    /// Denies every undecided approval of a session, e.g. on stop or exit.
+    pub async fn deny_pending(
+        &self,
+        session_id: &str,
+        reason: &str,
+        now: i64,
+    ) -> Result<Vec<ApprovalRecord>> {
+        self.approvals_returning(
+            "UPDATE approvals SET outcome = 'deny', reason = ?2, decided_at = ?3
+             WHERE session_id = ?1 AND outcome IS NULL RETURNING *",
+            vec![
+                session_id.to_owned().into(),
+                reason.to_owned().into(),
+                now.into(),
+            ],
+        )
+        .await
+    }
+
+    /// Denies every undecided approval of a machine's sessions, when its runner is lost.
+    pub async fn deny_pending_on_machine(
+        &self,
+        machine_id: &str,
+        reason: &str,
+        now: i64,
+    ) -> Result<Vec<ApprovalRecord>> {
+        self.approvals_returning(
+            "UPDATE approvals SET outcome = 'deny', reason = ?2, decided_at = ?3
+             WHERE outcome IS NULL
+             AND session_id IN (SELECT id FROM sessions WHERE machine_id = ?1) RETURNING *",
+            vec![
+                machine_id.to_owned().into(),
+                reason.to_owned().into(),
+                now.into(),
+            ],
+        )
+        .await
+    }
+
+    /// Denies every undecided approval, when the hub restarts.
+    pub async fn deny_all_pending(&self, reason: &str, now: i64) -> Result<Vec<ApprovalRecord>> {
+        self.approvals_returning(
+            "UPDATE approvals SET outcome = 'deny', reason = ?1, decided_at = ?2
+             WHERE outcome IS NULL RETURNING *",
+            vec![reason.to_owned().into(), now.into()],
+        )
+        .await
+    }
+
+    /// Allows recorded but never confirmed by a runner, after a hub restart: they may have run.
+    pub async fn mark_unconfirmed_allows_unknown(&self) -> Result<Vec<ApprovalRecord>> {
+        self.approvals_returning(
+            "UPDATE approvals SET delivery = 'unknown'
+             WHERE outcome = 'allow' AND delivery IS NULL RETURNING *",
+            vec![],
+        )
+        .await
+    }
+
+    /// Denials on a machine not confirmed by its runner whose deadline is after `since`.
+    pub async fn undelivered_denials(
+        &self,
+        machine_id: &str,
+        since: i64,
+    ) -> Result<Vec<ApprovalRecord>> {
+        self.approvals_returning(
+            "SELECT a.* FROM approvals a JOIN sessions s ON s.id = a.session_id
+             WHERE s.machine_id = ?1 AND a.outcome = 'deny'
+             AND (a.delivery IS NULL OR a.delivery != 'delivered')
+             AND a.deadline > ?2 ORDER BY a.created_at",
+            vec![machine_id.to_owned().into(), since.into()],
+        )
+        .await
+    }
+
+    /// Records what the runner did with a decision; an undelivered allow is recorded as a deny.
+    pub async fn settle_delivery(
+        &self,
+        id: &str,
+        delivery: Delivery,
+    ) -> Result<Option<ApprovalRecord>> {
+        let id = id.to_owned();
         self.call(move |c| {
-            let mut stmt = c.prepare(
-                "UPDATE approvals SET outcome = 'deny', reason = 'expired', decided_at = ?1
-                 WHERE outcome IS NULL AND deadline <= ?1 RETURNING id",
-            )?;
-            let ids = stmt.query_map([now], |r| r.get(0))?;
-            Ok(ids.collect::<rusqlite::Result<_>>()?)
+            let tx = c.transaction()?;
+            if delivery == Delivery::NotDelivered {
+                tx.execute(
+                    "UPDATE approvals SET outcome = 'deny', reason = 'not_delivered'
+                     WHERE id = ?1 AND outcome = 'allow'",
+                    [&id],
+                )?;
+            }
+            let a = tx
+                .query_row(
+                    "UPDATE approvals SET delivery = ?2 WHERE id = ?1 RETURNING *",
+                    params![id, delivery.as_str()],
+                    raw_approval,
+                )
+                .optional()?
+                .map(RawApproval::finish)
+                .transpose()?;
+            tx.commit()?;
+            Ok(a)
         })
         .await
     }
 
-    /// Denies every undecided approval of a session, e.g. on stop or a lost runner.
-    pub async fn deny_pending(&self, session_id: &str, reason: &str, now: i64) -> Result<usize> {
-        let (session_id, reason) = (session_id.to_owned(), reason.to_owned());
+    async fn approvals_returning(
+        &self,
+        sql: &'static str,
+        args: Vec<rusqlite::types::Value>,
+    ) -> Result<Vec<ApprovalRecord>> {
         self.call(move |c| {
-            Ok(c.execute(
-                "UPDATE approvals SET outcome = 'deny', reason = ?2, decided_at = ?3
-                 WHERE session_id = ?1 AND outcome IS NULL",
-                params![session_id, reason, now],
+            let mut stmt = c.prepare(sql)?;
+            let rows = stmt.query_map(rusqlite::params_from_iter(args), raw_approval)?;
+            let raws = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            raws.into_iter().map(RawApproval::finish).collect()
+        })
+        .await
+    }
+
+    // Notification state shared with the WhatsApp bridge.
+
+    pub async fn notify_settings(&self) -> Result<NotifySettings> {
+        self.call(|c| {
+            let (mute_all, imported_at) = c.query_row(
+                "SELECT mute_all, imported_at FROM notify_settings WHERE id = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            let mut stmt =
+                c.prepare("SELECT name, watched, muted FROM notify_agents ORDER BY name")?;
+            let agents = stmt
+                .query_map([], |r| {
+                    Ok(NotifyAgent {
+                        name: r.get(0)?,
+                        watched: r.get(1)?,
+                        muted: r.get(2)?,
+                    })
+                })?
+                .collect::<rusqlite::Result<_>>()?;
+            Ok(NotifySettings {
+                mute_all,
+                imported_at,
+                agents,
+            })
+        })
+        .await
+    }
+
+    pub async fn set_mute_all(&self, mute_all: bool) -> Result<()> {
+        self.call(move |c| {
+            c.execute(
+                "UPDATE notify_settings SET mute_all = ?1 WHERE id = 1",
+                [mute_all],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Changes an agent that is not a session; `None` leaves a flag as it is.
+    pub async fn set_notify_agent(
+        &self,
+        name: &str,
+        watched: Option<bool>,
+        muted: Option<bool>,
+        now: i64,
+    ) -> Result<NotifyAgent> {
+        let name = name.to_owned();
+        self.call(move |c| {
+            Ok(c.query_row(
+                "INSERT INTO notify_agents (name, watched, muted, updated_at)
+                 VALUES (?1, COALESCE(?2, 0), COALESCE(?3, 0), ?4)
+                 ON CONFLICT (name) DO UPDATE SET watched = COALESCE(?2, watched),
+                 muted = COALESCE(?3, muted), updated_at = ?4
+                 RETURNING name, watched, muted",
+                params![name, watched, muted, now],
+                |r| {
+                    Ok(NotifyAgent {
+                        name: r.get(0)?,
+                        watched: r.get(1)?,
+                        muted: r.get(2)?,
+                    })
+                },
             )?)
+        })
+        .await
+    }
+
+    /// Merges the bridge's own watch file, once. Returns false if it was already imported.
+    pub async fn import_notify(
+        &self,
+        watched: Vec<String>,
+        muted: Vec<String>,
+        mute_all: bool,
+        now: i64,
+    ) -> Result<bool> {
+        self.call(move |c| {
+            let tx = c.transaction()?;
+            let imported: Option<i64> = tx.query_row(
+                "SELECT imported_at FROM notify_settings WHERE id = 1",
+                [],
+                |r| r.get(0),
+            )?;
+            if imported.is_some() {
+                return Ok(false);
+            }
+            tx.execute(
+                "UPDATE notify_settings SET mute_all = mute_all OR ?1, imported_at = ?2 WHERE id = 1",
+                params![mute_all, now],
+            )?;
+            for name in &muted {
+                let n = tx.execute(
+                    "UPDATE sessions SET muted = 1, revision = revision + 1, updated_at = ?2
+                     WHERE agent_name = ?1",
+                    params![name, now],
+                )?;
+                if n == 0 {
+                    tx.execute(
+                        "INSERT INTO notify_agents (name, muted, updated_at) VALUES (?1, 1, ?2)
+                         ON CONFLICT (name) DO UPDATE SET muted = 1, updated_at = ?2",
+                        params![name, now],
+                    )?;
+                }
+            }
+            for name in &watched {
+                tx.execute(
+                    "INSERT INTO notify_agents (name, watched, updated_at) VALUES (?1, 1, ?2)
+                     ON CONFLICT (name) DO UPDATE SET watched = 1, updated_at = ?2",
+                    params![name, now],
+                )?;
+            }
+            tx.commit()?;
+            Ok(true)
         })
         .await
     }
@@ -561,6 +932,60 @@ impl Store {
     }
 }
 
+fn insert_session(c: &rusqlite::Connection, s: &SessionRecord) -> Result<()> {
+    c.execute(
+        "INSERT INTO sessions (id, project_id, machine_id, agent, prompt_sha256, branch,
+         worktree_path, workspace_id, pane_id, lifecycle, agent_status, revision,
+         created_at, updated_at, agent_name, muted, hook_failed, error)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+        params![
+            s.id,
+            s.project_id,
+            s.machine_id,
+            s.agent,
+            s.prompt_sha256,
+            s.branch,
+            s.worktree_path,
+            s.workspace_id,
+            s.pane_id,
+            s.lifecycle.as_str(),
+            s.agent_status,
+            s.revision,
+            s.created_at,
+            s.updated_at,
+            s.agent_name,
+            s.muted,
+            s.hook_failed,
+            s.error
+        ],
+    )?;
+    Ok(())
+}
+
+/// Records `op` as pending unless its request id exists; a reused id with other arguments fails.
+fn begin_op(tx: &rusqlite::Transaction<'_>, op: &NewOperation, now: i64) -> Result<Begin> {
+    let existing = tx
+        .query_row(
+            "SELECT * FROM operations WHERE request_id = ?1",
+            [&op.request_id],
+            raw_operation,
+        )
+        .optional()?;
+    if let Some(raw) = existing {
+        let existing = raw.finish()?;
+        if existing.kind != op.kind || existing.fingerprint != op.fingerprint {
+            return Err(StoreError::RequestIdReused(op.request_id.clone()));
+        }
+        return Ok(Begin::Existing(existing));
+    }
+    tx.execute(
+        "INSERT INTO operations (request_id, kind, fingerprint, session_id, state, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, 'pending', ?5, ?5)",
+        params![op.request_id, op.kind, op.fingerprint, op.session_id, now],
+    )?;
+    Ok(Begin::Started)
+}
+
 fn configure(c: &mut rusqlite::Connection) -> Result<()> {
     c.busy_timeout(Duration::from_secs(5))?;
     c.query_row("PRAGMA journal_mode = WAL", [], |_| Ok(()))?;
@@ -607,6 +1032,10 @@ fn raw_session(r: &Row<'_>) -> rusqlite::Result<RawSession> {
             revision: r.get("revision")?,
             created_at: r.get("created_at")?,
             updated_at: r.get("updated_at")?,
+            agent_name: r.get("agent_name")?,
+            muted: r.get("muted")?,
+            hook_failed: r.get("hook_failed")?,
+            error: r.get("error")?,
         },
         r.get("lifecycle")?,
     ))
@@ -650,7 +1079,7 @@ impl RawOperation {
     }
 }
 
-struct RawApproval(ApprovalRecord, String, Option<String>);
+struct RawApproval(ApprovalRecord, String, Option<String>, Option<String>);
 
 fn raw_approval(r: &Row<'_>) -> rusqlite::Result<RawApproval> {
     Ok(RawApproval(
@@ -664,9 +1093,11 @@ fn raw_approval(r: &Row<'_>) -> rusqlite::Result<RawApproval> {
             outcome: None,
             reason: r.get("reason")?,
             decided_at: r.get("decided_at")?,
+            delivery: None,
         },
         r.get("tool_input")?,
         r.get("outcome")?,
+        r.get("delivery")?,
     ))
 }
 
@@ -675,6 +1106,7 @@ impl RawApproval {
         Ok(ApprovalRecord {
             tool_input: parse_json("tool_input", self.1)?,
             outcome: self.2.map(Decision::parse).transpose()?,
+            delivery: self.3.map(Delivery::parse).transpose()?,
             ..self.0
         })
     }

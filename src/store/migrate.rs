@@ -6,7 +6,10 @@ use tokio_rusqlite::rusqlite::Connection;
 use super::StoreError;
 
 /// Numbered migrations; the database's `PRAGMA user_version` is the last one applied.
-pub const MIGRATIONS: &[(u32, &str)] = &[(1, include_str!("../../migrations/0001_init.sql"))];
+pub const MIGRATIONS: &[(u32, &str)] = &[
+    (1, include_str!("../../migrations/0001_init.sql")),
+    (2, include_str!("../../migrations/0002_hub.sql")),
+];
 
 pub fn run(conn: &mut Connection, db_path: Option<&Path>) -> Result<u32, StoreError> {
     run_with(conn, db_path, MIGRATIONS)
