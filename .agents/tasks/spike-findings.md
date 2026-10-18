@@ -196,6 +196,23 @@ The repo shipped its own `.codex/hooks.json` with a SessionStart hook and a Perm
 - The screens are vendored, with paths anonymised, under `tests/fixtures/codex-0.163.0/`.
 - Cleanup: `sb-test3` stopped and deleted, the scratch worktrees and `~/.cache/switchboard-spike3` removed, no global config written.
 
+### Q10. What `acceptEdits` sends through the hook (Claude Code)
+
+Run on 2026-10-18 in a separate test session `sb-hub-test2`, against Claude Code 2.1.302, through the hub with Switchboard's own settings file. Each command was a one-command prompt in the session's worktree.
+
+| Command | `acceptEdits` alone | `acceptEdits` plus `permissions.ask = ["Bash"]` |
+|---|---|---|
+| `touch`, `mkdir`, `mv`, `cp`, `rm` | Ran with no hook call | Hook asked |
+| `echo hi > r.txt` | Ran with no hook call | Hook asked |
+| `git status --short` | Ran with no hook call | Hook asked |
+| `python3 -c …`, `curl -sI …` | Hook asked | Not rerun |
+| Write tool creating `notes.md` | Not tested | No hook call; the file was written |
+
+- With the mode alone, file-changing shell commands inside the worktree skip both the approval and the runner's deny patterns, because the runner checks deny patterns inside the hook.
+- With the `ask` rule, the status bar still read "accept edits on", and each command's approval arrived with its exact command line. Allow and deny both took effect.
+- Not checked: whether a repo's own `.claude/settings.json` `allow` rules can override the `ask` rule, and edits outside the worktree.
+- `~/.claude.json` was backed up first, and its project keys matched the backup afterwards. `sb-hub-test2` is stopped and deleted.
+
 ## Changes to global config
 
 - `~/.claude.json`:
