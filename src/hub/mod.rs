@@ -1,5 +1,7 @@
 //! Hub: runner WebSocket endpoint, session service, MCP and auth. Implementation steps 6 and 7.
 
+pub mod runners;
+
 use std::path::PathBuf;
 
 use anyhow::bail;
