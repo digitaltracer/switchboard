@@ -228,8 +228,27 @@ async fn claude_through_the_hub_allow_deny_prompt_and_stop() {
         let replay = svc.decide(&bot, &id, &approval, false, None).await.unwrap();
         assert_eq!((replay.outcome, replay.replayed), (Decision::Allow, true));
 
-        // 2. A follow-up prompt through the hub, denied through the hub: the tool does not run.
+        // 2. acceptEdits: a file edit goes through without an approval.
         poll_until(&svc, &id, "idle after the first turn", &mut seen, |v| {
+            (v.agent_status == "idle" || v.agent_status == "done").then_some(())
+        })
+        .await;
+        let before = svc.audit_log(Some(&id), 500).await.unwrap().iter().filter(|e| e.kind == "approval_requested").count();
+        svc.prompt(&bot, &id, "Use your Write tool to create notes.md containing the single line: hello. Do nothing else.", None)
+            .await
+            .unwrap();
+        let deadline = Instant::now() + TURN;
+        while !worktree.join("notes.md").exists() {
+            assert!(Instant::now() < deadline, "notes.md never appeared");
+            let v = svc.get(&id, None, Duration::ZERO).await.unwrap();
+            assert!(v.pending_approvals.is_empty(), "an edit asked for approval: {:?}", v.pending_approvals);
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        let after = svc.audit_log(Some(&id), 500).await.unwrap().iter().filter(|e| e.kind == "approval_requested").count();
+        assert_eq!(before, after, "the edit was accepted without the hook");
+
+        // 3. A follow-up prompt through the hub, denied through the hub: the tool does not run.
+        poll_until(&svc, &id, "idle after the edit", &mut seen, |v| {
             (v.agent_status == "idle" || v.agent_status == "done").then_some(())
         })
         .await;

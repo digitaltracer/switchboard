@@ -11,6 +11,8 @@ use super::HOOK_TIMEOUT_SECS;
 /// `onFailure: block` turns a killed, failed or timed-out helper into a deny.
 pub fn settings(hook_command: &str) -> Value {
     json!({
+        // acceptEdits would otherwise run touch, rm, mv and redirects without asking the hook.
+        "permissions": { "ask": ["Bash"] },
         "hooks": {
             "PermissionRequest": [{
                 "matcher": "*",
@@ -29,13 +31,15 @@ pub fn settings(hook_command: &str) -> Value {
     })
 }
 
-/// The mode is explicit because a user's global default may be `auto`.
+/// Edits are accepted, other tools ask the hook; explicit as a user's default may be `auto`.
+pub const PERMISSION_MODE: &str = "acceptEdits";
+
 pub fn launch_args(settings_path: &Path) -> Vec<String> {
     vec![
         "--settings".into(),
         settings_path.to_string_lossy().into_owned(),
         "--permission-mode".into(),
-        "default".into(),
+        PERMISSION_MODE.into(),
     ]
 }
 
@@ -84,9 +88,10 @@ mod tests {
         assert_eq!(h["onFailure"], "block");
         assert_eq!(h["timeout"], HOOK_TIMEOUT_SECS);
         assert_eq!(s["hooks"]["PermissionRequest"][0]["matcher"], "*");
+        assert_eq!(s["permissions"]["ask"], json!(["Bash"]));
         assert!(s["hooks"]["SessionStart"][0]["hooks"][0]["command"].is_string());
         let args = launch_args(Path::new("/var/sb/s1/claude-settings.json"));
-        assert_eq!(args[2..], ["--permission-mode", "default"]);
+        assert_eq!(args[2..], ["--permission-mode", "acceptEdits"]);
     }
 
     #[test]

@@ -307,7 +307,7 @@ async fn claude_without_live_hook_fails_hooks_untrusted_and_never_prompts() {
     let args = herdr.call("agent.start").unwrap()["params"]["args"].clone();
     assert_eq!(
         args.as_array().unwrap()[2..],
-        [json!("--permission-mode"), json!("default")]
+        [json!("--permission-mode"), json!("acceptEdits")]
     );
 }
 
