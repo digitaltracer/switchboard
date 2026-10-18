@@ -1,4 +1,5 @@
 pub mod admin;
+pub mod agents;
 pub mod cli;
 pub mod config;
 pub mod herdr;
