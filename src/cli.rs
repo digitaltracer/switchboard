@@ -3,7 +3,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
 
-use crate::{admin, hook, hub, runner};
+use crate::{admin, hook, hub, runner, whatsapp};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -38,6 +38,18 @@ pub enum Command {
         /// Append each hook invocation as a JSON line to this file.
         #[arg(long)]
         log: Option<PathBuf>,
+    },
+    /// Follow and prompt Herdr agents from WhatsApp, linked as a device on a separate number.
+    Whatsapp {
+        #[arg(
+            long,
+            env = "SWITCHBOARD_WHATSAPP_CONFIG",
+            default_value = "whatsapp.toml"
+        )]
+        config: PathBuf,
+        /// Link with a pair code for this number (the bridge's own) instead of a QR code.
+        #[arg(long)]
+        pair_phone: Option<String>,
     },
     /// Administrative commands.
     Admin {
@@ -106,6 +118,9 @@ pub fn run() -> ExitCode {
                 Command::Hub { config } => block_on(hub::run(config)),
                 Command::Runner { config } => block_on(runner::run(config)),
                 Command::Admin { command } => admin::run(command),
+                Command::Whatsapp { config, pair_phone } => {
+                    block_on(whatsapp::run(config, pair_phone))
+                }
                 Command::Hook { .. } => unreachable!(),
             };
             match result {

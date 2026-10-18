@@ -8,3 +8,4 @@ pub mod hub;
 pub mod proto;
 pub mod runner;
 pub mod store;
+pub mod whatsapp;

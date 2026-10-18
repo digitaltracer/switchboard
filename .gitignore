@@ -1,1 +1,8 @@
 /target
+
+# Local WhatsApp bridge config (phone numbers) and any store files.
+/whatsapp.toml
+*.db
+*.db-wal
+*.db-shm
+*.db-journal

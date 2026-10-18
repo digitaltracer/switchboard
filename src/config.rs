@@ -238,6 +238,76 @@ impl RunnerConfig {
     }
 }
 
+/// `switchboard whatsapp`: runs on the Mac against the local Herdr session.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WhatsAppConfig {
+    /// Phone numbers allowed to use the bridge, in international format.
+    pub allowed_senders: Vec<String>,
+    pub herdr_session: String,
+    /// The linked-device credential. Kept outside any git working tree, mode 0600.
+    pub store_path: PathBuf,
+}
+
+impl WhatsAppConfig {
+    pub fn load(path: &Path) -> Result<Self, ConfigError> {
+        Self::parse(&read(path)?)
+    }
+
+    pub fn parse(text: &str) -> Result<Self, ConfigError> {
+        let mut cfg: Self = toml::from_str(text)?;
+        cfg.allowed_senders = cfg
+            .allowed_senders
+            .iter()
+            .map(|n| phone_digits(n))
+            .collect::<Result<_, _>>()?;
+        cfg.validate()?;
+        Ok(cfg)
+    }
+
+    fn validate(&self) -> Result<(), ConfigError> {
+        if self.allowed_senders.is_empty() {
+            return Err(invalid("allowed_senders must name at least one number"));
+        }
+        check_herdr_session(&self.herdr_session)?;
+        if !self.store_path.is_absolute() {
+            return Err(invalid("store_path must be an absolute path"));
+        }
+        if let Some(repo) = enclosing_git_tree(&self.store_path) {
+            return Err(invalid(format!(
+                "store_path is inside the git working tree {}; keep the WhatsApp credential outside any repo",
+                repo.display()
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// Digits of an international phone number such as `+44 7700 900123`.
+pub fn phone_digits(number: &str) -> Result<String, ConfigError> {
+    let digits: String = number
+        .chars()
+        .filter(|c| !matches!(c, '+' | ' ' | '-' | '(' | ')'))
+        .collect();
+    if (7..=15).contains(&digits.len()) && digits.bytes().all(|b| b.is_ascii_digit()) {
+        Ok(digits)
+    } else {
+        Err(invalid(format!(
+            "{number:?} is not an international phone number"
+        )))
+    }
+}
+
+/// The nearest ancestor of `path` (or its nearest existing ancestor) holding a `.git` entry.
+fn enclosing_git_tree(path: &Path) -> Option<PathBuf> {
+    let start = path.ancestors().find(|p| p.exists())?;
+    let start = start.canonicalize().unwrap_or_else(|_| start.to_owned());
+    start
+        .ancestors()
+        .find(|p| p.join(".git").exists())
+        .map(Path::to_owned)
+}
+
 fn check_herdr_session(s: &str) -> Result<(), ConfigError> {
     if s.is_empty()
         || s.len() > 64
@@ -398,6 +468,58 @@ vps = "/srv/sb"
             "[auth]\naccess_token_ttl_secs = 100\nrefresh_token_ttl_secs = 50\n",
         );
         assert!(err(&text).contains("refresh_token_ttl_secs"));
+    }
+
+    #[test]
+    fn whatsapp_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("state/whatsapp.db");
+        let ok = format!(
+            r#"
+allowed_senders = ["+44 7700 900123"]
+herdr_session = "switchboard"
+store_path = "{}"
+"#,
+            store.display()
+        );
+        let cfg = WhatsAppConfig::parse(&ok).unwrap();
+        assert_eq!(cfg.allowed_senders, ["447700900123"]);
+
+        let none = ok.replace(r#"["+44 7700 900123"]"#, "[]");
+        assert!(
+            WhatsAppConfig::parse(&none)
+                .unwrap_err()
+                .to_string()
+                .contains("at least one")
+        );
+        let bad_number = ok.replace("+44 7700 900123", "call me");
+        assert!(WhatsAppConfig::parse(&bad_number).is_err());
+        let old_watch_list = format!("{ok}watch = [\"reviewer\"]\n");
+        let err = WhatsAppConfig::parse(&old_watch_list)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unknown field `watch`"), "{err}");
+        let relative = ok.replace(&store.display().to_string(), "whatsapp.db");
+        assert!(WhatsAppConfig::parse(&relative).is_err());
+        let extra = format!("{ok}\ncolour = \"red\"\n");
+        assert!(
+            WhatsAppConfig::parse(&extra)
+                .unwrap_err()
+                .to_string()
+                .contains("unknown field")
+        );
+    }
+
+    #[test]
+    fn whatsapp_store_inside_a_repo_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+        let text = format!(
+            "allowed_senders = [\"447700900123\"]\nherdr_session = \"s\"\nstore_path = \"{}\"\n",
+            dir.path().join("sub/whatsapp.db").display()
+        );
+        let err = WhatsAppConfig::parse(&text).unwrap_err().to_string();
+        assert!(err.contains("git working tree"), "{err}");
     }
 
     #[test]
