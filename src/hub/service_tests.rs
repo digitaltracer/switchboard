@@ -1148,17 +1148,9 @@ async fn audit_records_prompts_decisions_and_runner_events_with_secrets_redacted
     assert_eq!(start.detail["prompt"], "deploy with API_KEY=[redacted]");
     let requested = log.iter().find(|e| e.kind == "approval_requested").unwrap();
     assert_eq!(requested.actor, "runner:vps");
-    // The bot still sees the real input it is deciding on.
-    assert!(
-        r.svc
-            .store()
-            .get_approval("a1")
-            .await
-            .unwrap()
-            .unwrap()
-            .tool_input["password"]
-            == "pw"
-    );
+    // Only the masked input is stored, and that is what a bot decides on.
+    let stored = r.svc.store().get_approval("a1").await.unwrap().unwrap();
+    assert_eq!(stored.tool_input["password"], "[redacted]");
     assert!(
         r.svc
             .get(&sid, None, Duration::ZERO)
@@ -1274,4 +1266,91 @@ async fn machines_and_projects_are_listed() {
     let projects = r.svc.projects();
     let sb = projects.iter().find(|p| p.id == "switchboard").unwrap();
     assert_eq!(sb.machines, ["mac", "vps"]);
+}
+
+// Masking: nothing that leaves the hub, or is stored by it, carries a secret.
+
+const TOKEN: &str = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+
+fn bytes_contain(path: &std::path::Path, needle: &str) -> bool {
+    std::fs::read(path)
+        .map(|b| b.windows(needle.len()).any(|w| w == needle.as_bytes()))
+        .unwrap_or(false)
+}
+
+#[tokio::test]
+async fn a_token_in_a_command_or_terminal_output_never_reaches_callers_or_the_database() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("hub.db");
+    let r = rig_with(Store::open(&path).await.unwrap()).await;
+    let mut vps = connect(&r.svc, "vps", vec![]).await;
+    let sid = running(&r, &mut vps).await;
+
+    approval_requested(
+        &vps,
+        &sid,
+        "a1",
+        json!({"command": format!("curl -H 'Authorization: Bearer {TOKEN}' https://api"),
+               "env": {"GITHUB_TOKEN": TOKEN}}),
+    )
+    .await;
+    vps.event(Event::HookFailed {
+        session_id: sid.clone(),
+        reason: "unrecognised".into(),
+        screen_excerpt: Some(format!("$ export GITHUB_TOKEN={TOKEN}")),
+    })
+    .await;
+    let view =
+        serde_json::to_string(&r.svc.get(&sid, None, Duration::ZERO).await.unwrap()).unwrap();
+    assert!(!view.contains(TOKEN), "{view}");
+    assert!(view.contains("Bearer [redacted]"), "{view}");
+
+    let (svc, s2) = (r.svc.clone(), sid.clone());
+    let read = tokio::spawn(async move { svc.read(&s2, 20).await });
+    let req = vps.req().await;
+    vps.ok(
+        req.id,
+        json!({"text": format!("$ echo {TOKEN}\n{TOKEN}\n")}),
+    )
+    .await;
+    let tail = read.await.unwrap().unwrap();
+    assert!(!tail.text.contains(TOKEN), "{}", tail.text);
+
+    let (svc, bot, s2) = (r.svc.clone(), r.bot.clone(), sid.clone());
+    let prompt = tokio::spawn(async move { svc.prompt(&bot, &s2, "go on", None).await });
+    let req = vps.req().await;
+    let screen = format!("agent is blocked; screen: export API_KEY={TOKEN}");
+    vps.reply(
+        req.id,
+        Outcome::Err(ProtoError::new(ErrorCode::AgentBlocked, screen)),
+    )
+    .await;
+    let err = prompt.await.unwrap().unwrap_err().to_string();
+    assert!(!err.contains(TOKEN), "{err}");
+
+    let (svc, bot, s2) = (r.svc.clone(), r.bot.clone(), sid.clone());
+    let decide = tokio::spawn(async move { svc.decide(&bot, &s2, "a1", false, None).await });
+    let req = vps.req().await;
+    vps.ok(req.id, json!({})).await;
+    let out = serde_json::to_string(&decide.await.unwrap().unwrap()).unwrap();
+    assert!(!out.contains(TOKEN));
+    let audit = serde_json::to_string(
+        &r.svc
+            .audit_log(None, 500)
+            .await
+            .unwrap()
+            .iter()
+            .map(|e| &e.detail)
+            .collect::<Vec<_>>(),
+    )
+    .unwrap();
+    assert!(!audit.contains(TOKEN), "{audit}");
+
+    drop(r);
+    for file in ["hub.db", "hub.db-wal"] {
+        assert!(
+            !bytes_contain(&dir.path().join(file), TOKEN),
+            "token stored in {file}"
+        );
+    }
 }

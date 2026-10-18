@@ -12,6 +12,7 @@ use tokio::time::Instant;
 
 use crate::proto::conn::{Correlator, QUEUE_CAPACITY};
 use crate::proto::{ErrorCode, Frame, Op, ProtoError, Resp};
+use crate::redact::{redact, redact_str};
 
 /// Extra wait past a request's deadline before the caller gives up on its own.
 const REPLY_GRACE: Duration = Duration::from_secs(5);
@@ -146,7 +147,11 @@ impl Runners {
         // A closed queue means the connection is going away; detaching fails the request.
         let _ = tx.send(Frame::Req(req)).await;
         match tokio::time::timeout(timeout + REPLY_GRACE, rx).await {
-            Ok(Ok(reply)) => reply,
+            // Runner output reaches callers and the database only with secrets masked.
+            Ok(Ok(reply)) => reply.map(|v| redact(&v)).map_err(|mut e| {
+                e.message = redact_str(&e.message);
+                e
+            }),
             _ if mutating => Err(ProtoError::new(
                 ErrorCode::OutcomeUnknown,
                 "no reply from the runner",

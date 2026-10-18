@@ -1,6 +1,7 @@
 //! Outbound WebSocket to the hub. Requests in, responses and events out; reconnects with jitter.
 //! Responses for a dropped connection are discarded: the hub has already reported them as
-//! `outcome_unknown`, and nothing is replayed on the next connection.
+//! `outcome_unknown`, and nothing is replayed on the next connection. Every frame sent leaves
+//! the machine, so secrets in it are masked first.
 
 use std::future::Future;
 use std::sync::Arc;
@@ -18,8 +19,8 @@ use super::sessions::Sessions;
 use crate::proto::conn::{Backoff, PING_INTERVAL, QUEUE_CAPACITY};
 use crate::proto::{
     Event, Frame, Hello, Op, Outcome, OwnedSession, PROTOCOL_VERSION, ProtoError, Resp, decode,
-    encode,
 };
+use crate::redact::redact;
 
 pub struct LinkConfig {
     pub url: Url,
@@ -77,7 +78,7 @@ async fn connect_once<H: Handler>(
         herdr_version: cfg.herdr_version.clone(),
         sessions: handler.owned().await,
     });
-    sink.send(Message::text(encode(&hello))).await?;
+    sink.send(Message::text(masked(&hello))).await?;
     tracing::info!(url = %cfg.url, "connected to hub");
 
     let (out_tx, mut out_rx) = mpsc::channel::<Frame>(QUEUE_CAPACITY);
@@ -107,8 +108,8 @@ async fn connect_once<H: Handler>(
                     _ => {}
                 }
             }
-            Some(frame) = out_rx.recv() => sink.send(Message::text(encode(&frame))).await?,
-            Some(event) = events.recv() => sink.send(Message::text(encode(&Frame::Event(event)))).await?,
+            Some(frame) = out_rx.recv() => sink.send(Message::text(masked(&frame))).await?,
+            Some(event) = events.recv() => sink.send(Message::text(masked(&Frame::Event(event)))).await?,
             _ = ping.tick() => {
                 if last_seen.elapsed() > PING_INTERVAL * 2 {
                     bail!("hub silent for {:?}", last_seen.elapsed());
@@ -117,6 +118,11 @@ async fn connect_once<H: Handler>(
             }
         }
     }
+}
+
+/// The frame as JSON text with secrets masked.
+fn masked(frame: &Frame) -> String {
+    redact(&serde_json::to_value(frame).expect("frames serialize")).to_string()
 }
 
 #[cfg(test)]

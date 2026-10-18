@@ -17,7 +17,7 @@ use super::runners::{Readiness, RunnerInfo, Runners};
 use crate::cli::Agent;
 use crate::config::{HubConfig, ProjectConfig};
 use crate::proto::{ErrorCode, Event, Frame, Hello, Op, OwnedSession, ProtoError};
-use crate::redact::redact;
+use crate::redact::{redact, redact_as};
 use crate::runner::random_id;
 use crate::runner::sessions::agent_name;
 use crate::store::{
@@ -1549,7 +1549,7 @@ impl SessionService {
                 }
             }
             Frame::Event(event) if self.runners.is_current(machine, generation) => {
-                if let Err(e) = self.event(machine, event).await {
+                if let Err(e) = self.event(machine, redact_as(event)).await {
                     tracing::warn!(error = %e, machine, "handling runner event");
                 }
             }
@@ -1841,7 +1841,8 @@ impl SessionService {
                         id: approval_id.clone(),
                         session_id: session_id.clone(),
                         tool_name: tool_name.clone(),
-                        tool_input: tool_input.clone(),
+                        // Only the masked input is stored; a decision doesn't need the raw one.
+                        tool_input: redact(&tool_input),
                         created_at: now,
                         deadline,
                         outcome: None,

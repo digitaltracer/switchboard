@@ -8,7 +8,7 @@ use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, 
 use tokio_tungstenite::tungstenite::http::StatusCode;
 
 use super::*;
-use crate::proto::Req;
+use crate::proto::{Req, encode};
 
 #[derive(Default)]
 struct FakeHandler {
@@ -164,4 +164,41 @@ async fn rejected_token_is_retried_with_backoff() {
     }
     assert_eq!(attempts.load(Ordering::SeqCst), 2);
     assert!(t0.elapsed() < Duration::from_secs(5));
+}
+
+#[tokio::test]
+async fn secrets_are_masked_before_frames_leave_the_runner() {
+    let (listener, _handler, events) = start("runner-token").await;
+    let mut ws = accept(&listener, "runner-token").await.unwrap();
+    recv(&mut ws).await;
+    let token = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+    events
+        .send(Event::ApprovalRequested {
+            session_id: "s1".into(),
+            approval_id: "a1".into(),
+            tool_name: "Bash".into(),
+            tool_input: json!({"command": format!("gh auth login --with-token {token}"), "api_key": "k-1"}),
+            deadline_ms: 1000,
+        })
+        .await
+        .unwrap();
+    events
+        .send(Event::HookFailed {
+            session_id: "s1".into(),
+            reason: "unrecognised".into(),
+            screen_excerpt: Some(format!("$ export GITHUB_TOKEN={token}")),
+        })
+        .await
+        .unwrap();
+    let mut raw = String::new();
+    for _ in 0..2 {
+        let msg = tokio::time::timeout(Duration::from_secs(5), ws.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        raw.push_str(msg.to_text().unwrap());
+    }
+    assert!(!raw.contains(token) && !raw.contains("k-1"), "{raw}");
+    assert!(raw.contains("[redacted]"), "{raw}");
 }

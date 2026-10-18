@@ -3,6 +3,8 @@
 use std::sync::LazyLock;
 
 use regex::{Regex, RegexSet};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 const MASK: &str = "[redacted]";
@@ -104,6 +106,12 @@ pub fn redact(v: &Value) -> Value {
         ),
         other => other.clone(),
     }
+}
+
+/// A copy of any serializable value with secrets masked in its strings.
+pub fn redact_as<T: Serialize + DeserializeOwned>(v: T) -> T {
+    let json = serde_json::to_value(&v).expect("serializable");
+    serde_json::from_value(redact(&json)).unwrap_or(v)
 }
 
 #[cfg(test)]

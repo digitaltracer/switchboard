@@ -60,6 +60,8 @@ struct FakeHerdr {
     socket: PathBuf,
     calls: Arc<Mutex<Vec<String>>>,
     worktree_delay_ms: Arc<AtomicU64>,
+    /// What `agent.read` returns.
+    screen: Arc<Mutex<String>>,
 }
 
 fn agent_info(status: &str) -> Value {
@@ -74,11 +76,12 @@ impl FakeHerdr {
         let listener = UnixListener::bind(&socket).unwrap();
         let calls = Arc::new(Mutex::new(Vec::new()));
         let worktree_delay_ms = Arc::new(AtomicU64::new(0));
-        let (log, delay) = (calls.clone(), worktree_delay_ms.clone());
+        let screen = Arc::new(Mutex::new("all done\n".to_owned()));
+        let (log, delay, text) = (calls.clone(), worktree_delay_ms.clone(), screen.clone());
         tokio::spawn(async move {
             loop {
                 let (stream, _) = listener.accept().await.unwrap();
-                let (log, delay) = (log.clone(), delay.clone());
+                let (log, delay, text) = (log.clone(), delay.clone(), text.clone());
                 tokio::spawn(async move {
                     let (read, mut write) = stream.into_split();
                     let mut line = String::new();
@@ -105,7 +108,7 @@ impl FakeHerdr {
                             json!({"type": "agent_prompted", "agent": agent_info("working")})
                         }
                         "agent.read" => json!({"type": "pane_read",
-                            "read": {"pane_id": "w2:p1", "text": "all done\n", "revision": 3, "truncated": false}}),
+                            "read": {"pane_id": "w2:p1", "text": text.lock().unwrap().clone(), "revision": 3, "truncated": false}}),
                         "session.snapshot" => json!({"type": "session_snapshot", "snapshot": {
                             "version": "0.9.1", "protocol": 22, "workspaces": [], "tabs": [],
                             "panes": [], "layouts": [], "agents": [agent_info("idle")]}}),
@@ -120,6 +123,7 @@ impl FakeHerdr {
             socket,
             calls,
             worktree_delay_ms,
+            screen,
         }
     }
 
@@ -630,5 +634,39 @@ mod handshake {
             Ok(_) => "connected".into(),
             Err(e) => e.to_string(),
         }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_token_in_a_command_or_terminal_output_never_reaches_the_hub_api_or_database() {
+    const TOKEN: &str = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+    let w = World::new().await;
+    let sid = w.start("task", "rq-5").await.unwrap().session_id;
+    *w.herdr.screen.lock().unwrap() =
+        format!("$ export GITHUB_TOKEN={TOKEN}\nlogged in with {TOKEN}\n");
+
+    // The agent's hook hands the runner the raw command; the runner keeps it to itself.
+    let helper = w.ask_permission(&sid, &format!("gh auth login --with-token {TOKEN}"));
+    let approval = w.pending_approval(&sid).await;
+    let view =
+        serde_json::to_string(&w.svc().get(&sid, None, Duration::ZERO).await.unwrap()).unwrap();
+    assert!(!view.contains(TOKEN), "{view}");
+    assert!(view.contains("--with-token [redacted]"), "{view}");
+    let tail = w.svc().read(&sid, 20).await.unwrap();
+    assert!(!tail.text.contains(TOKEN), "{}", tail.text);
+    w.svc()
+        .decide(&w.bot, &sid, &approval, false, None)
+        .await
+        .unwrap();
+    assert!(matches!(helper.await.unwrap(), HookReply::Deny { .. }));
+    let audit = format!("{:?}", w.svc().audit_log(None, 500).await.unwrap());
+    assert!(!audit.contains(TOKEN));
+
+    for file in ["hub.db", "hub.db-wal"] {
+        let bytes = std::fs::read(w.dir.path().join(file)).unwrap_or_default();
+        assert!(
+            !bytes.windows(TOKEN.len()).any(|b| b == TOKEN.as_bytes()),
+            "token stored in {file}"
+        );
     }
 }

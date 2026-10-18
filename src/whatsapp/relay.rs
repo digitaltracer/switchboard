@@ -14,6 +14,7 @@ use super::transport::{Inbound, Transport, jid_phone};
 use super::watchlist::{SWITCHBOARD_PREFIX, WatchStore};
 use crate::herdr::check_agent_name;
 use crate::herdr::types::AgentStatus;
+use crate::redact::redact_str;
 
 const EXCERPT_LINES: usize = 20;
 /// Enough to get above a TUI's input box and status bar to the reply itself.
@@ -300,7 +301,8 @@ impl<A: AgentControl> Relay<A> {
         };
         match self.agents.read(&target, overfetch(n)).await {
             Ok(text) => {
-                let text = tail(&text, n as usize);
+                // Masked before splitting, so no secret is cut in two and missed.
+                let text = tail(&redact_str(&text), n as usize);
                 if text.is_empty() {
                     vec![format!("{target} has no output yet.")]
                 } else {
@@ -320,7 +322,7 @@ impl<A: AgentControl> Relay<A> {
             Ok(PromptOutcome::Sent) => format!("Sent to {target}."),
             Ok(PromptOutcome::Blocked { screen }) => fit_one(&format!(
                 "{target} is waiting at a dialog, so I didn't send that. {BLOCKED_HINT}\n\n{}",
-                tail(&screen, EXCERPT_LINES)
+                tail(&redact_str(&screen), EXCERPT_LINES)
             )),
             Ok(PromptOutcome::NotFound) => {
                 format!("{target} isn't running any more. Send list to pick another.")
@@ -348,7 +350,7 @@ impl<A: AgentControl> Relay<A> {
                     let screen = self.agents.screen(&agent).await.unwrap_or_default();
                     format!(
                         "{agent} is waiting for approval:\n\n{}\n\n{BLOCKED_HINT}",
-                        tail(&screen, EXCERPT_LINES)
+                        tail(&redact_str(&screen), EXCERPT_LINES)
                     )
                 }
                 Notify::Finished => {
@@ -357,7 +359,10 @@ impl<A: AgentControl> Relay<A> {
                         .read(&agent, overfetch(FINISHED_LINES as u32))
                         .await
                         .unwrap_or_default();
-                    format!("{agent} finished:\n\n{}", tail(&output, FINISHED_LINES))
+                    format!(
+                        "{agent} finished:\n\n{}",
+                        tail(&redact_str(&output), FINISHED_LINES)
+                    )
                 }
             };
             let text = fit_one(&text);
@@ -396,7 +401,8 @@ pub async fn run<A: AgentControl, T: Transport>(
             _ = tick.tick() => for o in relay.due(Instant::now()).await { outbox.push(o) },
         }
         while let Some(o) = outbox.pop_ready(Instant::now()) {
-            if let Err(e) = transport.send(&o.to, &o.text).await {
+            // Every message leaves the machine; mask once more in case a reply quoted a secret.
+            if let Err(e) = transport.send(&o.to, &redact_str(&o.text)).await {
                 tracing::warn!(error = %e, "send failed; will retry");
                 outbox.requeue(o);
                 break;

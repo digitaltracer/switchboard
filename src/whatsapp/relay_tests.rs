@@ -615,3 +615,62 @@ async fn end_to_end_with_rate_limit_and_reconnect() {
     drop(in_tx);
     task.await.unwrap();
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_token_in_terminal_output_never_reaches_the_transport() {
+    let token = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+    let agents = FakeAgents::with(&[("sb-1", AgentStatus::Idle)]);
+    agents.output.lock().unwrap().insert(
+        "sb-1".into(),
+        format!("$ export GITHUB_TOKEN={token}\n$ gh auth status\nlogged in with {token}\n"),
+    );
+    agents.screens.lock().unwrap().insert(
+        "sb-1".into(),
+        format!(
+            "Bash command\n  curl -H 'Authorization: Bearer {token}' x\nDo you want to proceed?\n"
+        ),
+    );
+    let transport = Arc::new(FakeTransport::default());
+    let (in_tx, in_rx) = mpsc::channel(64);
+    let (st_tx, st_rx) = mpsc::channel(64);
+    let t = transport.clone();
+    let a = agents.clone();
+    let task = tokio::spawn(async move {
+        let mut r = relay(a);
+        run(&mut r, &*t, in_rx, st_rx).await;
+    });
+    in_tx.send(from(ME, "use sb-1")).await.unwrap();
+    in_tx.send(from(ME, "read 10")).await.unwrap();
+    st_tx
+        .send(("sb-1".into(), AgentStatus::Working))
+        .await
+        .unwrap();
+    tokio::time::sleep(HOLD * 2).await;
+    st_tx
+        .send(("sb-1".into(), AgentStatus::Blocked))
+        .await
+        .unwrap();
+    tokio::time::sleep(HOLD * 2).await;
+    agents.blocked.lock().unwrap().push("sb-1".into());
+    in_tx.send(from(ME, "carry on")).await.unwrap();
+    st_tx
+        .send(("sb-1".into(), AgentStatus::Done))
+        .await
+        .unwrap();
+    tokio::time::sleep(REFILL * 6).await;
+
+    let sent = transport.take();
+    let all: String = sent
+        .iter()
+        .map(|(_, t)| t.as_str())
+        .collect::<Vec<_>>()
+        .join("\n---\n");
+    assert!(sent.len() >= 4, "{all}");
+    assert!(!all.contains(token), "{all}");
+    assert!(
+        all.contains("GITHUB_TOKEN=[redacted]") && all.contains("Bearer [redacted]"),
+        "{all}"
+    );
+    drop(in_tx);
+    task.await.unwrap();
+}
