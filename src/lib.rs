@@ -4,3 +4,4 @@ pub mod config;
 pub mod hook;
 pub mod hub;
 pub mod runner;
+pub mod store;
