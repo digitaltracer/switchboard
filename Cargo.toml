@@ -17,5 +17,6 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 url = { version = "2.5.8", features = ["serde"] }
 
 [dev-dependencies]
+jsonschema = { version = "0.59.0", default-features = false }
 tempfile = "3.27.0"
 tokio = { version = "1.53.3", features = ["full", "test-util"] }
