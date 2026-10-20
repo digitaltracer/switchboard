@@ -1,5 +1,7 @@
 # WhatsApp bridge, version zero
 
+Since 2026-10-19 the bridge runs inside the hub; "Front door to the hub" below says what changed.
+
 ## Outcome
 
 Add a `switchboard whatsapp` subcommand so the user can follow and steer Herdr agents from WhatsApp while away from the terminal. It links to WhatsApp as a device (the same WhatsApp Web emulation approach Hermes Agent uses), runs on the Mac and talks to the local Herdr socket directly. It notifies the user when a watched agent needs attention or finishes, shows recent output on request and forwards plain messages to the agent as follow-up prompts. It cannot approve or deny anything in version zero.
@@ -9,7 +11,7 @@ Once Switchboard's hub exists, this becomes a second front door next to MCP and 
 ## Decisions (made by the user)
 
 - **Connection:** WhatsApp Web emulation in Rust: `whatsapp-rust` or its stable-Rust fork `wa-rs`, picked after checking which builds on stable and is maintained. Record the crate and version. No Node or Go sidecar.
-- **Number:** a separate WhatsApp number, linked as a device by QR code or pair code. Never the user's personal account.
+- **Number:** a separate WhatsApp number, linked as a device by QR code or pair code. Never the user's personal account, except in self-chat mode (added 2026-10-19), an explicit opt-in for testing with your own number as the only tester.
 - **Powers:** notify, read and prompt only. The bridge never sends keys to an agent and never answers a dialog.
 - **Order:** built after the current scaffold and hook-spike task, on top of its config, Herdr client and test layout.
 
@@ -69,23 +71,43 @@ Out of scope: approvals, starting new sessions from WhatsApp, the official Cloud
 - **Notifications.** A blocked status has to hold for 3 seconds before it notifies, which hides Claude's brief blocked state while a hook runs. Any working or blocked sighting arms a "finished" notification, so a turn shorter than 3 seconds still reports. Outgoing messages share a bucket of 5 that refills one every 12 seconds. Replies go ahead of notifications, and a newer notification for an agent replaces a queued one.
 - **Watch state.** The opted-in agents, the per-agent mutes and the mute-all flag live in `whatsapp-watch.json`, next to `whatsapp.db`. The file is written atomically with `0600` permissions, and a change is confirmed in chat only after it is saved. An unreadable file stops the bridge at startup instead of silently dropping your mutes. The watcher follows every named agent, so watching or unmuting takes effect at once. `unmute <agent>` is refused while `mute all` is on. Only named agents can be watched; an agent started by hand can be named with `herdr agent rename <pane> <name>`. With no watch list there's no agent selected at startup, so the first `use` picks one. When the hub exists, this file is imported into the hub's shared mute state (see the main plan).
 - **No keys.** Nothing under `src/whatsapp/` can send keys. A test scans that folder for any send-keys call.
+- **Self-chat mode (2026-10-19).** `self_chat = true` links your own account instead of a separate number.
+  - Config. `allowed_senders` must hold exactly one number, your own, or the config is refused. When the link connects, the account must be that number, or the bridge disconnects and stops. `--pair-phone` must be that number too. With `self_chat` off, the refusal to link an allowed sender's account is unchanged.
+  - The bridge reads only your "Message yourself" chat: messages from you whose chat is your own phone JID or your own privacy id (`…@lid`), learned from the link when it connects. Every other chat, group and DM is dropped before any parsing. Nothing about it is logged or stored, not even its id; only a count of dropped messages is kept.
+  - Replies and notifications go to that same chat.
+  - The bridge's own messages come back as messages from you. Each one it sends has its id recorded, the last 1024 of them, and is ignored when it returns. As a second guard, every message the bridge sends starts with `🤖 `, and any message starting with it is ignored. The marker also covers an echo that arrives before the send has returned its id.
+  - Masking, rate limits and the no-keys rule are unchanged; masking runs before the marker is added.
 - **Masking.** Every message the bridge sends has secrets masked by Switchboard's shared redactor (decided 2026-10-18). Agent output and dialog excerpts are masked before they're split into messages, and each message again just before it's sent.
+
+## Front door to the hub (2026-10-19)
+
+whatsapp-sessions.md moved the bridge into the hub. These points replace the version-zero design above wherever they differ.
+
+- **Where it runs.** Inside `switchboard hub`, enabled by a `[whatsapp]` section in `hub.toml` with `allowed_senders`, `store_path` and `self_chat`. `whatsapp.toml` and the `switchboard whatsapp` subcommand are gone; a wrapper would have had to start the hub anyway. Pair-code linking is `switchboard hub --whatsapp-pair-phone +<number>`. A bridge that can't continue (unlinked, banned, wrong account) stops the hub with its reason.
+- **No Herdr access.** The bridge calls the session service only. Agents Switchboard didn't create are listed, read and prompted through three runner operations (`agents`, `read_agent`, `prompt_agent`), and the runner reports every named agent's status as an event. The status watcher that used to live in the bridge now runs in the runner, unchanged. The runner refuses `prompt_agent` for its own sessions' agents, so session prompts stay audited as session prompts.
+- **Starting sessions.** Free text that names a project starts a session in a fresh worktree on the default machine (`default_machine` in `hub.toml`), or on a machine whose id the text names. Words are matched against project ids and aliases, case-insensitively, with `_`, `/` and `.` read as `-`, so `work/foo` matches `work-foo`. A leading "in/on/for <project>" settles it on its own. No match, or several, gets a numbered list, and the reply number starts the session. WhatsApp's message id is the start's `request_id`, so a redelivered message can't start a second session. The start runs in the background; the bridge answers "Starting…" at once and then "Started <label> in <project>, branch sb/<id>". A session's short label is its project plus the first four characters of its id.
+- **Reusing sessions.** `use this[: text]` and `use [the] <x> [session][: text]`. `<x>` matches live sessions by id or id prefix, label, branch, agent name, project id or alias, and named Herdr agents Switchboard didn't create; exact matches win over prefixes, and several get a numbered list. A bare number also picks from the last `sessions` listing. Text that names no project goes to the current session; with none, the bridge asks which project.
+- **Approvals.** Each approval gets a short number from the hub database, assigned once and never reused, so it survives restarts. The notification shows the masked tool name and input. `approve <n>` and `deny <n>` call the session service's decide; a used or expired number returns the recorded outcome and sends nothing. No key is ever sent. A blocked notification for a session that has a pending approval is skipped, because the approval message says it. Approval messages follow mutes like other notifications; `status` still lists pending approvals.
+- **Mute state.** On the hub's store. The old `whatsapp-watch.json` is imported once at startup and not written again. `unmute all` also clears per-agent mutes, as before.
+- **Unchanged.** Self-chat mode, the sender allowlist, masking, rate limits, debounce and the echo guards. The no-keys test now also scans the runner's agent module.
 
 ## Setup
 
-1. Write `~/.config/switchboard/whatsapp.toml`:
-   ```toml
-   allowed_senders = ["+<your personal number>"]
-   herdr_session = "<your Herdr session, e.g. switchboard>"
-   store_path = "/Users/<you>/.local/state/switchboard/whatsapp.db"
-   ```
-2. Build and run it in a normal terminal:
-   ```
-   cargo build --release
-   ./target/release/switchboard whatsapp --config ~/.config/switchboard/whatsapp.toml
-   ```
-3. Scan the QR code with the phone that holds the bridge's **separate** number: WhatsApp > Settings > Linked devices > Link a device. If the QR code won't scan, add `--pair-phone +<separate number>` and enter the pair code it prints instead.
-4. Switchboard's sessions notify automatically. To follow an agent you started yourself, name it with `herdr agent rename <pane> <name>`, then send `watch <name>` from WhatsApp. Send `help` for the rest.
+The bridge runs inside the hub. See whatsapp-sessions.md's report, or the steps here.
+
+1. Configs live in `~/.config/switchboard/`: `hub.toml` (machines, projects, `[whatsapp]`) and `runner.toml`. Put your own number in `[whatsapp].allowed_senders`; the hub refuses the placeholder.
+2. Start the hub in a normal terminal so the QR code shows: `./target/release/switchboard hub --config ~/.config/switchboard/hub.toml`.
+3. Start the runner from a pane of the Herdr session it should drive, so it inherits `HERDR_SOCKET_PATH`: `./target/release/switchboard runner --config ~/.config/switchboard/runner.toml`. Or set `herdr_session` in `runner.toml`.
+4. Link the device: WhatsApp > Settings > Linked devices > Link a device, scanning with your own phone in self-chat mode. Then send `help` in your "Message yourself" chat.
+
+The risks under self-chat mode below still apply: the linked device decrypts all your chats, and your main number carries the ban risk. To move to a separate number later, unlink the device on your phone, delete the store (`whatsapp.db` and its `-wal` and `-shm` files), set `self_chat = false` and put your personal number in `allowed_senders`; link with the phone that holds the separate number.
+
+### Self-chat mode risks
+
+- **Ban risk on your main number.** The bridge is an unofficial WhatsApp Web client. Meta can restrict or ban the number it runs on, and here that is your personal account, not a spare. Keep traffic low, and switch to a separate number once testing is over.
+- **The linked device decrypts all your chats.** As a linked device, the bridge receives and decrypts every message in every chat, not only your own. It discards everything outside your own chat without logging it, but the device keys in `whatsapp.db` can read all of it. Treat that file like your phone: keep it `0600`, never copy it off the Mac, and unlink the device (WhatsApp > Settings > Linked devices) when you stop testing. History sync is skipped, so older messages aren't downloaded.
+- Your phone may not notify you of the bridge's messages, because they show as sent by you. Open the chat to see them.
+- A message you type that starts with `🤖 ` is ignored, because that is the bridge's marker.
 
 ## Rules
 
