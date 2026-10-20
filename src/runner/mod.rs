@@ -1,5 +1,6 @@
 //! Runner: hub WebSocket client, Herdr operations and the hook endpoint.
 
+pub mod agents;
 pub mod codex;
 pub mod hooks;
 pub mod link;
@@ -15,7 +16,8 @@ use tokio::sync::mpsc;
 
 use crate::agents::APPROVAL_DEADLINE;
 use crate::config::RunnerConfig;
-use crate::herdr::{Client, session_socket};
+use crate::herdr::{Client, find_socket};
+use crate::proto::Event;
 use crate::proto::conn::QUEUE_CAPACITY;
 use hooks::HookHub;
 use sessions::{Sessions, SessionsConfig};
@@ -36,15 +38,17 @@ pub async fn run(config: PathBuf) -> anyhow::Result<()> {
         .to_owned();
     let home = PathBuf::from(std::env::var_os("HOME").context("HOME is not set")?);
 
-    let herdr = Client::new(session_socket(
+    let socket = find_socket(
         &home.join(".config/herdr"),
-        &cfg.herdr_session,
-    ));
+        cfg.herdr_session.as_deref(),
+        |k| std::env::var(k).ok(),
+    );
+    let herdr = Client::new(&socket);
     let herdr_version = herdr
         .check_protocol()
         .await
-        .with_context(|| format!("Herdr session {:?}", cfg.herdr_session))?;
-    tracing::info!(machine = %cfg.machine_id, herdr = %herdr_version, "runner starting");
+        .with_context(|| format!("Herdr server at {}", socket.display()))?;
+    tracing::info!(machine = %cfg.machine_id, herdr = %herdr_version, socket = %socket.display(), "runner starting");
 
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -74,6 +78,11 @@ pub async fn run(config: PathBuf) -> anyhow::Result<()> {
     let reloaded = sessions.load().context("reloading sessions")?;
     tracing::info!(reloaded, %hook_addr, "hook endpoint listening");
     tokio::spawn(watch::watch(sessions.clone()));
+    tokio::spawn(forward_named_agents(
+        Client::new(&socket),
+        sessions.clone(),
+        agents::RECONCILE,
+    ));
 
     let link = link::LinkConfig {
         url: cfg.hub_url.clone(),
@@ -83,4 +92,20 @@ pub async fn run(config: PathBuf) -> anyhow::Result<()> {
     };
     link::run(link, sessions, events_rx).await;
     Ok(())
+}
+
+/// Every named agent's status goes to the hub, which hands it to the WhatsApp bridge.
+pub async fn forward_named_agents(
+    herdr: Client,
+    sessions: std::sync::Arc<Sessions>,
+    reconcile_every: Duration,
+) {
+    let (tx, mut rx) = mpsc::channel(256);
+    tokio::spawn(agents::watch_every(herdr, tx, reconcile_every));
+    while let Some((agent_name, status)) = rx.recv().await {
+        sessions.emit(Event::NamedAgentStatus {
+            agent_name,
+            agent_status: agents::status_str(status),
+        });
+    }
 }

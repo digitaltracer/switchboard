@@ -82,10 +82,53 @@ fn every_frame_round_trips() {
             revision: 3,
         }),
         Frame::Event(Event::Resynced { sessions: vec![] }),
+        Frame::Req(Req {
+            id: 4,
+            deadline_ms: 5_000,
+            op: Op::PromptAgent {
+                agent: "switchboard-impl".into(),
+                text: "status?".into(),
+            },
+        }),
+        Frame::Event(Event::NamedAgentStatus {
+            agent_name: "switchboard-impl".into(),
+            agent_status: "idle".into(),
+        }),
     ];
     for f in frames {
         assert_eq!(decode(&encode(&f)).unwrap(), f);
     }
+}
+
+#[test]
+fn agent_ops_and_outcomes() {
+    assert!(
+        Op::PromptAgent {
+            agent: "a".into(),
+            text: "t".into()
+        }
+        .is_mutating()
+    );
+    assert!(!Op::Agents.is_mutating());
+    assert!(
+        !Op::ReadAgent {
+            agent: "a".into(),
+            lines: 5,
+            visible: true
+        }
+        .is_mutating()
+    );
+    let blocked = AgentPromptOutcome::Blocked {
+        screen: "Allow?".into(),
+    };
+    assert_eq!(
+        serde_json::to_value(&blocked).unwrap(),
+        json!({"outcome": "blocked", "screen": "Allow?"})
+    );
+    assert_eq!(
+        serde_json::to_value(AgentPromptOutcome::Sent).unwrap(),
+        json!({"outcome": "sent"})
+    );
 }
 
 #[test]

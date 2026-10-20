@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use tokio::time::Instant;
 
+use super::agents::status_str;
 use super::codex::{CodexPane, Facts, FallbackOutcome, Gate, deny_dialog, gate};
 use super::sessions::{RunnerSession, Sessions};
 use crate::cli::Agent;
@@ -153,11 +154,4 @@ impl Tracker {
             }
         }
     }
-}
-
-fn status_str(status: AgentStatus) -> String {
-    serde_json::to_value(status)
-        .ok()
-        .and_then(|v| v.as_str().map(str::to_owned))
-        .unwrap_or_else(|| "unknown".into())
 }

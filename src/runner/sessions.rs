@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 
+use super::agents;
 use super::codex::{CodexPane, clear_startup, excerpt};
 use super::hooks::{DecideError, HookHub};
 use crate::agents::{claude, codex, hook_command};
@@ -41,6 +42,9 @@ pub struct RunnerSession {
     pub pane_id: Option<String>,
     pub worktree_path: Option<String>,
     pub codex_version: Option<String>,
+    /// The commit the worktree was created from.
+    #[serde(default)]
+    pub start_commit: Option<String>,
 }
 
 pub struct SessionsConfig {
@@ -73,6 +77,10 @@ fn herdr_err(e: HerdrError) -> ProtoError {
         ErrorCode::OutcomeUnknown
     } else if e.server_code() == Some("agent_blocked") {
         ErrorCode::AgentBlocked
+    } else if e.server_code() == Some("agent_not_found") {
+        ErrorCode::NotFound
+    } else if matches!(e, HerdrError::InvalidArgument(_)) {
+        ErrorCode::BadRequest
     } else {
         ErrorCode::Herdr
     };
@@ -259,6 +267,43 @@ impl Sessions {
                 remove_worktree_if_clean,
             } => self.stop(&session_id, remove_worktree_if_clean).await,
             Op::ListSessions => Ok(serde_json::to_value(self.owned().await).expect("serializes")),
+            Op::Agents => {
+                let names = self
+                    .all()
+                    .into_iter()
+                    .map(|s| (s.agent_name, s.session_id))
+                    .collect();
+                let list = agents::list(&self.herdr, &names).await.map_err(herdr_err)?;
+                Ok(serde_json::to_value(list).expect("serializes"))
+            }
+            Op::ReadAgent {
+                agent,
+                lines,
+                visible,
+            } => {
+                let lines = if lines == 0 {
+                    DEFAULT_READ_LINES
+                } else {
+                    lines
+                };
+                let text = agents::read(&self.herdr, &agent, lines, visible)
+                    .await
+                    .map_err(herdr_err)?;
+                Ok(json!({ "text": text, "untrusted": true }))
+            }
+            Op::PromptAgent { agent, text } => {
+                // A session's prompts go through its own op, which the hub records and audits.
+                if self.all().iter().any(|s| s.agent_name == agent) {
+                    return Err(err(
+                        ErrorCode::BadRequest,
+                        format!("{agent} is a Switchboard session; prompt the session"),
+                    ));
+                }
+                let outcome = agents::prompt(&self.herdr, &agent, &text)
+                    .await
+                    .map_err(herdr_err)?;
+                Ok(serde_json::to_value(outcome).expect("serializes"))
+            }
         }
     }
 
@@ -369,6 +414,7 @@ impl Sessions {
             pane_id: None,
             worktree_path: None,
             codex_version,
+            start_commit: None,
         };
         self.save(&session)
             .map_err(|e| err(ErrorCode::Internal, format!("saving session: {e}")))?;
@@ -392,6 +438,7 @@ impl Sessions {
         session.workspace_id = Some(created.workspace.workspace_id.clone());
         session.pane_id = Some(created.root_pane.pane_id.clone());
         session.worktree_path = Some(created.worktree.path.clone());
+        session.start_commit = head_commit(Path::new(&created.worktree.path)).await;
         self.save(&session)
             .map_err(|e| err(ErrorCode::Internal, format!("saving session: {e}")))?;
 
@@ -690,6 +737,7 @@ fn started_json(s: &RunnerSession) -> Value {
         "pane_id": s.pane_id,
         "agent_name": s.agent_name,
         "codex_version": s.codex_version,
+        "start_commit": s.start_commit,
     })
 }
 
@@ -717,6 +765,16 @@ pub async fn worktree_clean_and_merged(
         return Err("unmerged".into());
     }
     Ok(())
+}
+
+/// The commit a fresh worktree is on; `None` when git can't say.
+async fn head_commit(worktree: &Path) -> Option<String> {
+    let out = git(worktree, &["rev-parse", "--verify", "HEAD"])
+        .await
+        .ok()?;
+    let sha = String::from_utf8(out.stdout).ok()?.trim().to_owned();
+    let hex = sha.len() >= 40 && sha.bytes().all(|b| b.is_ascii_hexdigit());
+    (out.status.success() && hex).then_some(sha)
 }
 
 async fn git(dir: &Path, args: &[&str]) -> Result<std::process::Output, String> {

@@ -1,16 +1,92 @@
-//! Status of every named agent from Herdr: per-pane status subscriptions plus snapshot
-//! reconciliation. New agents are picked up without a restart; whether they notify is the
-//! relay's decision. A stream that ends means events may be lost: resubscribe and reconcile.
+//! Every named Herdr agent on this machine, Switchboard's or not: list, read, prompt, and
+//! status from per-pane subscriptions plus snapshot reconciliation. New agents are picked up
+//! without a restart; whether they notify is the bridge's decision. A stream that ends means
+//! events may be lost: resubscribe and reconcile. There is no key path here.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
 
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 
-use crate::herdr::types::{AgentStatus, Event, SessionSnapshot, Subscription};
-use crate::herdr::{Client, HerdrError};
+use crate::herdr::types::{
+    AgentPromptParams, AgentStatus, Event, ReadSource, SessionSnapshot, Subscription,
+};
+use crate::herdr::{Client, HerdrError, check_agent_name};
 use crate::proto::conn::Backoff;
+use crate::proto::{AgentPromptOutcome, AgentSummary};
+
+/// Named agents, each with its session id when it is one of `sessions` (agent name to id).
+pub async fn list(
+    herdr: &Client,
+    sessions: &HashMap<String, String>,
+) -> Result<Vec<AgentSummary>, HerdrError> {
+    let snap = herdr.session_snapshot().await?;
+    Ok(snap
+        .agents
+        .into_iter()
+        .filter_map(|a| {
+            let name = a.name?;
+            Some(AgentSummary {
+                session_id: sessions.get(&name).cloned(),
+                agent_status: status_str(a.agent_status),
+                name,
+                pane_id: a.pane_id,
+                kind: a.agent,
+            })
+        })
+        .collect())
+}
+
+/// The last `lines`, or the visible screen; history reads are refused while at a dialog.
+pub async fn read(
+    herdr: &Client,
+    agent: &str,
+    lines: u32,
+    visible: bool,
+) -> Result<String, HerdrError> {
+    check_agent_name(agent)?;
+    let screen = || herdr.agent_read(agent, ReadSource::Visible, None);
+    if visible {
+        return screen().await.map(|r| r.text);
+    }
+    match herdr
+        .agent_read(agent, ReadSource::RecentUnwrapped, Some(lines))
+        .await
+    {
+        Err(e) if e.server_code() == Some("agent_not_idle") => screen().await.map(|r| r.text),
+        other => other.map(|r| r.text),
+    }
+}
+
+/// Herdr refuses a prompt to an agent at a dialog; the screen says what it is waiting for.
+pub async fn prompt(
+    herdr: &Client,
+    agent: &str,
+    text: &str,
+) -> Result<AgentPromptOutcome, HerdrError> {
+    check_agent_name(agent)?;
+    let params = AgentPromptParams {
+        target: agent.to_owned(),
+        text: text.to_owned(),
+        wait: None,
+    };
+    match herdr.agent_prompt(params).await {
+        Ok(_) => Ok(AgentPromptOutcome::Sent),
+        Err(e) if e.server_code() == Some("agent_blocked") => Ok(AgentPromptOutcome::Blocked {
+            screen: read(herdr, agent, 0, true).await.unwrap_or_default(),
+        }),
+        Err(e) if e.server_code() == Some("agent_not_found") => Ok(AgentPromptOutcome::NotFound),
+        Err(e) => Err(e),
+    }
+}
+
+pub fn status_str(status: AgentStatus) -> String {
+    serde_json::to_value(status)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "unknown".into())
+}
 
 /// How often a snapshot is taken, which is also the longest a new agent goes unnoticed.
 pub const RECONCILE: Duration = Duration::from_secs(5);
@@ -113,5 +189,5 @@ async fn reconcile(
 }
 
 #[cfg(test)]
-#[path = "watch_tests.rs"]
+#[path = "agents_tests.rs"]
 mod tests;

@@ -89,13 +89,51 @@ pub enum Op {
     },
     /// Ask for the runner's view of its sessions, for reconciliation.
     ListSessions,
+    /// Every named Herdr agent on the machine, Switchboard's or not.
+    Agents,
+    /// Reads any named agent; `visible` is the current screen, which shows a dialog.
+    ReadAgent {
+        agent: String,
+        lines: u32,
+        visible: bool,
+    },
+    /// Prompts an agent Switchboard didn't create. It has no hooks, so nothing answers its dialogs.
+    PromptAgent {
+        agent: String,
+        text: String,
+    },
 }
 
 impl Op {
     /// Mutating ops in flight on a lost connection become `outcome_unknown`.
     pub fn is_mutating(&self) -> bool {
-        !matches!(self, Op::Read { .. } | Op::ListSessions)
+        !matches!(
+            self,
+            Op::Read { .. } | Op::ListSessions | Op::Agents | Op::ReadAgent { .. }
+        )
     }
+}
+
+/// One named agent from `Op::Agents`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentSummary {
+    pub name: String,
+    pub pane_id: String,
+    pub kind: Option<String>,
+    pub agent_status: String,
+    /// Set when the agent is one of this runner's sessions.
+    pub session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum AgentPromptOutcome {
+    Sent,
+    /// Herdr refused because the agent sits at a dialog; nothing was sent.
+    Blocked {
+        screen: String,
+    },
+    NotFound,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -188,6 +226,11 @@ pub enum Event {
     /// The runner lost Herdr events and re-synced from a snapshot.
     Resynced {
         sessions: Vec<OwnedSession>,
+    },
+    /// A named agent's status, sent on every sighting; the bridge debounces it.
+    NamedAgentStatus {
+        agent_name: String,
+        agent_status: String,
     },
 }
 

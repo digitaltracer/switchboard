@@ -423,6 +423,13 @@ async fn clean_and_merged_check() {
         &repo,
     );
     assert_eq!(worktree_clean_and_merged(&wt, &repo, "sb/s1").await, Ok(()));
+    let head = std::process::Command::new("git")
+        .args(["-C", repo.to_str().unwrap(), "rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    let head = String::from_utf8(head.stdout).unwrap().trim().to_owned();
+    assert_eq!(head_commit(&wt).await.as_deref(), Some(head.as_str()));
+    assert_eq!(head_commit(dir.path()).await, None);
 
     std::fs::write(wt.join("f.txt"), "x").unwrap();
     assert_eq!(

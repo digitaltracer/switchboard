@@ -80,6 +80,22 @@ pub fn session_socket(config_dir: &Path, session: &str) -> PathBuf {
     }
 }
 
+/// The socket the `herdr` CLI would use: `HERDR_SOCKET_PATH`, then `HERDR_SESSION`, then the
+/// default session. A configured `session` overrides the environment.
+pub fn find_socket(
+    config_dir: &Path,
+    session: Option<&str>,
+    env: impl Fn(&str) -> Option<String>,
+) -> PathBuf {
+    let set = |k: &str| env(k).filter(|v| !v.is_empty());
+    match (session, set("HERDR_SOCKET_PATH"), set("HERDR_SESSION")) {
+        (Some(s), _, _) => session_socket(config_dir, s),
+        (None, Some(path), _) => PathBuf::from(path),
+        (None, None, Some(s)) => session_socket(config_dir, &s),
+        (None, None, None) => session_socket(config_dir, "default"),
+    }
+}
+
 pub struct Client {
     socket: PathBuf,
     timeout: Duration,

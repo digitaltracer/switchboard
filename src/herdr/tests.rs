@@ -423,3 +423,28 @@ fn session_socket_paths() {
         base.join("sessions/sb/herdr.sock")
     );
 }
+
+#[test]
+fn finds_the_socket_like_the_herdr_cli() {
+    let base = Path::new("/home/u/.config/herdr");
+    let env = |vars: &'static [(&'static str, &'static str)]| {
+        move |k: &str| {
+            vars.iter()
+                .find(|(n, _)| *n == k)
+                .map(|(_, v)| (*v).to_owned())
+        }
+    };
+    let both = env(&[("HERDR_SOCKET_PATH", "/run/h.sock"), ("HERDR_SESSION", "x")]);
+    assert_eq!(find_socket(base, None, both), Path::new("/run/h.sock"));
+    let session = env(&[("HERDR_SESSION", "x"), ("HERDR_SOCKET_PATH", "")]);
+    assert_eq!(
+        find_socket(base, None, session),
+        base.join("sessions/x/herdr.sock")
+    );
+    assert_eq!(find_socket(base, None, env(&[])), base.join("herdr.sock"));
+    assert_eq!(
+        find_socket(base, Some("test"), both),
+        base.join("sessions/test/herdr.sock"),
+        "a configured session overrides the environment"
+    );
+}
