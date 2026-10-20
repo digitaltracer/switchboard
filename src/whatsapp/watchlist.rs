@@ -1,5 +1,6 @@
 //! Which agents notify: Switchboard's own `sb-` agents by default, others opted in with
-//! `watch`, minus mutes. Saved next to the WhatsApp store so choices survive restarts.
+//! `watch`, minus mutes. The hub's store keeps these choices; the bridge's old file beside
+//! the WhatsApp store is imported once.
 
 use std::collections::BTreeSet;
 use std::io;
@@ -47,71 +48,23 @@ impl WatchState {
     }
 }
 
-pub struct WatchStore {
-    path: Option<PathBuf>,
-    pub state: WatchState,
+/// The bridge's old watch file: `whatsapp.db` kept its choices in `whatsapp-watch.json`.
+pub fn legacy_path(store_path: &Path) -> PathBuf {
+    let stem = store_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("whatsapp");
+    store_path.with_file_name(format!("{stem}-watch.json"))
 }
 
-impl WatchStore {
-    /// Not saved anywhere; for tests.
-    pub fn in_memory() -> Self {
-        Self {
-            path: None,
-            state: WatchState::default(),
-        }
-    }
-
-    /// `whatsapp.db` keeps its choices in `whatsapp-watch.json` beside it.
-    pub fn path_for(store_path: &Path) -> PathBuf {
-        let stem = store_path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("whatsapp");
-        store_path.with_file_name(format!("{stem}-watch.json"))
-    }
-
-    /// A missing file is a fresh start; an unreadable one is an error, so mutes aren't lost silently.
-    pub fn load(path: &Path) -> io::Result<Self> {
-        let state = match std::fs::read(path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| {
-                io::Error::other(format!("{} is not valid watch state: {e}", path.display()))
-            })?,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => WatchState::default(),
-            Err(e) => return Err(e),
-        };
-        Ok(Self {
-            path: Some(path.to_owned()),
-            state,
-        })
-    }
-
-    /// Applies `change` and saves it; on a failed save the change is undone.
-    pub fn update(&mut self, change: impl FnOnce(&mut WatchState)) -> io::Result<()> {
-        let before = self.state.clone();
-        change(&mut self.state);
-        if let Err(e) = self.save() {
-            self.state = before;
-            return Err(e);
-        }
-        Ok(())
-    }
-
-    fn save(&self) -> io::Result<()> {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        let Some(path) = &self.path else {
-            return Ok(());
-        };
-        let tmp = path.with_extension("json.tmp");
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&tmp)?;
-        f.write_all(&serde_json::to_vec_pretty(&self.state).map_err(io::Error::other)?)?;
-        f.sync_all()?;
-        std::fs::rename(&tmp, path)
+/// The old file's choices, if it exists. An unreadable one is an error, so mutes aren't lost silently.
+pub fn load_legacy(path: &Path) -> io::Result<Option<WatchState>> {
+    match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|e| {
+            io::Error::other(format!("{} is not valid watch state: {e}", path.display()))
+        }),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
     }
 }
 
@@ -144,36 +97,19 @@ mod tests {
     }
 
     #[test]
-    fn saved_choices_survive_reload_with_private_file() {
-        use std::os::unix::fs::PermissionsExt;
+    fn the_old_file_is_read_for_import() {
         let dir = tempfile::tempdir().unwrap();
-        let path = WatchStore::path_for(&dir.path().join("whatsapp.db"));
+        let path = legacy_path(&dir.path().join("whatsapp.db"));
         assert_eq!(path.file_name().unwrap(), "whatsapp-watch.json");
-        let mut store = WatchStore::load(&path).unwrap();
-        assert_eq!(store.state, WatchState::default());
-        store
-            .update(|s| {
-                s.muted.insert("sb-1".into());
-                s.mute_all = true;
-            })
-            .unwrap();
-        let again = WatchStore::load(&path).unwrap();
-        assert!(again.state.muted.contains("sb-1") && again.state.mute_all);
-        assert_eq!(
-            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-    }
-
-    #[test]
-    fn failed_save_undoes_the_change_and_corrupt_file_is_refused() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut store = WatchStore::load(&dir.path().join("missing-dir/w.json")).unwrap();
-        assert!(store.update(|s| s.mute_all = true).is_err());
-        assert!(!store.state.mute_all, "state matches what is on disk");
-
-        let bad = dir.path().join("bad.json");
-        std::fs::write(&bad, "{not json").unwrap();
-        assert!(WatchStore::load(&bad).is_err());
+        assert_eq!(load_legacy(&path).unwrap(), None);
+        std::fs::write(
+            &path,
+            r#"{"watched":["impl"],"muted":["sb-1"],"mute_all":true}"#,
+        )
+        .unwrap();
+        let s = load_legacy(&path).unwrap().unwrap();
+        assert!(s.watched.contains("impl") && s.muted.contains("sb-1") && s.mute_all);
+        std::fs::write(&path, "{not json").unwrap();
+        assert!(load_legacy(&path).is_err());
     }
 }

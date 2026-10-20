@@ -8,6 +8,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// or a privacy `…@lid`; `sender_alt` carries the phone-number JID when WhatsApp provides it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Inbound {
+    /// WhatsApp's message id.
+    pub id: String,
+    /// The chat the message is in; for your own "Message yourself" chat, your own JID.
+    pub chat: String,
     pub sender: String,
     pub sender_alt: Option<String>,
     pub is_group: bool,
@@ -16,8 +20,12 @@ pub struct Inbound {
 }
 
 pub trait Transport: Send + Sync + 'static {
-    /// Sends a text to the phone number `to` (digits only).
-    fn send(&self, to: &str, text: &str) -> impl Future<Output = Result<(), String>> + Send;
+    /// Sends a text to the phone number `to` (digits only); returns the message id if known.
+    fn send(
+        &self,
+        to: &str,
+        text: &str,
+    ) -> impl Future<Output = Result<Option<String>, String>> + Send;
 }
 
 /// Digits of a phone-number JID, ignoring any `:device` suffix; `None` for LIDs and groups.
@@ -34,6 +42,7 @@ pub fn jid_phone(jid: &str) -> Option<String> {
 #[derive(Default)]
 pub struct FakeTransport {
     sent: Mutex<Vec<(String, String)>>,
+    ids: Mutex<Vec<String>>,
     down: AtomicBool,
 }
 
@@ -46,6 +55,11 @@ impl FakeTransport {
         std::mem::take(&mut *self.sent.lock().unwrap())
     }
 
+    /// The id given to each message sent so far, `fake-1` upwards.
+    pub fn ids(&self) -> Vec<String> {
+        self.ids.lock().unwrap().clone()
+    }
+
     /// While down, every send fails as if the link had dropped.
     pub fn set_down(&self, down: bool) {
         self.down.store(down, Ordering::SeqCst);
@@ -53,7 +67,7 @@ impl FakeTransport {
 }
 
 impl Transport for FakeTransport {
-    async fn send(&self, to: &str, text: &str) -> Result<(), String> {
+    async fn send(&self, to: &str, text: &str) -> Result<Option<String>, String> {
         if self.down.load(Ordering::SeqCst) {
             return Err("not connected".into());
         }
@@ -61,7 +75,10 @@ impl Transport for FakeTransport {
             .lock()
             .unwrap()
             .push((to.to_owned(), text.to_owned()));
-        Ok(())
+        let mut ids = self.ids.lock().unwrap();
+        let id = format!("fake-{}", ids.len() + 1);
+        ids.push(id.clone());
+        Ok(Some(id))
     }
 }
 
