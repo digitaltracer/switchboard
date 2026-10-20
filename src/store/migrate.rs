@@ -9,6 +9,12 @@ use super::StoreError;
 pub const MIGRATIONS: &[(u32, &str)] = &[
     (1, include_str!("../../migrations/0001_init.sql")),
     (2, include_str!("../../migrations/0002_hub.sql")),
+    (
+        3,
+        include_str!("../../migrations/0003_approval_numbers.sql"),
+    ),
+    (4, include_str!("../../migrations/0004_app_groundwork.sql")),
+    (5, include_str!("../../migrations/0005_devices.sql")),
 ];
 
 pub fn run(conn: &mut Connection, db_path: Option<&Path>) -> Result<u32, StoreError> {

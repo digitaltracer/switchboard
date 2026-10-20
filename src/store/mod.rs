@@ -48,7 +48,7 @@ macro_rules! str_enum {
                 match self { $($name::$variant => $s),+ }
             }
 
-            fn parse(s: String) -> Result<Self> {
+            pub(crate) fn parse(s: String) -> Result<Self> {
                 match s.as_str() {
                     $($s => Ok($name::$variant),)+
                     _ => Err(StoreError::BadValue { column: $column, value: s }),
@@ -57,6 +57,15 @@ macro_rules! str_enum {
         }
     };
 }
+
+mod devices;
+mod push;
+
+pub use devices::{
+    ApprovalProof, Challenge, ChallengePurpose, Claim, DeviceRecord, DeviceState, NewDevice,
+    PushEnv,
+};
+pub use push::{DeliveryUpdate, DueDelivery};
 
 // `exited`: the agent left its pane without a stop.
 str_enum!(Lifecycle, "lifecycle" {
@@ -107,6 +116,8 @@ pub struct SessionRecord {
     pub muted: bool,
     pub hook_failed: bool,
     pub error: Option<String>,
+    /// The commit the worktree was created from; absent for sessions from before it was kept.
+    pub start_commit: Option<String>,
 }
 
 /// Fields to change on a session; `None` leaves a field as it is. Every update bumps the revision.
@@ -121,6 +132,9 @@ pub struct SessionPatch {
     pub worktree_path: Option<String>,
     pub workspace_id: Option<String>,
     pub pane_id: Option<String>,
+    pub start_commit: Option<String>,
+    /// The agent finished a turn: queue a "finished" notification unless the session is muted.
+    pub finished: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -163,6 +177,8 @@ pub struct ApprovalRecord {
     pub reason: Option<String>,
     pub decided_at: Option<i64>,
     pub delivery: Option<Delivery>,
+    /// Short number for chat; set by `create_approval`.
+    pub number: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -176,6 +192,9 @@ pub enum DecideOutcome {
     /// Deadline passed; recorded as deny.
     Expired,
     NotFound,
+    /// The signed approval's challenge didn't match, was used or expired, or its device isn't active.
+    /// Nothing was recorded.
+    BadProof,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -190,6 +209,23 @@ pub struct NotifyAgent {
     pub name: String,
     pub watched: bool,
     pub muted: bool,
+}
+
+str_enum!(OutboxKind, "kind" {
+    Approval => "approval",
+    Finished => "finished",
+    DevicePaired => "device_paired",
+});
+
+/// A notification to send, recorded with the change that caused it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OutboxEvent {
+    pub id: i64,
+    pub dedupe_key: String,
+    pub kind: OutboxKind,
+    pub session_id: Option<String>,
+    pub approval_id: Option<String>,
+    pub created_at: i64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -502,7 +538,7 @@ impl Store {
         .await
     }
 
-    /// Applies `patch` and bumps the revision; `None` if there is no such session.
+    /// Applies `patch` and moves the session to a new revision; `None` if there is no such session.
     pub async fn update_session(
         &self,
         id: &str,
@@ -511,43 +547,117 @@ impl Store {
     ) -> Result<Option<SessionRecord>> {
         let id = id.to_owned();
         self.call(move |c| {
-            c.query_row(
-                "UPDATE sessions SET lifecycle = COALESCE(?2, lifecycle),
-                 agent_status = COALESCE(?3, agent_status), hook_failed = COALESCE(?4, hook_failed),
-                 muted = COALESCE(?5, muted), error = COALESCE(?6, error),
-                 branch = COALESCE(?7, branch), worktree_path = COALESCE(?8, worktree_path),
-                 workspace_id = COALESCE(?9, workspace_id), pane_id = COALESCE(?10, pane_id),
-                 revision = revision + 1, updated_at = ?11
-                 WHERE id = ?1 RETURNING *",
-                params![
-                    id,
-                    patch.lifecycle.map(Lifecycle::as_str),
-                    patch.agent_status,
-                    patch.hook_failed,
-                    patch.muted,
-                    patch.error,
-                    patch.branch,
-                    patch.worktree_path,
-                    patch.workspace_id,
-                    patch.pane_id,
-                    now
-                ],
-                raw_session,
-            )
-            .optional()?
-            .map(RawSession::finish)
-            .transpose()
+            let tx = c.transaction()?;
+            let revision = bump(&tx)?;
+            let s = tx
+                .query_row(
+                    "UPDATE sessions SET lifecycle = COALESCE(?2, lifecycle),
+                     agent_status = COALESCE(?3, agent_status), hook_failed = COALESCE(?4, hook_failed),
+                     muted = COALESCE(?5, muted), error = COALESCE(?6, error),
+                     branch = COALESCE(?7, branch), worktree_path = COALESCE(?8, worktree_path),
+                     workspace_id = COALESCE(?9, workspace_id), pane_id = COALESCE(?10, pane_id),
+                     start_commit = COALESCE(?11, start_commit), revision = ?12, updated_at = ?13
+                     WHERE id = ?1 RETURNING *",
+                    params![
+                        id,
+                        patch.lifecycle.map(Lifecycle::as_str),
+                        patch.agent_status,
+                        patch.hook_failed,
+                        patch.muted,
+                        patch.error,
+                        patch.branch,
+                        patch.worktree_path,
+                        patch.workspace_id,
+                        patch.pane_id,
+                        patch.start_commit,
+                        revision,
+                        now
+                    ],
+                    raw_session,
+                )
+                .optional()?
+                .map(RawSession::finish)
+                .transpose()?;
+            if patch.finished && s.is_some() {
+                queue(
+                    &tx,
+                    &format!("finished:{id}:{revision}"),
+                    OutboxKind::Finished,
+                    Some(&id),
+                    None,
+                    now,
+                    None,
+                )?;
+            }
+            tx.commit()?;
+            Ok(s)
+        })
+        .await
+    }
+
+    /// The latest change counter: it moves with every session change and every list-wide one.
+    pub async fn revision(&self) -> Result<i64> {
+        self.call(
+            |c| Ok(c.query_row("SELECT value FROM revisions WHERE id = 1", [], |r| r.get(0))?),
+        )
+        .await
+    }
+
+    /// Records a change the session list shows that touches no session row, e.g. mute-all.
+    pub async fn bump_revision(&self) -> Result<i64> {
+        self.call(|c| {
+            let tx = c.transaction()?;
+            let v = bump(&tx)?;
+            tx.commit()?;
+            Ok(v)
+        })
+        .await
+    }
+
+    // Outbox.
+
+    /// Notifications recorded after `after_id`, oldest first.
+    pub async fn outbox_after(&self, after_id: i64, limit: u32) -> Result<Vec<OutboxEvent>> {
+        self.call(move |c| {
+            let mut stmt = c.prepare(
+                "SELECT id, dedupe_key, kind, session_id, approval_id, created_at FROM outbox
+                 WHERE id > ?1 ORDER BY id LIMIT ?2",
+            )?;
+            let rows = stmt.query_map(params![after_id, limit], |r| {
+                Ok((
+                    OutboxEvent {
+                        id: r.get(0)?,
+                        dedupe_key: r.get(1)?,
+                        kind: OutboxKind::Approval,
+                        session_id: r.get(3)?,
+                        approval_id: r.get(4)?,
+                        created_at: r.get(5)?,
+                    },
+                    r.get::<_, String>(2)?,
+                ))
+            })?;
+            rows.map(|r| {
+                let (e, kind) = r?;
+                Ok(OutboxEvent {
+                    kind: OutboxKind::parse(kind)?,
+                    ..e
+                })
+            })
+            .collect()
         })
         .await
     }
 
     // Approvals.
 
-    pub async fn create_approval(&self, a: ApprovalRecord) -> Result<()> {
+    /// Records a new approval and its notification, and returns its short number.
+    pub async fn create_approval(&self, a: ApprovalRecord) -> Result<i64> {
         self.call(move |c| {
-            c.execute(
-                "INSERT INTO approvals (id, session_id, tool_name, tool_input, created_at, deadline)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            let tx = c.transaction()?;
+            let number = tx.query_row(
+                "INSERT INTO approvals (id, session_id, tool_name, tool_input, created_at, deadline, number)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, (SELECT COALESCE(MAX(number), 0) + 1 FROM approvals))
+                 RETURNING number",
                 params![
                     a.id,
                     a.session_id,
@@ -556,8 +666,33 @@ impl Store {
                     a.created_at,
                     a.deadline
                 ],
+                |r| r.get(0),
             )?;
-            Ok(())
+            queue(
+                &tx,
+                &format!("approval:{}", a.id),
+                OutboxKind::Approval,
+                Some(&a.session_id),
+                Some(&a.id),
+                a.created_at,
+                None,
+            )?;
+            tx.commit()?;
+            Ok(number)
+        })
+        .await
+    }
+
+    pub async fn get_approval_by_number(&self, number: i64) -> Result<Option<ApprovalRecord>> {
+        self.call(move |c| {
+            c.query_row(
+                "SELECT * FROM approvals WHERE number = ?1",
+                [number],
+                raw_approval,
+            )
+            .optional()?
+            .map(RawApproval::finish)
+            .transpose()
         })
         .await
     }
@@ -594,10 +729,35 @@ impl Store {
         reason: Option<&str>,
         now: i64,
     ) -> Result<DecideOutcome> {
+        self.decide_approval_proved(id, decision, reason, now, None)
+            .await
+    }
+
+    /// As `decide_approval`; a proof's nonce is used in the same transaction as the decision.
+    pub async fn decide_approval_proved(
+        &self,
+        id: &str,
+        decision: Decision,
+        reason: Option<&str>,
+        now: i64,
+        proof: Option<ApprovalProof>,
+    ) -> Result<DecideOutcome> {
         let id = id.to_owned();
         let reason = reason.map(str::to_owned);
         self.call(move |c| {
             let tx = c.transaction()?;
+            if let Some(p) = &proof
+                && !devices::use_challenge(
+                    &tx,
+                    &p.nonce,
+                    &p.device_id,
+                    ChallengePurpose::Approval,
+                    Some(&id),
+                    now,
+                )?
+            {
+                return Ok(DecideOutcome::BadProof);
+            }
             let Some(current) = tx
                 .query_row("SELECT * FROM approvals WHERE id = ?1", [&id], raw_approval)
                 .optional()?
@@ -844,11 +1004,12 @@ impl Store {
                 "UPDATE notify_settings SET mute_all = mute_all OR ?1, imported_at = ?2 WHERE id = 1",
                 params![mute_all, now],
             )?;
+            let revision = bump(&tx)?;
             for name in &muted {
                 let n = tx.execute(
-                    "UPDATE sessions SET muted = 1, revision = revision + 1, updated_at = ?2
+                    "UPDATE sessions SET muted = 1, revision = ?3, updated_at = ?2
                      WHERE agent_name = ?1",
-                    params![name, now],
+                    params![name, now, revision],
                 )?;
                 if n == 0 {
                     tx.execute(
@@ -932,12 +1093,51 @@ impl Store {
     }
 }
 
+/// Moves the change counter on and returns its new value.
+fn bump(c: &rusqlite::Connection) -> Result<i64> {
+    Ok(c.query_row(
+        "UPDATE revisions SET value = value + 1 WHERE id = 1 RETURNING value",
+        [],
+        |r| r.get(0),
+    )?)
+}
+
+/// Queues a notification for every active device but `except`. A session's notification
+/// follows its mutes and mute-all; a repeated key is a no-op.
+fn queue(
+    c: &rusqlite::Connection,
+    dedupe_key: &str,
+    kind: OutboxKind,
+    session_id: Option<&str>,
+    approval_id: Option<&str>,
+    now: i64,
+    except: Option<&str>,
+) -> Result<()> {
+    let n = c.execute(
+        "INSERT INTO outbox (dedupe_key, kind, session_id, approval_id, created_at)
+         SELECT ?1, ?2, ?3, ?4, ?5
+         WHERE ?3 IS NULL OR (NOT EXISTS (SELECT 1 FROM sessions WHERE id = ?3 AND muted)
+         AND NOT (SELECT mute_all FROM notify_settings WHERE id = 1))
+         ON CONFLICT (dedupe_key) DO NOTHING",
+        params![dedupe_key, kind.as_str(), session_id, approval_id, now],
+    )?;
+    if n == 1 {
+        c.execute(
+            "INSERT INTO outbox_deliveries (outbox_id, device_id, state, next_attempt_at)
+             SELECT ?1, id, 'pending', ?2 FROM devices WHERE state = 'active' AND id IS NOT ?3",
+            params![c.last_insert_rowid(), now, except],
+        )?;
+    }
+    Ok(())
+}
+
 fn insert_session(c: &rusqlite::Connection, s: &SessionRecord) -> Result<()> {
+    let revision = bump(c)?.max(s.revision);
     c.execute(
         "INSERT INTO sessions (id, project_id, machine_id, agent, prompt_sha256, branch,
          worktree_path, workspace_id, pane_id, lifecycle, agent_status, revision,
-         created_at, updated_at, agent_name, muted, hook_failed, error)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+         created_at, updated_at, agent_name, muted, hook_failed, error, start_commit)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
         params![
             s.id,
             s.project_id,
@@ -950,13 +1150,14 @@ fn insert_session(c: &rusqlite::Connection, s: &SessionRecord) -> Result<()> {
             s.pane_id,
             s.lifecycle.as_str(),
             s.agent_status,
-            s.revision,
+            revision,
             s.created_at,
             s.updated_at,
             s.agent_name,
             s.muted,
             s.hook_failed,
-            s.error
+            s.error,
+            s.start_commit
         ],
     )?;
     Ok(())
@@ -1036,6 +1237,7 @@ fn raw_session(r: &Row<'_>) -> rusqlite::Result<RawSession> {
             muted: r.get("muted")?,
             hook_failed: r.get("hook_failed")?,
             error: r.get("error")?,
+            start_commit: r.get("start_commit")?,
         },
         r.get("lifecycle")?,
     ))
@@ -1094,6 +1296,7 @@ fn raw_approval(r: &Row<'_>) -> rusqlite::Result<RawApproval> {
             reason: r.get("reason")?,
             decided_at: r.get("decided_at")?,
             delivery: None,
+            number: r.get("number")?,
         },
         r.get("tool_input")?,
         r.get("outcome")?,

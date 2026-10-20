@@ -23,6 +23,7 @@ fn session(id: &str, created_at: i64) -> SessionRecord {
         muted: false,
         hook_failed: false,
         error: None,
+        start_commit: None,
     }
 }
 
@@ -38,6 +39,7 @@ fn approval(id: &str, deadline: i64) -> ApprovalRecord {
         reason: None,
         decided_at: None,
         delivery: None,
+        number: None,
     }
 }
 
@@ -315,6 +317,34 @@ async fn expire_and_deny_pending_sweep_only_undecided() {
     );
     let a3 = store.get_approval("a3").await.unwrap().unwrap();
     assert_eq!(a3.outcome, Some(Decision::Allow));
+}
+
+#[tokio::test]
+async fn approval_numbers_count_up_and_are_never_reused() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("hub.db");
+    let store = Store::open(&path).await.unwrap();
+    store.insert_session(session("s1", 1_000)).await.unwrap();
+    assert_eq!(store.create_approval(approval("a1", 100)).await.unwrap(), 1);
+    assert_eq!(store.create_approval(approval("a2", 100)).await.unwrap(), 2);
+    assert!(
+        store.create_approval(approval("a2", 100)).await.is_err(),
+        "same id twice"
+    );
+    store
+        .decide_approval("a1", Decision::Deny, None, 10)
+        .await
+        .unwrap();
+    drop(store);
+
+    let store = Store::open(&path).await.unwrap();
+    assert_eq!(store.create_approval(approval("a3", 100)).await.unwrap(), 3);
+    let one = store.get_approval_by_number(1).await.unwrap().unwrap();
+    assert_eq!(
+        (one.id.as_str(), one.number, one.outcome),
+        ("a1", Some(1), Some(Decision::Deny))
+    );
+    assert!(store.get_approval_by_number(9).await.unwrap().is_none());
 }
 
 #[tokio::test]
