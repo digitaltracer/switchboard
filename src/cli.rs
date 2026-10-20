@@ -3,7 +3,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
 
-use crate::{admin, hook, hub, runner, whatsapp};
+use crate::{admin, hook, hub, runner};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -18,10 +18,13 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Run the hub (MCP server, runner endpoint, OAuth).
+    /// Run the hub (MCP server, runner endpoint, OAuth, and the WhatsApp bridge if configured).
     Hub {
         #[arg(long, env = "SWITCHBOARD_HUB_CONFIG", default_value = "hub.toml")]
         config: PathBuf,
+        /// Link WhatsApp with a pair code for this number instead of a QR code.
+        #[arg(long)]
+        whatsapp_pair_phone: Option<String>,
     },
     /// Run a runner that dials out to the hub and drives the local Herdr session.
     Runner {
@@ -38,18 +41,6 @@ pub enum Command {
         /// Append each hook invocation as a JSON line to this file.
         #[arg(long)]
         log: Option<PathBuf>,
-    },
-    /// Follow and prompt Herdr agents from WhatsApp, linked as a device on a separate number.
-    Whatsapp {
-        #[arg(
-            long,
-            env = "SWITCHBOARD_WHATSAPP_CONFIG",
-            default_value = "whatsapp.toml"
-        )]
-        config: PathBuf,
-        /// Link with a pair code for this number (the bridge's own) instead of a QR code.
-        #[arg(long)]
-        pair_phone: Option<String>,
     },
     /// Administrative commands.
     Admin {
@@ -85,11 +76,41 @@ pub enum AdminCommand {
     },
     /// Hash a consent passphrase read from stdin.
     HashPassphrase,
-    /// Mint a runner token and print it with its hash for hub.toml.
+    /// Mint a runner token into a new private file and print its hash for hub.toml.
     MintRunnerToken {
         #[arg(long)]
         machine: String,
+        /// Where the runner reads it (runner.toml's token_file); never overwritten.
+        #[arg(long)]
+        out: PathBuf,
     },
+    /// Print `[[projects]]` for every git repo under the given folders, for hub.toml.
+    ScanProjects {
+        /// The machine whose paths these are.
+        #[arg(long)]
+        machine: String,
+        #[arg(required = true)]
+        roots: Vec<PathBuf>,
+    },
+    /// Pair a phone: shows a single-use QR code, then asks you to confirm the phone's fingerprint.
+    PairDevice {
+        #[arg(long, env = "SWITCHBOARD_HUB_CONFIG", default_value = "hub.toml")]
+        config: PathBuf,
+    },
+    /// List paired devices.
+    ListDevices {
+        #[arg(long, env = "SWITCHBOARD_HUB_CONFIG", default_value = "hub.toml")]
+        config: PathBuf,
+    },
+    /// Revoke a paired device; its next request is refused.
+    RevokeDevice {
+        #[arg(long, env = "SWITCHBOARD_HUB_CONFIG", default_value = "hub.toml")]
+        config: PathBuf,
+        /// The device id from `list-devices`.
+        device: String,
+    },
+    /// Print the app API's OpenAPI spec, for `api/openapi.json`.
+    Openapi,
     /// Open the OAuth client registration window for ten minutes.
     OpenRegistration {
         #[arg(long, env = "SWITCHBOARD_HUB_CONFIG", default_value = "hub.toml")]
@@ -115,12 +136,12 @@ pub fn run() -> ExitCode {
         command => {
             init_tracing();
             let result = match command {
-                Command::Hub { config } => block_on(hub::run(config)),
+                Command::Hub {
+                    config,
+                    whatsapp_pair_phone,
+                } => block_on(hub::run(config, whatsapp_pair_phone)),
                 Command::Runner { config } => block_on(runner::run(config)),
                 Command::Admin { command } => admin::run(command),
-                Command::Whatsapp { config, pair_phone } => {
-                    block_on(whatsapp::run(config, pair_phone))
-                }
                 Command::Hook { .. } => unreachable!(),
             };
             match result {

@@ -1,11 +1,13 @@
 pub mod admin;
 pub mod agents;
+pub mod auth;
 pub mod cli;
 pub mod config;
 pub mod herdr;
 pub mod hook;
 pub mod hub;
 pub mod proto;
+pub mod push;
 pub mod redact;
 pub mod runner;
 pub mod store;

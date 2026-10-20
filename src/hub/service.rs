@@ -9,23 +9,26 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
 use super::runners::{Readiness, RunnerInfo, Runners};
 use crate::cli::Agent;
 use crate::config::{HubConfig, ProjectConfig};
-use crate::proto::{ErrorCode, Event, Frame, Hello, Op, OwnedSession, ProtoError};
-use crate::redact::{redact, redact_as};
+use crate::proto::{
+    AgentPromptOutcome, AgentSummary, ErrorCode, Event, Frame, Hello, Op, OwnedSession, ProtoError,
+};
+use crate::redact::{redact, redact_as, redact_str};
 use crate::runner::random_id;
 use crate::runner::sessions::agent_name;
 use crate::store::{
-    ApprovalRecord, Begin, DecideOutcome, Decision, Delivery, Lifecycle, NewOperation, OpState,
-    Operation, SessionPatch, SessionRecord, Store, StoreError,
+    ApprovalProof, ApprovalRecord, Begin, DecideOutcome, Decision, Delivery, Lifecycle,
+    NewOperation, OpState, Operation, SessionPatch, SessionRecord, Store, StoreError,
 };
 use crate::whatsapp::watchlist::WatchState;
 
+/// Where a start goes when neither the caller nor `hub.toml` names a machine.
 pub const DEFAULT_MACHINE: &str = "vps";
 /// Longest a runner start can take: worktree, agent launch, liveness, readiness and the prompt.
 pub const START_TIMEOUT: Duration = Duration::from_secs(240);
@@ -37,6 +40,8 @@ pub const DEADLINE_MARGIN: Duration = Duration::from_secs(5);
 pub const MAX_WAIT: Duration = Duration::from_secs(25);
 pub const MAX_READ_LINES: u32 = 500;
 pub const SWEEP_INTERVAL: Duration = Duration::from_secs(1);
+/// Visible-screen reads in flight at once, across every caller.
+pub const MAX_SCREEN_READS: usize = 4;
 const RECHECK_RETRY: Duration = Duration::from_secs(10);
 
 const KIND_START: &str = "session_start";
@@ -73,16 +78,70 @@ impl Clock {
     }
 }
 
-/// Who is calling, for the audit log: `mcp:<client>`, `whatsapp`, `admin`.
+/// The front door a caller came through; each has its own right to approve in `hub.toml`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Door {
+    /// In-process callers: tests and admin commands. Never a network front door.
+    Internal,
+    WhatsApp,
+    Xai,
+    ChatGpt,
+    App,
+}
+
+impl Door {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Door::Internal => "internal",
+            Door::WhatsApp => "whatsapp",
+            Door::Xai => "xai",
+            Door::ChatGpt => "chatgpt",
+            Door::App => "app",
+        }
+    }
+}
+
+/// Who is calling: the actor for the audit log, and the door that decides its rights.
 #[derive(Debug, Clone)]
 pub struct Caller {
     pub actor: String,
+    pub door: Door,
 }
 
 impl Caller {
+    /// An in-process caller with every right; front doors use their own constructor.
     pub fn new(actor: impl Into<String>) -> Self {
         Self {
             actor: actor.into(),
+            door: Door::Internal,
+        }
+    }
+
+    pub fn whatsapp() -> Self {
+        Self {
+            actor: "whatsapp".into(),
+            door: Door::WhatsApp,
+        }
+    }
+
+    pub fn xai() -> Self {
+        Self {
+            actor: "mcp:xai".into(),
+            door: Door::Xai,
+        }
+    }
+
+    pub fn chatgpt(client_id: &str) -> Self {
+        Self {
+            actor: format!("mcp:{client_id}"),
+            door: Door::ChatGpt,
+        }
+    }
+
+    pub fn app(device_id: &str) -> Self {
+        Self {
+            actor: format!("app:{device_id}"),
+            door: Door::App,
         }
     }
 }
@@ -103,10 +162,18 @@ pub enum HubError {
     UnknownSession(String),
     #[error("unknown approval {0:?} for this session")]
     UnknownApproval(String),
+    /// The caller's front door may deny but not approve.
+    #[error("approving is not allowed from {0}")]
+    ApproveNotAllowed(&'static str),
     #[error("session {id:?} is {lifecycle:?}")]
     NotRunning { id: String, lifecycle: Lifecycle },
     #[error("bad request: {0}")]
     BadRequest(String),
+    #[error("too many screen reads in flight; retry shortly")]
+    Busy,
+    /// A signed approval's challenge was unknown, used, expired or for another device or approval.
+    #[error("the approval challenge is invalid, used or expired")]
+    InvalidChallenge,
     #[error("request id {0:?} was already used for a different call")]
     RequestIdReused(String),
     /// The change may or may not have happened; the session reconciles when its runner is back.
@@ -134,8 +201,11 @@ impl HubError {
             HubError::Reconciling(_) => "reconciling".into(),
             HubError::UnknownSession(_) => "unknown_session".into(),
             HubError::UnknownApproval(_) => "unknown_approval".into(),
+            HubError::ApproveNotAllowed(_) => "approve_not_allowed".into(),
             HubError::NotRunning { .. } => "session_not_running".into(),
             HubError::BadRequest(_) => "bad_request".into(),
+            HubError::Busy => "busy".into(),
+            HubError::InvalidChallenge => "invalid_challenge".into(),
             HubError::RequestIdReused(_) => "request_id_reused".into(),
             HubError::OutcomeUnknown { .. } => "outcome_unknown".into(),
             HubError::Runner(e) => code_str(e.code),
@@ -178,7 +248,7 @@ pub struct StartRequest {
     /// Exact project id or alias from the allowlist.
     pub project_id: String,
     pub prompt: String,
-    /// Defaults to `vps`. Never rerouted.
+    /// Defaults to `hub.toml`'s `default_machine`, else `vps`. Never rerouted.
     pub machine_id: Option<String>,
     /// Defaults to the project's agent.
     pub agent: Option<Agent>,
@@ -247,6 +317,8 @@ pub struct MachineView {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ApprovalView {
     pub id: String,
+    /// Short number for chat replies such as `approve 7`.
+    pub number: Option<i64>,
     pub tool_name: String,
     pub tool_input: Value,
     pub created_at: i64,
@@ -274,6 +346,15 @@ pub struct SessionView {
     /// False when muted, or when mute-all is on.
     pub notifies: bool,
     pub pending_approvals: Vec<ApprovalView>,
+    /// The commit the worktree started from; none for sessions from before it was kept.
+    pub start_commit: Option<String>,
+}
+
+/// Every session, newest first, at one list revision.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SessionList {
+    pub revision: i64,
+    pub sessions: Vec<SessionView>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -335,16 +416,34 @@ pub struct NotifyResult {
     pub notifies: bool,
 }
 
+/// What the hub tells its front doors as it happens. Lagging receivers miss events.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HubEvent {
+    /// A named agent's status on a machine, from every sighting the runner reports.
+    AgentStatus {
+        machine_id: String,
+        agent_name: String,
+        agent_status: String,
+    },
+    /// A new permission request; the input is masked.
+    ApprovalRequested {
+        session_id: String,
+        approval: ApprovalView,
+    },
+}
+
 pub struct SessionService {
     cfg: Arc<HubConfig>,
     store: Store,
     pub(crate) runners: Runners,
     clock: Clock,
     changes: watch::Sender<u64>,
+    events: broadcast::Sender<HubEvent>,
     shutdown: watch::Sender<bool>,
     start_lock: tokio::sync::Mutex<()>,
     /// Per machine, starts whose outcome is unknown; that machine takes no new start until they resolve.
     unresolved: Mutex<HashMap<String, HashSet<String>>>,
+    screen_reads: tokio::sync::Semaphore,
 }
 
 impl SessionService {
@@ -355,9 +454,11 @@ impl SessionService {
             runners: Runners::default(),
             clock,
             changes: watch::channel(0).0,
+            events: broadcast::channel(1024).0,
             shutdown: watch::channel(false).0,
             start_lock: tokio::sync::Mutex::new(()),
             unresolved: Mutex::default(),
+            screen_reads: tokio::sync::Semaphore::new(MAX_SCREEN_READS),
         })
     }
 
@@ -373,8 +474,24 @@ impl SessionService {
         self.clock.now_ms()
     }
 
+    pub fn clock(&self) -> &Clock {
+        &self.clock
+    }
+
     pub fn readiness(&self, machine: &str) -> Readiness {
         self.runners.readiness(machine)
+    }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<HubEvent> {
+        self.events.subscribe()
+    }
+
+    /// The machine a start goes to when the caller names none.
+    pub fn default_machine(&self) -> &str {
+        self.cfg
+            .default_machine
+            .as_deref()
+            .unwrap_or(DEFAULT_MACHINE)
     }
 
     pub fn shutdown_signal(&self) -> watch::Receiver<bool> {
@@ -387,6 +504,26 @@ impl SessionService {
 
     fn changed(&self) {
         self.changes.send_modify(|v| *v += 1);
+    }
+
+    /// A change the session list shows that touches no session row.
+    async fn list_changed(&self) {
+        if let Err(e) = self.store.bump_revision().await {
+            tracing::warn!(error = %e, "recording a list change");
+        }
+        self.changed();
+    }
+
+    /// Whether this caller may approve, as opposed to deny. App approvals go through `decide_signed`.
+    fn may_approve(&self, caller: &Caller) -> bool {
+        let rights = &self.cfg.approve;
+        match caller.door {
+            Door::Internal => true,
+            Door::WhatsApp => rights.whatsapp,
+            Door::Xai => rights.xai,
+            Door::ChatGpt => rights.chatgpt,
+            Door::App => false,
+        }
     }
 
     async fn audit(
@@ -623,7 +760,7 @@ impl SessionService {
         let machine = req
             .machine_id
             .clone()
-            .unwrap_or_else(|| DEFAULT_MACHINE.to_owned());
+            .unwrap_or_else(|| self.default_machine().to_owned());
         if self.cfg.machine(&machine).is_none() {
             return Err(HubError::UnknownMachine(machine));
         }
@@ -696,6 +833,7 @@ impl SessionService {
             muted: !req.notify,
             hook_failed: false,
             error: None,
+            start_commit: None,
         };
         let op_id = rid
             .map(str::to_owned)
@@ -744,6 +882,7 @@ impl SessionService {
                             worktree_path: str_field("worktree_path"),
                             workspace_id: str_field("workspace_id"),
                             pane_id: str_field("pane_id"),
+                            start_commit: str_field("start_commit"),
                             ..Default::default()
                         },
                     )
@@ -906,6 +1045,37 @@ impl SessionService {
         })
     }
 
+    /// The session agent's visible screen, which shows any dialog. Untrusted text.
+    pub async fn read_screen(&self, session_id: &str) -> Result<ReadResult, HubError> {
+        let s = self.session(session_id).await?;
+        let agent = s
+            .agent_name
+            .ok_or_else(|| HubError::BadRequest("this session has no agent name".into()))?;
+        let Ok(_permit) = self.screen_reads.try_acquire() else {
+            return Err(HubError::Busy);
+        };
+        let op = Op::ReadAgent {
+            agent,
+            lines: 0,
+            visible: true,
+        };
+        let v = self
+            .runners
+            .call(&s.machine_id, op, CALL_TIMEOUT)
+            .await
+            .map_err(|e| runner_error(&s.machine_id, e))?;
+        Ok(ReadResult {
+            text: v
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            revision: None,
+            truncated: false,
+            untrusted: true,
+        })
+    }
+
     /// Answers a question dialog the runner recognised. Permission dialogs go through `decide`.
     pub async fn answer(
         self: &Arc<Self>,
@@ -951,7 +1121,107 @@ impl SessionService {
         Ok(v)
     }
 
+    // Any named agent, reached through its machine's runner. Agents Switchboard didn't create
+    // have no hooks, so they never get approvals.
+
+    fn known_machine(&self, machine: &str) -> Result<(), HubError> {
+        match self.cfg.machine(machine) {
+            Some(_) => Ok(()),
+            None => Err(HubError::UnknownMachine(machine.to_owned())),
+        }
+    }
+
+    /// Every named agent on `machine`, each with its session id if it is a Switchboard session.
+    pub async fn agents(&self, machine: &str) -> Result<Vec<AgentSummary>, HubError> {
+        self.known_machine(machine)?;
+        let v = self
+            .runners
+            .call(machine, Op::Agents, CALL_TIMEOUT)
+            .await
+            .map_err(|e| runner_error(machine, e))?;
+        serde_json::from_value(v)
+            .map_err(|e| HubError::BadRequest(format!("runner agent list: {e}")))
+    }
+
+    /// A named agent's last `lines`, or its visible screen. Untrusted text.
+    pub async fn read_agent(
+        &self,
+        machine: &str,
+        agent: &str,
+        lines: u32,
+        visible: bool,
+    ) -> Result<ReadResult, HubError> {
+        self.known_machine(machine)?;
+        let op = Op::ReadAgent {
+            agent: agent.to_owned(),
+            lines: lines.min(MAX_READ_LINES),
+            visible,
+        };
+        let v = self
+            .runners
+            .call(machine, op, CALL_TIMEOUT)
+            .await
+            .map_err(|e| runner_error(machine, e))?;
+        Ok(ReadResult {
+            text: v
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            revision: None,
+            truncated: false,
+            untrusted: true,
+        })
+    }
+
+    /// Prompts an agent Switchboard didn't create; Herdr refuses while it sits at a dialog.
+    pub async fn prompt_agent(
+        &self,
+        caller: &Caller,
+        machine: &str,
+        agent: &str,
+        text: &str,
+    ) -> Result<AgentPromptOutcome, HubError> {
+        self.known_machine(machine)?;
+        if text.trim().is_empty() {
+            return Err(HubError::BadRequest("prompt is empty".into()));
+        }
+        self.audit(
+            &caller.actor,
+            None,
+            "agent_prompt",
+            json!({ "machine_id": machine, "agent": agent, "text": text }),
+        )
+        .await?;
+        let op = Op::PromptAgent {
+            agent: agent.to_owned(),
+            text: text.to_owned(),
+        };
+        let v = self
+            .runners
+            .call(machine, op, CALL_TIMEOUT)
+            .await
+            .map_err(|e| runner_error(machine, e))?;
+        serde_json::from_value(v).map_err(|e| HubError::BadRequest(format!("runner prompt: {e}")))
+    }
+
     // Approvals.
+
+    /// Decides the approval with this short number. A used or expired number returns its
+    /// recorded outcome; nothing is sent again.
+    pub async fn decide_number(
+        self: &Arc<Self>,
+        caller: &Caller,
+        number: i64,
+        allow: bool,
+    ) -> Result<DecideResult, HubError> {
+        let a = self
+            .store
+            .get_approval_by_number(number)
+            .await?
+            .ok_or_else(|| HubError::UnknownApproval(number.to_string()))?;
+        self.decide(caller, &a.session_id, &a.id, allow, None).await
+    }
 
     pub async fn decide(
         self: &Arc<Self>,
@@ -960,6 +1230,46 @@ impl SessionService {
         approval_id: &str,
         allow: bool,
         request_id: Option<&str>,
+    ) -> Result<DecideResult, HubError> {
+        if allow && !self.may_approve(caller) {
+            return Err(HubError::ApproveNotAllowed(caller.door.as_str()));
+        }
+        self.decide_with(caller, session_id, approval_id, allow, request_id, None)
+            .await
+    }
+
+    /// An app approval with a verified device signature. The decision uses the signed nonce in
+    /// the same transaction, so a replayed or revoked one records nothing.
+    pub async fn decide_signed(
+        self: &Arc<Self>,
+        caller: &Caller,
+        session_id: &str,
+        approval_id: &str,
+        proof: ApprovalProof,
+        request_id: Option<&str>,
+    ) -> Result<DecideResult, HubError> {
+        if caller.door != Door::App || !self.cfg.approve.app {
+            return Err(HubError::ApproveNotAllowed(caller.door.as_str()));
+        }
+        self.decide_with(
+            caller,
+            session_id,
+            approval_id,
+            true,
+            request_id,
+            Some(proof),
+        )
+        .await
+    }
+
+    async fn decide_with(
+        self: &Arc<Self>,
+        caller: &Caller,
+        session_id: &str,
+        approval_id: &str,
+        allow: bool,
+        request_id: Option<&str>,
+        proof: Option<ApprovalProof>,
     ) -> Result<DecideResult, HubError> {
         let fp = fingerprint(&json!({
             "session_id": session_id, "approval_id": approval_id, "allow": allow,
@@ -999,11 +1309,16 @@ impl SessionService {
         );
         let outcome = self
             .store
-            .decide_approval(approval_id, decision, Some(&reason), self.now())
+            .decide_approval_proved(approval_id, decision, Some(&reason), self.now(), proof)
             .await?;
         let result = match outcome {
             DecideOutcome::NotFound => {
                 return Err(HubError::UnknownApproval(approval_id.to_owned()));
+            }
+            DecideOutcome::BadProof => {
+                // Nothing was decided, so a retry with a fresh challenge may use the same request id.
+                self.store.delete_operation(&op_id).await?;
+                return Err(HubError::InvalidChallenge);
             }
             DecideOutcome::AlreadyDecided { .. } => {
                 DecideResult::of(&approval_now(self, approval_id).await?, true)
@@ -1264,6 +1579,7 @@ impl SessionService {
             pending_approvals: pending
                 .into_iter()
                 .map(|a| ApprovalView {
+                    number: a.number,
                     id: a.id,
                     tool_name: a.tool_name,
                     tool_input: a.tool_input,
@@ -1286,6 +1602,7 @@ impl SessionService {
             created_at: s.created_at,
             updated_at: s.updated_at,
             muted: s.muted,
+            start_commit: s.start_commit,
         })
     }
 
@@ -1312,12 +1629,48 @@ impl SessionService {
         }
     }
 
+    pub async fn session_by_agent(&self, agent: &str) -> Result<Option<SessionView>, HubError> {
+        match self.store.get_session_by_agent_name(agent).await? {
+            Some(s) => Ok(Some(self.view(s).await?)),
+            None => Ok(None),
+        }
+    }
+
     pub async fn list(&self) -> Result<Vec<SessionView>, HubError> {
         let mut out = Vec::new();
         for s in self.store.list_sessions().await? {
             out.push(self.view(s).await?);
         }
         Ok(out)
+    }
+
+    /// Every session. With `after_revision`, waits up to `wait` (capped at 25 s) for a newer list.
+    pub async fn list_wait(
+        &self,
+        after_revision: Option<i64>,
+        wait: Duration,
+    ) -> Result<SessionList, HubError> {
+        let mut changes = self.changes.subscribe();
+        let deadline = Instant::now() + wait.min(MAX_WAIT);
+        loop {
+            // Read the revision first, so a change during the read shows up as a newer one.
+            let revision = self.store.revision().await?;
+            if after_revision.is_none_or(|r| revision > r) || Instant::now() >= deadline {
+                return Ok(SessionList {
+                    revision,
+                    sessions: self.list().await?,
+                });
+            }
+            if !matches!(
+                tokio::time::timeout_at(deadline, changes.changed()).await,
+                Ok(Ok(()))
+            ) {
+                return Ok(SessionList {
+                    revision: self.store.revision().await?,
+                    sessions: self.list().await?,
+                });
+            }
+        }
     }
 
     // Notification mutes, shared with the WhatsApp bridge.
@@ -1392,7 +1745,7 @@ impl SessionService {
             json!({ "mute_all": mute_all }),
         )
         .await?;
-        self.changed();
+        self.list_changed().await;
         self.notify_state().await
     }
 
@@ -1511,7 +1864,7 @@ impl SessionService {
             // Starts stay refused until the next connection reconciles.
             Err(e) => tracing::error!(error = %e, machine, "reconciling runner hello failed"),
         }
-        self.changed();
+        self.list_changed().await;
         (generation, rx)
     }
 
@@ -1538,7 +1891,7 @@ impl SessionService {
         if let Err(e) = result.await {
             tracing::error!(error = %e, machine, "handling runner loss");
         }
-        self.changed();
+        self.list_changed().await;
     }
 
     pub async fn runner_frame(self: &Arc<Self>, machine: &str, generation: u64, frame: Frame) {
@@ -1793,6 +2146,7 @@ impl SessionService {
                     self.patch(
                         &s.id,
                         SessionPatch {
+                            finished: finished_turn(&s, &agent_status),
                             agent_status: Some(agent_status),
                             ..Default::default()
                         },
@@ -1849,12 +2203,16 @@ impl SessionService {
                         reason: None,
                         decided_at: None,
                         delivery: None,
+                        number: None,
                     })
                     .await;
-                if let Err(e) = created {
-                    tracing::warn!(error = %e, approval_id, "ignoring a repeated approval request");
-                    return Ok(());
-                }
+                let number = match created {
+                    Ok(n) => n,
+                    Err(e) => {
+                        tracing::warn!(error = %e, approval_id, "ignoring a repeated approval request");
+                        return Ok(());
+                    }
+                };
                 self.audit(
                     &actor,
                     Some(&session_id),
@@ -1864,6 +2222,17 @@ impl SessionService {
                 )
                 .await?;
                 self.patch(&session_id, SessionPatch::default()).await?;
+                let _ = self.events.send(HubEvent::ApprovalRequested {
+                    session_id,
+                    approval: ApprovalView {
+                        id: approval_id,
+                        number: Some(number),
+                        tool_name: redact_str(&tool_name),
+                        tool_input: redact(&tool_input),
+                        created_at: now,
+                        deadline,
+                    },
+                });
             }
             Event::ApprovalClosed {
                 session_id,
@@ -1964,10 +2333,21 @@ impl SessionService {
                     &s.id,
                     SessionPatch {
                         lifecycle: Some(lifecycle),
+                        finished: lifecycle == Lifecycle::Exited,
                         ..Default::default()
                     },
                 )
                 .await?;
+            }
+            Event::NamedAgentStatus {
+                agent_name,
+                agent_status,
+            } => {
+                let _ = self.events.send(HubEvent::AgentStatus {
+                    machine_id: machine.to_owned(),
+                    agent_name,
+                    agent_status,
+                });
             }
             Event::Resynced { sessions } => {
                 for o in sessions {
@@ -1977,6 +2357,7 @@ impl SessionService {
                         self.patch(
                             &s.id,
                             SessionPatch {
+                                finished: finished_turn(&s, &o.agent_status),
                                 agent_status: Some(o.agent_status),
                                 hook_failed: Some(o.hook_failed),
                                 ..Default::default()
@@ -2032,6 +2413,13 @@ impl SessionService {
         }
         Ok(())
     }
+}
+
+/// A running agent that was working, or waiting at a dialog, and is now idle or done.
+fn finished_turn(s: &SessionRecord, new_status: &str) -> bool {
+    s.lifecycle == Lifecycle::Running
+        && matches!(s.agent_status.as_str(), "working" | "blocked")
+        && matches!(new_status, "idle" | "done")
 }
 
 fn runner_error(machine: &str, e: ProtoError) -> HubError {

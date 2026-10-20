@@ -1,0 +1,1889 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Switchboard app API",
+    "description": "REST and long-polls for the Switchboard phone apps. Approvals need a device signature; denials need only a device token.",
+    "license": {
+      "name": ""
+    },
+    "version": "1"
+  },
+  "paths": {
+    "/app/v1/meta": {
+      "get": {
+        "tags": [
+          "meta"
+        ],
+        "operationId": "get_meta",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Meta"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/app/v1/pair": {
+      "post": {
+        "tags": [
+          "pairing"
+        ],
+        "operationId": "pair",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PairRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PairResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/app/v1/pair/{device_id}": {
+      "get": {
+        "tags": [
+          "pairing"
+        ],
+        "operationId": "pair_status",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "wait_ms",
+            "in": "query",
+            "description": "How long to wait while the device is still pending, capped at `max_wait_ms`.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PairStatus"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/app/v1/auth/challenge": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "token_challenge",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TokenChallengeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Challenge"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/app/v1/auth/token": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "issue_token",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TokenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/app/v1/projects": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "operationId": "list_projects",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Project"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or expired device token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
+    "/app/v1/machines": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "operationId": "list_machines",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Machine"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or expired device token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
+    "/app/v1/sessions": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "operationId": "list_sessions",
+        "parameters": [
+          {
+            "name": "after_revision",
+            "in": "query",
+            "description": "Return as soon as something is newer than this revision.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "wait_ms",
+            "in": "query",
+            "description": "How long to wait for a change, capped at `max_wait_ms`.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Sessions"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or expired device token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "sessions"
+        ],
+        "operationId": "start_session",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StartResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Machine offline or reconciling",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Outcome unknown",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
+    "/app/v1/operations/{request_id}": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "operationId": "get_operation",
+        "parameters": [
+          {
+            "name": "request_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationStatus"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
+    "/app/v1/sessions/{id}": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "operationId": "get_session",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "after_revision",
+            "in": "query",
+            "description": "Return as soon as something is newer than this revision.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "wait_ms",
+            "in": "query",
+            "description": "How long to wait for a change, capped at `max_wait_ms`.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Session"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
+    "/app/v1/sessions/{id}/output": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "operationId": "get_output",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "lines",
+            "in": "query",
+            "description": "Lines of output; defaults to 80, capped at 500.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Output"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Machine offline or reconciling",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
+    "/app/v1/sessions/{id}/prompt": {
+      "post": {
+        "tags": [
+          "sessions"
+        ],
+        "operationId": "prompt_session",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PromptRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PromptResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
+    "/app/v1/sessions/{id}/stop": {
+      "post": {
+        "tags": [
+          "sessions"
+        ],
+        "operationId": "stop_session",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StopRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StopResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
+    "/app/v1/sessions/{id}/mute": {
+      "put": {
+        "tags": [
+          "sessions"
+        ],
+        "operationId": "mute_session",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MuteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MuteResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
+    "/app/v1/approvals/{id}/challenge": {
+      "post": {
+        "tags": [
+          "approvals"
+        ],
+        "operationId": "approval_challenge",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovalChallenge"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
+    "/app/v1/approvals/{id}/decision": {
+      "post": {
+        "tags": [
+          "approvals"
+        ],
+        "operationId": "decide_approval",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecisionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
+    "/app/v1/devices": {
+      "get": {
+        "tags": [
+          "devices"
+        ],
+        "operationId": "list_devices",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Device"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or expired device token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
+    "/app/v1/devices/{id}": {
+      "delete": {
+        "tags": [
+          "devices"
+        ],
+        "operationId": "revoke_device",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Done"
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
+    "/app/v1/devices/self/push": {
+      "put": {
+        "tags": [
+          "devices"
+        ],
+        "operationId": "set_push_token",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PushTokenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Done"
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ApiError": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorBody"
+          }
+        }
+      },
+      "Approval": {
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "tool_name",
+          "input_text",
+          "questions",
+          "created_at",
+          "deadline"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "description": "`permission`, `question` (Claude's AskUserQuestion) or `plan` (plan approval). Questions\nand plans can't be answered from the app yet: approving one leaves the agent at a dialog."
+          },
+          "tool_name": {
+            "type": "string"
+          },
+          "input_text": {
+            "type": "string",
+            "description": "The masked tool input as text: a shell command, or the input as JSON."
+          },
+          "questions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "For a question, each question's text."
+          },
+          "plan": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For a plan, the plan."
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "deadline": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix milliseconds; unanswered by then means denied."
+          }
+        }
+      },
+      "ApprovalChallenge": {
+        "type": "object",
+        "required": [
+          "nonce",
+          "expires_at",
+          "message_version",
+          "hub_id",
+          "device_id",
+          "approval_id"
+        ],
+        "properties": {
+          "nonce": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "message_version": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "hub_id": {
+            "type": "string"
+          },
+          "device_id": {
+            "type": "string"
+          },
+          "approval_id": {
+            "type": "string"
+          }
+        }
+      },
+      "Challenge": {
+        "type": "object",
+        "required": [
+          "nonce",
+          "expires_at",
+          "message_version",
+          "hub_id",
+          "device_id"
+        ],
+        "properties": {
+          "nonce": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix milliseconds; part of the signed message."
+          },
+          "message_version": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "hub_id": {
+            "type": "string"
+          },
+          "device_id": {
+            "type": "string"
+          }
+        }
+      },
+      "DecisionKind": {
+        "type": "string",
+        "enum": [
+          "allow",
+          "deny"
+        ]
+      },
+      "DecisionRequest": {
+        "type": "object",
+        "required": [
+          "decision"
+        ],
+        "properties": {
+          "decision": {
+            "$ref": "#/components/schemas/DecisionKind"
+          },
+          "nonce": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Required to allow: the nonce from the approval's challenge."
+          },
+          "signature": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Required to allow: DER ECDSA P-256 over SHA-256 of the approval message, base64url,\nmade with the approval key. The message is `switchboard-approval-v1`, then `hub=`,\n`device=`, `approval=`, `decision=allow`, `nonce=`, `expires=` lines, joined by `\\n`."
+          },
+          "message_version": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "request_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "DecisionResponse": {
+        "type": "object",
+        "required": [
+          "session_id",
+          "approval_id",
+          "outcome",
+          "replayed"
+        ],
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "approval_id": {
+            "type": "string"
+          },
+          "outcome": {
+            "type": "string",
+            "description": "The recorded outcome, `allow` or `deny`. An allow that never reached the agent is a deny."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "delivery": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`delivered`, `not_delivered` or `unknown` (an allow may have run)."
+          },
+          "replayed": {
+            "type": "boolean",
+            "description": "Already decided; nothing was sent again."
+          }
+        }
+      },
+      "Device": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "state",
+          "fingerprint",
+          "created_at",
+          "this_device",
+          "push_enabled"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "description": "`pending`, `active`, `rejected` or `revoked`."
+          },
+          "fingerprint": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "last_seen_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "this_device": {
+            "type": "boolean",
+            "description": "The device making this request."
+          },
+          "push_enabled": {
+            "type": "boolean"
+          }
+        }
+      },
+      "ErrorBody": {
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Stable code, e.g. `outcome_unknown`, `approve_not_allowed`, `invalid_token`."
+          },
+          "message": {
+            "type": "string"
+          },
+          "operation_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Set with `outcome_unknown`: look the request up later by its request id."
+          },
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "Machine": {
+        "type": "object",
+        "required": [
+          "id",
+          "status",
+          "default"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "description": "`offline`, `reconciling` or `ready`."
+          },
+          "default": {
+            "type": "boolean"
+          }
+        }
+      },
+      "Meta": {
+        "type": "object",
+        "required": [
+          "api_version",
+          "hub_id",
+          "min_client_build",
+          "message_version",
+          "max_wait_ms"
+        ],
+        "properties": {
+          "api_version": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "hub_id": {
+            "type": "string"
+          },
+          "min_client_build": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The oldest app build this hub still serves; older builds should ask to be updated.",
+            "minimum": 0
+          },
+          "message_version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The signed message version the hub accepts.",
+            "minimum": 0
+          },
+          "max_wait_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The longest long-poll wait the hub honours.",
+            "minimum": 0
+          }
+        }
+      },
+      "MuteRequest": {
+        "type": "object",
+        "required": [
+          "muted"
+        ],
+        "properties": {
+          "muted": {
+            "type": "boolean"
+          }
+        }
+      },
+      "MuteResponse": {
+        "type": "object",
+        "required": [
+          "muted",
+          "notifies"
+        ],
+        "properties": {
+          "muted": {
+            "type": "boolean"
+          },
+          "notifies": {
+            "type": "boolean"
+          }
+        }
+      },
+      "OperationStatus": {
+        "type": "object",
+        "required": [
+          "request_id",
+          "kind",
+          "state"
+        ],
+        "properties": {
+          "request_id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "description": "e.g. `session_start`."
+          },
+          "state": {
+            "type": "string",
+            "description": "`pending`, `done`, `failed` or `outcome_unknown` (the hub is reconciling)."
+          },
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error_message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "Output": {
+        "type": "object",
+        "required": [
+          "text",
+          "truncated"
+        ],
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "The agent's terminal text, masked. Untrusted: it's the agent's, not Switchboard's."
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        }
+      },
+      "PairRequest": {
+        "type": "object",
+        "required": [
+          "code",
+          "name",
+          "auth_key",
+          "approval_key"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "The single-use code from `switchboard admin pair-device`."
+          },
+          "name": {
+            "type": "string",
+            "description": "Shown in the devices list, e.g. \"Adarsh's iPhone\"."
+          },
+          "auth_key": {
+            "type": "string",
+            "description": "P-256 public key, SEC1 uncompressed, base64url without padding. Signs token challenges."
+          },
+          "approval_key": {
+            "type": "string",
+            "description": "Same encoding. Signs approvals; the phone keeps it behind Face ID or the passcode."
+          },
+          "client_build": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          }
+        }
+      },
+      "PairResponse": {
+        "type": "object",
+        "required": [
+          "device_id",
+          "fingerprint",
+          "hub_id",
+          "state"
+        ],
+        "properties": {
+          "device_id": {
+            "type": "string"
+          },
+          "fingerprint": {
+            "type": "string",
+            "description": "Show this; the admin confirms the terminal shows the same."
+          },
+          "hub_id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "description": "`pending` until the admin confirms."
+          }
+        }
+      },
+      "PairStatus": {
+        "type": "object",
+        "required": [
+          "state"
+        ],
+        "properties": {
+          "state": {
+            "type": "string",
+            "description": "`pending`, `active`, `rejected` or `revoked`."
+          }
+        }
+      },
+      "Project": {
+        "type": "object",
+        "required": [
+          "id",
+          "aliases",
+          "description",
+          "default_agent",
+          "machines"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "aliases": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "description": {
+            "type": "string"
+          },
+          "default_agent": {
+            "type": "string",
+            "description": "`claude` or `codex`."
+          },
+          "machines": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "PromptRequest": {
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "PromptResponse": {
+        "type": "object",
+        "properties": {
+          "agent_status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "PushEnvironment": {
+        "type": "string",
+        "enum": [
+          "sandbox",
+          "production"
+        ]
+      },
+      "PushTokenRequest": {
+        "type": "object",
+        "required": [
+          "environment"
+        ],
+        "properties": {
+          "token": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The APNs device token as hex; null turns push off for this device."
+          },
+          "environment": {
+            "$ref": "#/components/schemas/PushEnvironment"
+          }
+        }
+      },
+      "Session": {
+        "type": "object",
+        "required": [
+          "id",
+          "label",
+          "project_id",
+          "machine_id",
+          "machine_status",
+          "agent",
+          "lifecycle",
+          "agent_status",
+          "hook_failed",
+          "revision",
+          "created_at",
+          "updated_at",
+          "muted",
+          "notifies",
+          "pending_approvals"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string",
+            "description": "Project plus the first four characters of the id, as WhatsApp shows it."
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "machine_id": {
+            "type": "string"
+          },
+          "machine_status": {
+            "type": "string",
+            "description": "`offline`, `reconciling` or `ready`."
+          },
+          "agent": {
+            "type": "string",
+            "description": "`claude` or `codex`."
+          },
+          "agent_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "branch": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lifecycle": {
+            "type": "string",
+            "description": "`starting`, `running`, `stopping`, `stopped`, `exited` or `failed`."
+          },
+          "agent_status": {
+            "type": "string",
+            "description": "Herdr's view: `idle`, `working`, `blocked`, `done` or `unknown`."
+          },
+          "hook_failed": {
+            "type": "boolean",
+            "description": "Stuck at a dialog the runner won't answer; answer it in Herdr."
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "updated_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "muted": {
+            "type": "boolean"
+          },
+          "notifies": {
+            "type": "boolean",
+            "description": "False when muted or when mute-all is on."
+          },
+          "start_commit": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pending_approvals": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Approval"
+            }
+          }
+        }
+      },
+      "Sessions": {
+        "type": "object",
+        "required": [
+          "revision",
+          "sessions"
+        ],
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Pass back as `after_revision` to wait for the next change."
+          },
+          "sessions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Session"
+            }
+          }
+        }
+      },
+      "StartRequest": {
+        "type": "object",
+        "required": [
+          "project_id",
+          "prompt",
+          "request_id"
+        ],
+        "properties": {
+          "project_id": {
+            "type": "string"
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "machine_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Defaults to the hub's default machine."
+          },
+          "agent": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`claude` or `codex`; defaults to the project's agent."
+          },
+          "notify": {
+            "type": "boolean"
+          },
+          "request_id": {
+            "type": "string",
+            "description": "Required: a lost response can be looked up, or retried, by this id."
+          }
+        }
+      },
+      "StartResponse": {
+        "type": "object",
+        "required": [
+          "session_id",
+          "label",
+          "project_id",
+          "machine_id",
+          "agent",
+          "muted",
+          "outcome",
+          "operation_id"
+        ],
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "machine_id": {
+            "type": "string"
+          },
+          "agent": {
+            "type": "string"
+          },
+          "branch": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "muted": {
+            "type": "boolean"
+          },
+          "outcome": {
+            "type": "string",
+            "description": "`started`; `deduplicated` when the same start ran in the last minute (\"already running\");\n`replayed` for a retried request id; `reconciled` when a lost reply was settled."
+          },
+          "operation_id": {
+            "type": "string"
+          }
+        }
+      },
+      "StopRequest": {
+        "type": "object",
+        "properties": {
+          "remove_worktree_if_clean": {
+            "type": "boolean",
+            "description": "Removes the worktree only if it is clean and merged."
+          }
+        }
+      },
+      "StopResponse": {
+        "type": "object",
+        "required": [
+          "worktree_removed",
+          "already_stopped"
+        ],
+        "properties": {
+          "worktree_removed": {
+            "type": "boolean"
+          },
+          "kept_because": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "already_stopped": {
+            "type": "boolean"
+          }
+        }
+      },
+      "TokenChallengeRequest": {
+        "type": "object",
+        "required": [
+          "device_id"
+        ],
+        "properties": {
+          "device_id": {
+            "type": "string"
+          }
+        }
+      },
+      "TokenRequest": {
+        "type": "object",
+        "required": [
+          "device_id",
+          "nonce",
+          "signature",
+          "message_version"
+        ],
+        "properties": {
+          "device_id": {
+            "type": "string"
+          },
+          "nonce": {
+            "type": "string"
+          },
+          "signature": {
+            "type": "string",
+            "description": "DER ECDSA P-256 over SHA-256 of the token message, base64url. The message is\n`switchboard-token-v1`, then `hub=`, `device=`, `nonce=`, `expires=` lines, joined by `\\n`."
+          },
+          "message_version": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "TokenResponse": {
+        "type": "object",
+        "required": [
+          "access_token",
+          "expires_at"
+        ],
+        "properties": {
+          "access_token": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "device_token": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  }
+}

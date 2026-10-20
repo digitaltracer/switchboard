@@ -1,0 +1,5 @@
+{
+  "message" : "switchboard-approval-v1\nhub=h1\ndevice=d1\napproval=a1\ndecision=allow\nnonce=n1\nexpires=42",
+  "public_key" : "BKl3AKaZqhyRmT-kBqtcNBCgLNKVvxbbSC_GIWtecRtMQ-7_5qwKmJTkpWLdDoHS4pbeI8BMgEUG1wMfE-0PYk4",
+  "signature" : "MEQCIBmUJKcag3B5Th6is-LN4hkxI_YMIxBDwSrdul3YBhzLAiAWfmWC0VvVB7YfYy8aVCmpG5CQdAVULDGCG1YuH9XIWg"
+}

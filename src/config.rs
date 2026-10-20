@@ -32,11 +32,145 @@ pub struct HubConfig {
     pub public_url: Url,
     pub listen: SocketAddr,
     pub database: PathBuf,
-    pub auth: AuthConfig,
+    /// OAuth for step 7's MCP endpoint; the hub doesn't need it until then.
+    pub auth: Option<AuthConfig>,
+    /// Where a session starts when the caller names no machine. Defaults to `vps`.
+    pub default_machine: Option<String>,
     #[serde(default)]
     pub machines: Vec<MachineConfig>,
     #[serde(default)]
     pub projects: Vec<ProjectConfig>,
+    /// Runs the WhatsApp bridge inside the hub.
+    pub whatsapp: Option<WhatsAppConfig>,
+    /// Which front doors may approve; every authenticated caller may deny.
+    #[serde(default)]
+    pub approve: ApproveRights,
+    /// Push notifications to paired phones. Without it nothing is sent; the outbox still fills.
+    pub push: Option<PushConfig>,
+}
+
+/// How push notifications leave the hub.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PushSenderKind {
+    /// Apple's push service, with a token-based key from your developer account.
+    Apns,
+    /// `xcrun simctl push` to a simulator on this Mac, for testing without Apple.
+    Simctl,
+    /// Logs what would be sent.
+    Log,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PushConfig {
+    pub sender: PushSenderKind,
+    /// The app's bundle id, the APNs topic.
+    pub bundle_id: String,
+    pub apns: Option<ApnsConfig>,
+    /// The simulator for `simctl`: a UDID or `booted`.
+    #[serde(default = "booted")]
+    pub simulator: String,
+}
+
+fn booted() -> String {
+    "booted".into()
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApnsConfig {
+    /// The `AuthKey_<key id>.p8` file from the developer portal; kept outside any repo.
+    pub key_file: PathBuf,
+    pub key_id: String,
+    pub team_id: String,
+}
+
+impl PushConfig {
+    fn validate(&self) -> Result<(), ConfigError> {
+        let id_ok = !self.bundle_id.is_empty()
+            && self.bundle_id.contains('.')
+            && self
+                .bundle_id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-');
+        if !id_ok {
+            return Err(invalid(format!(
+                "push.bundle_id {:?} is not a bundle id",
+                self.bundle_id
+            )));
+        }
+        match (&self.sender, &self.apns) {
+            (PushSenderKind::Apns, None) => {
+                return Err(invalid(
+                    "push.sender = \"apns\" needs a [push.apns] section",
+                ));
+            }
+            (_, Some(a)) => a.validate()?,
+            _ => {}
+        }
+        Ok(())
+    }
+}
+
+impl ApnsConfig {
+    fn validate(&self) -> Result<(), ConfigError> {
+        let ten = |s: &str| {
+            s.len() == 10
+                && s.chars()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+        };
+        if !ten(&self.key_id) {
+            return Err(invalid("push.apns.key_id must be the 10-character key id"));
+        }
+        if !ten(&self.team_id) {
+            return Err(invalid(
+                "push.apns.team_id must be the 10-character team id",
+            ));
+        }
+        if !self.key_file.is_absolute() {
+            return Err(invalid("push.apns.key_file must be an absolute path"));
+        }
+        if let Some(repo) = enclosing_git_tree(&self.key_file) {
+            return Err(invalid(format!(
+                "push.apns.key_file is inside the git working tree {}; keep the APNs key outside any repo",
+                repo.display()
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// The right to approve a permission request, per front door. Each defaults to allowed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApproveRights {
+    #[serde(default = "allowed")]
+    pub whatsapp: bool,
+    /// The static bearer token for the xAI API.
+    #[serde(default = "allowed")]
+    pub xai: bool,
+    /// The OAuth client, i.e. ChatGPT.
+    #[serde(default = "allowed")]
+    pub chatgpt: bool,
+    /// Paired phones; an app approval also needs the device's signature.
+    #[serde(default = "allowed")]
+    pub app: bool,
+}
+
+fn allowed() -> bool {
+    true
+}
+
+impl Default for ApproveRights {
+    fn default() -> Self {
+        Self {
+            whatsapp: true,
+            xai: true,
+            chatgpt: true,
+            app: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -93,7 +227,8 @@ pub struct RunnerConfig {
     pub machine_id: String,
     pub hub_url: Url,
     pub token_file: PathBuf,
-    pub herdr_session: String,
+    /// Overrides the Herdr server the `herdr` CLI would find from the environment.
+    pub herdr_session: Option<String>,
     /// Per-session hook settings and secrets live here, outside every worktree.
     pub state_dir: PathBuf,
     /// Claude Code's config, written to pre-trust repo roots. Defaults to `~/.claude.json`.
@@ -113,7 +248,10 @@ impl HubConfig {
     }
 
     pub fn parse(text: &str) -> Result<Self, ConfigError> {
-        let cfg: Self = toml::from_str(text)?;
+        let mut cfg: Self = toml::from_str(text)?;
+        if let Some(wa) = &mut cfg.whatsapp {
+            wa.normalize()?;
+        }
         cfg.validate()?;
         Ok(cfg)
     }
@@ -134,7 +272,15 @@ impl HubConfig {
         if !self.database.is_absolute() {
             return Err(invalid("database must be an absolute path"));
         }
-        self.auth.validate()?;
+        if let Some(auth) = &self.auth {
+            auth.validate()?;
+        }
+        if let Some(wa) = &self.whatsapp {
+            wa.validate()?;
+        }
+        if let Some(push) = &self.push {
+            push.validate()?;
+        }
 
         let mut machine_ids = HashSet::new();
         for m in &self.machines {
@@ -143,6 +289,13 @@ impl HubConfig {
                 return Err(invalid(format!("duplicate machine id {:?}", m.id)));
             }
             check_sha256_hex(&m.token_hash, &format!("machine {:?} token_hash", m.id))?;
+        }
+        if let Some(d) = &self.default_machine
+            && !machine_ids.contains(d.as_str())
+        {
+            return Err(invalid(format!(
+                "default_machine {d:?} is not a configured machine"
+            )));
         }
 
         let mut names = HashSet::new();
@@ -234,42 +387,46 @@ impl RunnerConfig {
         {
             return Err(invalid("claude_config must be an absolute path"));
         }
-        check_herdr_session(&self.herdr_session)
+        match &self.herdr_session {
+            Some(s) => check_herdr_session(s),
+            None => Ok(()),
+        }
     }
 }
 
-/// `switchboard whatsapp`: runs on the Mac against the local Herdr session.
+/// The hub's `[whatsapp]` section: the bridge, a second front door next to MCP.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WhatsAppConfig {
     /// Phone numbers allowed to use the bridge, in international format.
     pub allowed_senders: Vec<String>,
-    pub herdr_session: String,
     /// The linked-device credential. Kept outside any git working tree, mode 0600.
     pub store_path: PathBuf,
+    /// Link your own account and talk to the bridge in your "Message yourself" chat.
+    #[serde(default)]
+    pub self_chat: bool,
 }
 
 impl WhatsAppConfig {
-    pub fn load(path: &Path) -> Result<Self, ConfigError> {
-        Self::parse(&read(path)?)
-    }
-
-    pub fn parse(text: &str) -> Result<Self, ConfigError> {
-        let mut cfg: Self = toml::from_str(text)?;
-        cfg.allowed_senders = cfg
+    fn normalize(&mut self) -> Result<(), ConfigError> {
+        self.allowed_senders = self
             .allowed_senders
             .iter()
             .map(|n| phone_digits(n))
-            .collect::<Result<_, _>>()?;
-        cfg.validate()?;
-        Ok(cfg)
+            .collect::<Result<_, _>>()
+            .map_err(|e| invalid(format!("whatsapp.allowed_senders: {e}")))?;
+        Ok(())
     }
 
     fn validate(&self) -> Result<(), ConfigError> {
         if self.allowed_senders.is_empty() {
             return Err(invalid("allowed_senders must name at least one number"));
         }
-        check_herdr_session(&self.herdr_session)?;
+        if self.self_chat && self.allowed_senders.len() != 1 {
+            return Err(invalid(
+                "self_chat needs exactly one allowed sender: your own number, the account you link",
+            ));
+        }
         if !self.store_path.is_absolute() {
             return Err(invalid("store_path must be an absolute path"));
         }
@@ -413,7 +570,7 @@ mac = "/Users/me/switchboard"
         assert_eq!(p.default_agent, Agent::Claude);
         assert_eq!(p.repos.len(), 2);
         assert!(cfg.machine("mac").is_some());
-        assert_eq!(cfg.auth.access_token_ttl_secs, 3600);
+        assert_eq!(cfg.auth.unwrap().access_token_ttl_secs, 3600);
     }
 
     #[test]
@@ -470,56 +627,128 @@ vps = "/srv/sb"
         assert!(err(&text).contains("refresh_token_ttl_secs"));
     }
 
+    /// `hub.toml` with a `[whatsapp]` section built from `body`.
+    fn wa(body: &str) -> Result<HubConfig, ConfigError> {
+        HubConfig::parse(&hub_toml(&format!("\n[whatsapp]\n{body}")))
+    }
+
     #[test]
-    fn whatsapp_config() {
+    fn whatsapp_section() {
         let dir = tempfile::tempdir().unwrap();
         let store = dir.path().join("state/whatsapp.db");
         let ok = format!(
-            r#"
-allowed_senders = ["+44 7700 900123"]
-herdr_session = "switchboard"
-store_path = "{}"
-"#,
+            "allowed_senders = [\"+44 7700 900123\"]\nstore_path = \"{}\"\n",
             store.display()
         );
-        let cfg = WhatsAppConfig::parse(&ok).unwrap();
+        let cfg = wa(&ok).unwrap().whatsapp.unwrap();
         assert_eq!(cfg.allowed_senders, ["447700900123"]);
+        assert!(!cfg.self_chat, "self-chat mode is off unless asked for");
+        assert!(HubConfig::parse(&hub_toml("")).unwrap().whatsapp.is_none());
 
         let none = ok.replace(r#"["+44 7700 900123"]"#, "[]");
+        assert!(wa(&none).unwrap_err().to_string().contains("at least one"));
+        let placeholder = ok.replace("+44 7700 900123", "+<your own number, e.g. +919876543210>");
+        let err = wa(&placeholder).unwrap_err().to_string();
+        assert!(err.contains("whatsapp.allowed_senders"), "{err}");
+        // The Herdr session is the runner's business now, and the old watch list is gone.
+        for stale in ["herdr_session = \"switchboard\"", "watch = [\"reviewer\"]"] {
+            let err = wa(&format!("{ok}{stale}\n")).unwrap_err().to_string();
+            assert!(err.contains("unknown field"), "{err}");
+        }
         assert!(
-            WhatsAppConfig::parse(&none)
-                .unwrap_err()
-                .to_string()
-                .contains("at least one")
+            wa(&format!("{ok}self_chat = true\n"))
+                .unwrap()
+                .whatsapp
+                .unwrap()
+                .self_chat
         );
-        let bad_number = ok.replace("+44 7700 900123", "call me");
-        assert!(WhatsAppConfig::parse(&bad_number).is_err());
-        let old_watch_list = format!("{ok}watch = [\"reviewer\"]\n");
-        let err = WhatsAppConfig::parse(&old_watch_list)
+        let two = ok.replace(
+            r#"["+44 7700 900123"]"#,
+            r#"["+44 7700 900123", "+1 555 000 1111"]"#,
+        );
+        let err = wa(&format!("{two}self_chat = true\n"))
             .unwrap_err()
             .to_string();
-        assert!(err.contains("unknown field `watch`"), "{err}");
+        assert!(err.contains("exactly one allowed sender"), "{err}");
+        wa(&two).unwrap();
         let relative = ok.replace(&store.display().to_string(), "whatsapp.db");
-        assert!(WhatsAppConfig::parse(&relative).is_err());
-        let extra = format!("{ok}\ncolour = \"red\"\n");
-        assert!(
-            WhatsAppConfig::parse(&extra)
-                .unwrap_err()
-                .to_string()
-                .contains("unknown field")
-        );
+        assert!(wa(&relative).is_err());
     }
 
     #[test]
     fn whatsapp_store_inside_a_repo_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join(".git")).unwrap();
-        let text = format!(
-            "allowed_senders = [\"447700900123\"]\nherdr_session = \"s\"\nstore_path = \"{}\"\n",
+        let body = format!(
+            "allowed_senders = [\"447700900123\"]\nstore_path = \"{}\"\n",
             dir.path().join("sub/whatsapp.db").display()
         );
-        let err = WhatsAppConfig::parse(&text).unwrap_err().to_string();
+        let err = wa(&body).unwrap_err().to_string();
         assert!(err.contains("git working tree"), "{err}");
+    }
+
+    #[test]
+    fn approve_rights_default_to_allowed_and_each_can_be_turned_off() {
+        let all = HubConfig::parse(&hub_toml("")).unwrap().approve;
+        assert_eq!(all, ApproveRights::default());
+        assert!(all.whatsapp && all.xai && all.chatgpt && all.app);
+        let some = HubConfig::parse(&hub_toml("\n[approve]\nxai = false\nwhatsapp = false\n"))
+            .unwrap()
+            .approve;
+        assert_eq!(
+            (some.whatsapp, some.xai, some.chatgpt, some.app),
+            (false, false, true, true)
+        );
+        assert!(err(&hub_toml("\n[approve]\nmcp = false\n")).contains("unknown field"));
+    }
+
+    #[test]
+    fn push_section() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = dir.path().join("AuthKey_ABCDE12345.p8");
+        let apns = format!(
+            "\n[push]\nsender = \"apns\"\nbundle_id = \"dev.example.switchboard\"\n[push.apns]\nkey_file = \"{}\"\nkey_id = \"ABCDE12345\"\nteam_id = \"TEAM123456\"\n",
+            key.display()
+        );
+        let cfg = HubConfig::parse(&hub_toml(&apns)).unwrap().push.unwrap();
+        assert_eq!(
+            (cfg.sender, cfg.simulator.as_str()),
+            (PushSenderKind::Apns, "booted")
+        );
+        assert!(HubConfig::parse(&hub_toml("")).unwrap().push.is_none());
+        let sim = "\n[push]\nsender = \"simctl\"\nbundle_id = \"dev.example.switchboard\"\n";
+        assert_eq!(
+            HubConfig::parse(&hub_toml(sim))
+                .unwrap()
+                .push
+                .unwrap()
+                .sender,
+            PushSenderKind::Simctl
+        );
+        let missing = sim.replace("simctl", "apns");
+        assert!(err(&hub_toml(&missing)).contains("[push.apns]"));
+        assert!(err(&hub_toml(&apns.replace("ABCDE12345\"\n", "short\"\n"))).contains("key_id"));
+        assert!(
+            err(&hub_toml(&sim.replace("dev.example.switchboard", "nodots"))).contains("bundle id")
+        );
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+        assert!(err(&hub_toml(&apns)).contains("outside any repo"));
+    }
+
+    #[test]
+    fn default_machine_and_optional_auth() {
+        let text = hub_toml("").replace("listen =", "default_machine = \"mac\"\nlisten =");
+        assert_eq!(
+            HubConfig::parse(&text).unwrap().default_machine.as_deref(),
+            Some("mac")
+        );
+        let unknown = hub_toml("").replace("listen =", "default_machine = \"laptop\"\nlisten =");
+        assert!(err(&unknown).contains("default_machine"));
+        let no_auth = hub_toml("").replace(
+            "[auth]\npassphrase_hash = \"$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA\"\n",
+            "",
+        );
+        assert!(HubConfig::parse(&no_auth).unwrap().auth.is_none());
     }
 
     #[test]
@@ -544,5 +773,7 @@ state_dir = "/Users/me/.local/state/switchboard"
         assert!(RunnerConfig::parse(&rel).is_err());
         let bad_session = ok.replace("\"switchboard\"", "\"../x\"");
         assert!(RunnerConfig::parse(&bad_session).is_err());
+        let found = ok.replace("herdr_session = \"switchboard\"\n", "");
+        assert_eq!(RunnerConfig::parse(&found).unwrap().herdr_session, None);
     }
 }

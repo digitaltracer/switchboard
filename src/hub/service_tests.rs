@@ -10,6 +10,10 @@ use crate::proto::{Outcome, PROTOCOL_VERSION, Req, Resp};
 const T0: i64 = 1_700_000_000_000;
 
 fn config() -> HubConfig {
+    config_with("")
+}
+
+fn config_with(extra: &str) -> HubConfig {
     let vps = hash_token("vps-token");
     let mac = hash_token("mac-token");
     HubConfig::parse(&format!(
@@ -36,6 +40,7 @@ fn config() -> HubConfig {
         description = "only on the mac"
         repos = {{ mac = "/Users/me/maconly" }}
         default_agent = "codex"
+        {extra}
         "#
     ))
     .unwrap()
@@ -48,9 +53,13 @@ struct Rig {
 }
 
 async fn rig_with(store: Store) -> Rig {
+    rig_cfg(config(), store)
+}
+
+fn rig_cfg(cfg: HubConfig, store: Store) -> Rig {
     let clock = Clock::manual(T0);
     Rig {
-        svc: SessionService::new(config(), store, clock.clone()),
+        svc: SessionService::new(cfg, store, clock.clone()),
         clock,
         bot: Caller::new("mcp:test"),
     }
@@ -1352,5 +1361,565 @@ async fn a_token_in_a_command_or_terminal_output_never_reaches_callers_or_the_da
             !bytes_contain(&dir.path().join(file), TOKEN),
             "token stored in {file}"
         );
+    }
+}
+
+// App groundwork: approval rights, the list long-poll, the screen read, the outbox.
+
+#[tokio::test]
+async fn each_front_door_needs_its_right_to_approve_but_any_may_deny() {
+    let cfg = config_with("[approve]\nwhatsapp = false\nxai = false\nchatgpt = false\n");
+    let r = rig_cfg(cfg, Store::open_in_memory().await.unwrap());
+    let (mut vps, sid) = with_approval(&r).await;
+    for caller in [
+        Caller::whatsapp(),
+        Caller::xai(),
+        Caller::chatgpt("client-1"),
+        Caller::app("d1"),
+    ] {
+        let err = r
+            .svc
+            .decide(&caller, &sid, "a1", true, None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "approve_not_allowed", "{caller:?}");
+    }
+    let err = r
+        .svc
+        .decide_number(&Caller::whatsapp(), 1, true)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), "approve_not_allowed");
+    vps.no_req().await;
+    let s = r.svc.get(&sid, None, Duration::ZERO).await.unwrap();
+    assert_eq!(s.pending_approvals.len(), 1, "a refusal records nothing");
+
+    let (svc, sid2) = (r.svc.clone(), sid.clone());
+    let task =
+        tokio::spawn(async move { svc.decide(&Caller::xai(), &sid2, "a1", false, None).await });
+    let req = vps.req().await;
+    assert!(matches!(req.op, Op::Decide { allow: false, .. }));
+    vps.ok(req.id, json!({})).await;
+    assert_eq!(task.await.unwrap().unwrap().outcome, Decision::Deny);
+    let audit = r.svc.audit_log(Some(&sid), 50).await.unwrap();
+    assert!(
+        audit
+            .iter()
+            .any(|e| e.kind == "decision" && e.actor == "mcp:xai")
+    );
+}
+
+#[tokio::test]
+async fn bots_and_whatsapp_keep_the_right_by_default_and_unsigned_app_approvals_are_refused() {
+    let r = rig().await;
+    let (mut vps, sid) = with_approval(&r).await;
+    let err = r
+        .svc
+        .decide(&Caller::app("d1"), &sid, "a1", true, None)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), "approve_not_allowed");
+    let (svc, sid2) = (r.svc.clone(), sid.clone());
+    let task =
+        tokio::spawn(async move { svc.decide(&Caller::xai(), &sid2, "a1", true, None).await });
+    let req = vps.req().await;
+    assert!(matches!(req.op, Op::Decide { allow: true, .. }));
+    vps.ok(req.id, json!({})).await;
+    assert_eq!(task.await.unwrap().unwrap().outcome, Decision::Allow);
+    for caller in [Caller::whatsapp(), Caller::chatgpt("c")] {
+        assert!(r.svc.may_approve(&caller), "{caller:?}");
+    }
+}
+
+#[tokio::test]
+async fn the_session_list_long_polls_on_one_revision_and_misses_no_change() {
+    let r = rig().await;
+    let mut vps = connect(&r.svc, "vps", vec![]).await;
+    let sid = running(&r, &mut vps).await;
+    let first = r.svc.list_wait(None, Duration::ZERO).await.unwrap();
+    assert_eq!(first.sessions.len(), 1);
+    let same = r
+        .svc
+        .list_wait(Some(first.revision), Duration::from_millis(50))
+        .await
+        .unwrap();
+    assert_eq!(same.revision, first.revision, "nothing changed");
+
+    // A poller that only ever asks for "newer than what I have" ends on the last status.
+    let svc = r.svc.clone();
+    let poller = tokio::spawn(async move {
+        let mut rev = first.revision;
+        let mut seen = String::new();
+        while seen != "status-49" {
+            let l = svc
+                .list_wait(Some(rev), Duration::from_secs(5))
+                .await
+                .unwrap();
+            assert!(l.revision >= rev);
+            rev = l.revision;
+            seen = l.sessions[0].agent_status.clone();
+        }
+        rev
+    });
+    for i in 0..50 {
+        vps.event(Event::AgentStatus {
+            session_id: sid.clone(),
+            agent_status: format!("status-{i}"),
+            revision: 0,
+        })
+        .await;
+    }
+    let rev = tokio::time::timeout(Duration::from_secs(10), poller)
+        .await
+        .expect("the poller sees the last change")
+        .unwrap();
+    // The list is read just after its revision, so it may already hold a newer change: seen twice, never missed.
+    assert!(rev <= r.store_revision().await);
+
+    // A list-wide change with no session row, mute-all, also moves the list on.
+    let before = r.store_revision().await;
+    r.svc.set_mute_all(&r.bot, true).await.unwrap();
+    let l = r
+        .svc
+        .list_wait(Some(before), Duration::from_secs(1))
+        .await
+        .unwrap();
+    assert!(l.revision > before);
+    assert!(!l.sessions[0].notifies);
+}
+
+impl Rig {
+    async fn store_revision(&self) -> i64 {
+        self.svc.store().revision().await.unwrap()
+    }
+}
+
+#[tokio::test]
+async fn the_list_revision_survives_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("hub.db");
+    let r = rig_with(Store::open(&path).await.unwrap()).await;
+    let mut vps = connect(&r.svc, "vps", vec![]).await;
+    running(&r, &mut vps).await;
+    let before = r
+        .svc
+        .list_wait(None, Duration::ZERO)
+        .await
+        .unwrap()
+        .revision;
+    drop(vps);
+    drop(r);
+    let r = rig_with(Store::open(&path).await.unwrap()).await;
+    let after = r
+        .svc
+        .list_wait(None, Duration::ZERO)
+        .await
+        .unwrap()
+        .revision;
+    assert!(
+        after >= before,
+        "a client's old revision is never ahead of the hub"
+    );
+}
+
+#[tokio::test]
+async fn the_screen_read_forwards_to_the_runners_visible_read_and_is_masked() {
+    let r = rig().await;
+    let mut vps = connect(&r.svc, "vps", vec![]).await;
+    let sid = running(&r, &mut vps).await;
+    let (svc, s2) = (r.svc.clone(), sid.clone());
+    let task = tokio::spawn(async move { svc.read_screen(&s2).await });
+    let req = vps.req().await;
+    assert_eq!(
+        req.op,
+        Op::ReadAgent {
+            agent: agent_name(&sid),
+            lines: 0,
+            visible: true
+        }
+    );
+    vps.ok(
+        req.id,
+        json!({"text": "Run curl -H 'Authorization: Bearer abcdefghijklmnop'?", "untrusted": true}),
+    )
+    .await;
+    let screen = task.await.unwrap().unwrap();
+    assert!(screen.untrusted);
+    assert!(!screen.text.contains("abcdefghijklmnop"), "{}", screen.text);
+    assert_eq!(
+        r.svc.read_screen("nope").await.unwrap_err().code(),
+        "unknown_session"
+    );
+}
+
+#[tokio::test]
+async fn screen_reads_are_capped() {
+    let r = rig().await;
+    let mut vps = connect(&r.svc, "vps", vec![]).await;
+    let sid = running(&r, &mut vps).await;
+    let mut tasks = Vec::new();
+    for _ in 0..MAX_SCREEN_READS {
+        let (svc, s2) = (r.svc.clone(), sid.clone());
+        tasks.push(tokio::spawn(async move { svc.read_screen(&s2).await }));
+    }
+    let mut reqs = Vec::new();
+    for _ in 0..MAX_SCREEN_READS {
+        reqs.push(vps.req().await);
+    }
+    assert_eq!(r.svc.read_screen(&sid).await.unwrap_err().code(), "busy");
+    for req in reqs {
+        vps.ok(req.id, json!({"text": "x"})).await;
+    }
+    for t in tasks {
+        t.await.unwrap().unwrap();
+    }
+    let (svc, s2) = (r.svc.clone(), sid.clone());
+    let again = tokio::spawn(async move { svc.read_screen(&s2).await });
+    let req = vps.req().await;
+    vps.ok(req.id, json!({"text": "y"})).await;
+    assert_eq!(again.await.unwrap().unwrap().text, "y");
+}
+
+#[tokio::test]
+async fn the_start_records_the_runners_starting_commit() {
+    let r = rig().await;
+    let mut vps = connect(&r.svc, "vps", vec![]).await;
+    let task = spawn_start(&r, start_req("vps", "with a commit", None));
+    let req = vps.req().await;
+    let Op::StartSession {
+        session_id, branch, ..
+    } = req.op
+    else {
+        panic!("expected a start");
+    };
+    let sha = "0123456789abcdef0123456789abcdef01234567";
+    vps.ok(
+        req.id,
+        json!({"session_id": session_id, "branch": branch, "worktree_path": "/wt/x",
+               "workspace_id": "w2", "pane_id": "w2:p1", "start_commit": sha}),
+    )
+    .await;
+    task.await.unwrap().unwrap();
+    let s = r.svc.get(&session_id, None, Duration::ZERO).await.unwrap();
+    assert_eq!(s.start_commit.as_deref(), Some(sha));
+    let older = running(&r, &mut vps).await;
+    let s = r.svc.get(&older, None, Duration::ZERO).await.unwrap();
+    assert_eq!(
+        s.start_commit, None,
+        "a runner that sends none leaves it empty"
+    );
+}
+
+async fn outbox(r: &Rig) -> Vec<(crate::store::OutboxKind, String)> {
+    r.svc
+        .store()
+        .outbox_after(0, 100)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|e| (e.kind, e.dedupe_key))
+        .collect()
+}
+
+#[tokio::test]
+async fn approvals_and_finished_turns_are_queued_once_unless_muted() {
+    use crate::store::OutboxKind::{Approval, Finished};
+    let r = rig().await;
+    let (vps, sid) = with_approval(&r).await;
+    approval_requested(&vps, &sid, "a1", json!({"command": "touch x"})).await;
+    assert_eq!(outbox(&r).await, [(Approval, "approval:a1".to_owned())]);
+
+    let status = |s: &str| Event::AgentStatus {
+        session_id: sid.clone(),
+        agent_status: s.into(),
+        revision: 0,
+    };
+    vps.event(status("idle")).await;
+    assert_eq!(
+        outbox(&r).await.len(),
+        1,
+        "unknown to idle is not a finished turn"
+    );
+    vps.event(status("working")).await;
+    vps.event(status("idle")).await;
+    vps.event(status("done")).await;
+    let queued = outbox(&r).await;
+    assert_eq!(queued.len(), 2, "{queued:?}");
+    assert_eq!(queued[1].0, Finished);
+
+    r.svc.notify(&r.bot, &sid, true).await.unwrap();
+    vps.event(status("working")).await;
+    vps.event(status("idle")).await;
+    approval_requested(&vps, &sid, "a2", json!({"command": "ls"})).await;
+    assert_eq!(outbox(&r).await.len(), 2, "a muted session queues nothing");
+
+    r.svc.notify(&r.bot, &sid, false).await.unwrap();
+    r.svc.set_mute_all(&r.bot, true).await.unwrap();
+    approval_requested(&vps, &sid, "a3", json!({"command": "ls"})).await;
+    assert_eq!(outbox(&r).await.len(), 2, "mute-all queues nothing");
+    r.svc.set_mute_all(&r.bot, false).await.unwrap();
+    vps.event(Event::SessionExited {
+        session_id: sid.clone(),
+    })
+    .await;
+    assert_eq!(
+        outbox(&r).await.last().unwrap().0,
+        Finished,
+        "an exit is a finish"
+    );
+}
+
+// Signed app approvals.
+
+mod signed {
+    use super::*;
+    use crate::auth::device::tests::{Phone, paired};
+    use crate::auth::device::{CHALLENGE_TTL, Devices, MESSAGE_VERSION, approval_message};
+
+    struct App {
+        d: Devices,
+        hub: String,
+    }
+
+    async fn app(r: &Rig) -> App {
+        let d = Devices::new(r.svc.store().clone(), r.clock.clone());
+        let hub = d.hub_id().await.unwrap();
+        App { d, hub }
+    }
+
+    impl App {
+        /// A challenge for `approval`, signed by `signer` as `device` deciding `decision`.
+        async fn signed(
+            &self,
+            device: &str,
+            signer: &Phone,
+            approval: &str,
+            decision: &str,
+        ) -> (String, String) {
+            let ch = self.d.approval_challenge(device, approval).await.unwrap();
+            let msg = approval_message(
+                &self.hub,
+                device,
+                approval,
+                decision,
+                &ch.nonce,
+                ch.expires_at,
+            );
+            (ch.nonce, signer.approval.sign(&msg))
+        }
+
+        async fn proof(
+            &self,
+            device: &str,
+            approval: &str,
+            nonce: &str,
+            sig: &str,
+        ) -> Result<ApprovalProof, String> {
+            let dev = self.d.device(device).await.unwrap().unwrap();
+            self.d
+                .verify_approval(&dev, approval, nonce, sig, MESSAGE_VERSION)
+                .await
+                .map_err(|e| e.code().to_owned())
+        }
+    }
+
+    fn spawn_signed(
+        r: &Rig,
+        device: &str,
+        sid: &str,
+        proof: ApprovalProof,
+    ) -> JoinHandle<Result<DecideResult, HubError>> {
+        let (svc, caller, sid) = (r.svc.clone(), Caller::app(device), sid.to_owned());
+        tokio::spawn(async move { svc.decide_signed(&caller, &sid, "a1", proof, None).await })
+    }
+
+    #[tokio::test]
+    async fn a_signed_approve_reaches_the_runner_and_is_audited_as_the_device() {
+        let r = rig().await;
+        let a = app(&r).await;
+        let phone = Phone::new();
+        let dev = paired(&a.d, &phone).await;
+        let (mut vps, sid) = with_approval(&r).await;
+        let (nonce, sig) = a.signed(&dev, &phone, "a1", "allow").await;
+        let proof = a.proof(&dev, "a1", &nonce, &sig).await.unwrap();
+        let task = spawn_signed(&r, &dev, &sid, proof.clone());
+        let req = vps.req().await;
+        assert!(matches!(req.op, Op::Decide { allow: true, .. }));
+        vps.ok(req.id, json!({})).await;
+        assert_eq!(task.await.unwrap().unwrap().outcome, Decision::Allow);
+        let audit = r.svc.audit_log(Some(&sid), 50).await.unwrap();
+        assert!(
+            audit
+                .iter()
+                .any(|e| e.kind == "decision" && e.actor == format!("app:{dev}"))
+        );
+
+        // The same nonce again: used.
+        let again = r
+            .svc
+            .decide_signed(&Caller::app(&dev), &sid, "a1", proof, None)
+            .await;
+        assert_eq!(again.unwrap_err().code(), "invalid_challenge");
+        assert_eq!(
+            a.proof(&dev, "a1", &nonce, &sig).await.unwrap_err(),
+            "invalid_challenge"
+        );
+    }
+
+    #[tokio::test]
+    async fn wrong_device_wrong_decision_expired_and_old_versions_are_refused() {
+        let r = rig().await;
+        let a = app(&r).await;
+        let (phone, other) = (Phone::new(), Phone::new());
+        let dev = paired(&a.d, &phone).await;
+        let other_dev = paired(&a.d, &other).await;
+        let (_vps, _sid) = with_approval(&r).await;
+
+        // Another device's key over this device's challenge.
+        let (nonce, sig) = a.signed(&dev, &other, "a1", "allow").await;
+        assert_eq!(
+            a.proof(&dev, "a1", &nonce, &sig).await.unwrap_err(),
+            "bad_signature"
+        );
+        // This device's challenge presented as another device.
+        let (nonce, sig) = a.signed(&dev, &phone, "a1", "allow").await;
+        assert_eq!(
+            a.proof(&other_dev, "a1", &nonce, &sig).await.unwrap_err(),
+            "invalid_challenge"
+        );
+        // A signature over "deny" used to approve.
+        let (nonce, sig) = a.signed(&dev, &phone, "a1", "deny").await;
+        assert_eq!(
+            a.proof(&dev, "a1", &nonce, &sig).await.unwrap_err(),
+            "bad_signature"
+        );
+        // A challenge for one approval used for another.
+        let (nonce, sig) = a.signed(&dev, &phone, "a1", "allow").await;
+        assert_eq!(
+            a.proof(&dev, "a2", &nonce, &sig).await.unwrap_err(),
+            "invalid_challenge"
+        );
+        // An old message version.
+        let d = a.d.device(&dev).await.unwrap().unwrap();
+        let old =
+            a.d.verify_approval(&d, "a1", &nonce, &sig, 0)
+                .await
+                .unwrap_err();
+        assert_eq!(old.code(), "unsupported_version");
+        // An expired challenge.
+        r.clock.advance(CHALLENGE_TTL);
+        assert_eq!(
+            a.proof(&dev, "a1", &nonce, &sig).await.unwrap_err(),
+            "invalid_challenge"
+        );
+        let s = r.svc.get(&_sid, None, Duration::ZERO).await.unwrap();
+        assert_eq!(s.pending_approvals.len(), 1, "nothing was decided");
+    }
+
+    #[tokio::test]
+    async fn a_device_revoked_after_signing_records_nothing() {
+        let r = rig().await;
+        let a = app(&r).await;
+        let phone = Phone::new();
+        let dev = paired(&a.d, &phone).await;
+        let (mut vps, sid) = with_approval(&r).await;
+        let (nonce, sig) = a.signed(&dev, &phone, "a1", "allow").await;
+        let proof = a.proof(&dev, "a1", &nonce, &sig).await.unwrap();
+        assert!(a.d.revoke(&dev, "admin").await.unwrap());
+        let err = r
+            .svc
+            .decide_signed(&Caller::app(&dev), &sid, "a1", proof, Some("rq-1"))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "invalid_challenge");
+        vps.no_req().await;
+        let s = r.svc.get(&sid, None, Duration::ZERO).await.unwrap();
+        assert_eq!(s.pending_approvals.len(), 1);
+        assert!(
+            r.svc.store().get_operation("rq-1").await.unwrap().is_none(),
+            "no operation left behind"
+        );
+        let ch = r.svc.store().challenge(&nonce).await.unwrap().unwrap();
+        assert_eq!(
+            ch.used_at, None,
+            "the nonce and the decision commit together or not at all"
+        );
+    }
+
+    #[tokio::test]
+    async fn one_proof_decides_once_even_when_sent_twice_at_the_same_time() {
+        let r = rig().await;
+        let a = app(&r).await;
+        let phone = Phone::new();
+        let dev = paired(&a.d, &phone).await;
+        let (mut vps, sid) = with_approval(&r).await;
+        let (nonce, sig) = a.signed(&dev, &phone, "a1", "allow").await;
+        let proof = a.proof(&dev, "a1", &nonce, &sig).await.unwrap();
+        let t1 = spawn_signed(&r, &dev, &sid, proof.clone());
+        let t2 = spawn_signed(&r, &dev, &sid, proof);
+        let req = vps.req().await;
+        vps.ok(req.id, json!({})).await;
+        let results = [t1.await.unwrap(), t2.await.unwrap()];
+        let ok = results.iter().filter(|r| r.is_ok()).count();
+        assert_eq!(ok, 1, "{results:?}");
+        vps.no_req().await;
+    }
+
+    #[tokio::test]
+    async fn two_devices_deciding_at_once_record_one_outcome() {
+        let r = rig().await;
+        let a = app(&r).await;
+        let (p1, p2) = (Phone::new(), Phone::new());
+        let (d1, d2) = (paired(&a.d, &p1).await, paired(&a.d, &p2).await);
+        let (mut vps, sid) = with_approval(&r).await;
+        let (nonce, sig) = a.signed(&d1, &p1, "a1", "allow").await;
+        let proof = a.proof(&d1, "a1", &nonce, &sig).await.unwrap();
+        let approve = spawn_signed(&r, &d1, &sid, proof);
+        let (svc, sid2, c2) = (r.svc.clone(), sid.clone(), Caller::app(&d2));
+        let deny = tokio::spawn(async move { svc.decide(&c2, &sid2, "a1", false, None).await });
+        let req = vps.req().await;
+        let sent_allow = matches!(req.op, Op::Decide { allow: true, .. });
+        vps.ok(req.id, json!({})).await;
+        let (x, y) = (
+            approve.await.unwrap().unwrap(),
+            deny.await.unwrap().unwrap(),
+        );
+        assert_eq!(x.outcome, y.outcome, "both see the one recorded outcome");
+        assert!(x.replayed ^ y.replayed, "exactly one was the replay");
+        assert_eq!(x.outcome == Decision::Allow, sent_allow);
+        vps.no_req().await;
+    }
+
+    #[tokio::test]
+    async fn the_app_right_can_be_turned_off_but_a_stolen_token_can_still_only_deny() {
+        let cfg = config_with("[approve]\napp = false\n");
+        let r = rig_cfg(cfg, Store::open_in_memory().await.unwrap());
+        let a = app(&r).await;
+        let phone = Phone::new();
+        let dev = paired(&a.d, &phone).await;
+        let (mut vps, sid) = with_approval(&r).await;
+        let (nonce, sig) = a.signed(&dev, &phone, "a1", "allow").await;
+        let proof = a.proof(&dev, "a1", &nonce, &sig).await.unwrap();
+        let err = r
+            .svc
+            .decide_signed(&Caller::app(&dev), &sid, "a1", proof.clone(), None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "approve_not_allowed");
+        let err = r
+            .svc
+            .decide_signed(&Caller::xai(), &sid, "a1", proof, None)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.code(),
+            "approve_not_allowed",
+            "only the app door takes signed approvals"
+        );
+        let (svc, sid2, c) = (r.svc.clone(), sid.clone(), Caller::app(&dev));
+        let deny = tokio::spawn(async move { svc.decide(&c, &sid2, "a1", false, None).await });
+        let req = vps.req().await;
+        vps.ok(req.id, json!({})).await;
+        assert_eq!(deny.await.unwrap().unwrap().outcome, Decision::Deny);
     }
 }
