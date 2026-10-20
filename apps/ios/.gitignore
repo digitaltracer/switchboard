@@ -1,0 +1,4 @@
+build/
+SwitchboardKit/.build/
+SwitchboardKit/.swiftpm/
+xcuserdata/

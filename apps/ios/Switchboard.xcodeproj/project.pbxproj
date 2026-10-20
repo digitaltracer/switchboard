@@ -1,0 +1,399 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		AEB50E5286A0DAAC4D1DC64B /* SwitchboardKit in Frameworks */ = {isa = PBXBuildFile; productRef = 2E3EF26FD2D97FC510C16FB9 /* SwitchboardKit */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		8446F4B04E7FE6D3D72DF417 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 9CFE7D94E4BCB58114C33ED9 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 41FC30271105F2432F2EDD42;
+			remoteInfo = Switchboard;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		7B79F113FCCE46B30A2D8B69 /* Config.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config.xcconfig; sourceTree = "<group>"; };
+		9C0E070C1206C9E921F5EA8C /* Switchboard.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Switchboard.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B00E87C761EFDFCB23436595 /* SwitchboardUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SwitchboardUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		5E0EE9E8EF751B5748EFF831 /* Exceptions for "Switchboard" folder in "Switchboard" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 41FC30271105F2432F2EDD42 /* Switchboard */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		8428BA06914CA33D66E6BE70 /* SwitchboardUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = SwitchboardUITests;
+			sourceTree = "<group>";
+		};
+		B9660921D1F1CBBDB630392D /* Switchboard */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				5E0EE9E8EF751B5748EFF831 /* Exceptions for "Switchboard" folder in "Switchboard" target */,
+			);
+			path = Switchboard;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		2F7B5AD9C04B1B95B94CE03B /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AEB50E5286A0DAAC4D1DC64B /* SwitchboardKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BF6F8EBCD94A41A81EB71121 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		29303E8C085341770699796E /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				9C0E070C1206C9E921F5EA8C /* Switchboard.app */,
+				B00E87C761EFDFCB23436595 /* SwitchboardUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		AEA3F63CE0DA2A79747D74C7 = {
+			isa = PBXGroup;
+			children = (
+				7B79F113FCCE46B30A2D8B69 /* Config.xcconfig */,
+				B9660921D1F1CBBDB630392D /* Switchboard */,
+				8428BA06914CA33D66E6BE70 /* SwitchboardUITests */,
+				29303E8C085341770699796E /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		41FC30271105F2432F2EDD42 /* Switchboard */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E918D6B7CBCCA8466DA014B3 /* Build configuration list for PBXNativeTarget "Switchboard" */;
+			buildPhases = (
+				FEF8A56A86748814F363A489 /* Sources */,
+				2F7B5AD9C04B1B95B94CE03B /* Frameworks */,
+				5CD6DF43B1F6DEB1C10FDCC7 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				B9660921D1F1CBBDB630392D /* Switchboard */,
+			);
+			name = Switchboard;
+			packageProductDependencies = (
+				2E3EF26FD2D97FC510C16FB9 /* SwitchboardKit */,
+			);
+			productName = Switchboard;
+			productReference = 9C0E070C1206C9E921F5EA8C /* Switchboard.app */;
+			productType = "com.apple.product-type.application";
+		};
+		F42105E90C04CB7AFF4B9669 /* SwitchboardUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 214AFC840A1AF0F58359320B /* Build configuration list for PBXNativeTarget "SwitchboardUITests" */;
+			buildPhases = (
+				96C9D3ABD0FF3B77EA4CD07F /* Sources */,
+				BF6F8EBCD94A41A81EB71121 /* Frameworks */,
+				6587B614957505ED3D0FCCD3 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A4E64ED27B500D89D1692B74 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				8428BA06914CA33D66E6BE70 /* SwitchboardUITests */,
+			);
+			name = SwitchboardUITests;
+			productName = SwitchboardUITests;
+			productReference = B00E87C761EFDFCB23436595 /* SwitchboardUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		9CFE7D94E4BCB58114C33ED9 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2700;
+				LastUpgradeCheck = 2700;
+				TargetAttributes = {
+					41FC30271105F2432F2EDD42 = {
+						CreatedOnToolsVersion = 27.0;
+					};
+					F42105E90C04CB7AFF4B9669 = {
+						CreatedOnToolsVersion = 27.0;
+						TestTargetID = 41FC30271105F2432F2EDD42;
+					};
+				};
+			};
+			buildConfigurationList = 5246748DC9BB3989A522C027 /* Build configuration list for PBXProject "Switchboard" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = AEA3F63CE0DA2A79747D74C7;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				6D64DCA6FF2F3AB4AFEB1718 /* XCLocalSwiftPackageReference "SwitchboardKit" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 29303E8C085341770699796E /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				41FC30271105F2432F2EDD42 /* Switchboard */,
+				F42105E90C04CB7AFF4B9669 /* SwitchboardUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		5CD6DF43B1F6DEB1C10FDCC7 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		6587B614957505ED3D0FCCD3 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		96C9D3ABD0FF3B77EA4CD07F /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FEF8A56A86748814F363A489 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		A4E64ED27B500D89D1692B74 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 41FC30271105F2432F2EDD42 /* Switchboard */;
+			targetProxy = 8446F4B04E7FE6D3D72DF417 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		518B74696B71FF50B0821E6F /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "$(SB_ENTITLEMENTS)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Switchboard/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Switchboard;
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_NSCameraUsageDescription = "Scans the pairing QR code from your hub.";
+				INFOPLIST_KEY_NSFaceIDUsageDescription = "Face ID confirms that you approve what an agent wants to run.";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(SB_BUNDLE_ID)";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		5C23934051CAFD5B7DADF590 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(SB_BUNDLE_ID).uitests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_TARGET_NAME = Switchboard;
+			};
+			name = Release;
+		};
+		9BD9B7D9654864E6A2564DFE /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(SB_BUNDLE_ID).uitests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_TARGET_NAME = Switchboard;
+			};
+			name = Debug;
+		};
+		CB5AA6880EB987F322A15F1F /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 7B79F113FCCE46B30A2D8B69 /* Config.xcconfig */;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		CC79E3A2BEACA3F2EFDBDD6C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "$(SB_ENTITLEMENTS)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Switchboard/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Switchboard;
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_NSCameraUsageDescription = "Scans the pairing QR code from your hub.";
+				INFOPLIST_KEY_NSFaceIDUsageDescription = "Face ID confirms that you approve what an agent wants to run.";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(SB_BUNDLE_ID)";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		DF743EB33B9D9AB0D1B10782 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 7B79F113FCCE46B30A2D8B69 /* Config.xcconfig */;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_NO_COMMON_BLOCKS = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_VERSION = 6.0;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		214AFC840A1AF0F58359320B /* Build configuration list for PBXNativeTarget "SwitchboardUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				9BD9B7D9654864E6A2564DFE /* Debug */,
+				5C23934051CAFD5B7DADF590 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		5246748DC9BB3989A522C027 /* Build configuration list for PBXProject "Switchboard" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				CB5AA6880EB987F322A15F1F /* Debug */,
+				DF743EB33B9D9AB0D1B10782 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		E918D6B7CBCCA8466DA014B3 /* Build configuration list for PBXNativeTarget "Switchboard" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				CC79E3A2BEACA3F2EFDBDD6C /* Debug */,
+				518B74696B71FF50B0821E6F /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		6D64DCA6FF2F3AB4AFEB1718 /* XCLocalSwiftPackageReference "SwitchboardKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = SwitchboardKit;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		2E3EF26FD2D97FC510C16FB9 /* SwitchboardKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = SwitchboardKit;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 9CFE7D94E4BCB58114C33ED9 /* Project object */;
+}

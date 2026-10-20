@@ -1,0 +1,8 @@
+// The one place to set your own identifiers before installing on a phone.
+// The bundle id must match the App ID you create in the Apple developer portal.
+SB_BUNDLE_ID = com.digitaltracer.switchboard
+// Your team id; empty builds for the simulator only.
+DEVELOPMENT_TEAM = N3B962X7RX
+// Push needs your team and an App ID with Push Notifications. Then set this to
+// Switchboard/Switchboard.entitlements; empty builds for the simulator, where simctl delivers.
+SB_ENTITLEMENTS = Switchboard/Switchboard.entitlements
