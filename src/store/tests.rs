@@ -24,6 +24,7 @@ fn session(id: &str, created_at: i64) -> SessionRecord {
         hook_failed: false,
         error: None,
         start_commit: None,
+        herdr_session: None,
     }
 }
 

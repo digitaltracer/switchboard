@@ -13,6 +13,7 @@ use tokio::time::Instant;
 
 use super::agents;
 use super::codex::{CodexPane, clear_startup, excerpt};
+use super::herdrs::{Herdrs, qualified, split_qualified};
 use super::hooks::{DecideError, HookHub};
 use crate::agents::{claude, codex, hook_command};
 use crate::cli::Agent;
@@ -27,6 +28,8 @@ const AGENT_START_TIMEOUT_MS: u64 = 60_000;
 const PANE_BUSY_RETRY: Duration = Duration::from_millis(500);
 const PANE_BUSY_ATTEMPTS: u32 = 20;
 const DEFAULT_READ_LINES: u32 = 80;
+/// Queue slots status updates leave free for approvals and lifecycle events.
+const STATUS_RESERVE: usize = 64;
 
 /// What the runner keeps about a session, persisted as `meta.json` in its directory.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -45,6 +48,17 @@ pub struct RunnerSession {
     /// The commit the worktree was created from.
     #[serde(default)]
     pub start_commit: Option<String>,
+    /// The Herdr session this task runs in; none for tasks from before each got its own.
+    #[serde(default)]
+    pub herdr_session: Option<String>,
+    /// False until the agent has started; a runner that finds a false one undoes the start.
+    #[serde(default = "launched_before_this_field")]
+    pub launched: bool,
+}
+
+/// Tasks saved before `launched` existed were saved only after a complete start.
+fn launched_before_this_field() -> bool {
+    true
 }
 
 pub struct SessionsConfig {
@@ -61,7 +75,7 @@ pub struct SessionsConfig {
 }
 
 pub struct Sessions {
-    pub(crate) herdr: Client,
+    pub(crate) herdrs: Herdrs,
     pub(crate) hooks: Arc<HookHub>,
     events: mpsc::Sender<Event>,
     cfg: SessionsConfig,
@@ -108,19 +122,71 @@ pub fn agent_name(session_id: &str) -> String {
 }
 
 impl Sessions {
+    /// Every task in one Herdr server, as before.
     pub fn new(
         herdr: Client,
         hooks: Arc<HookHub>,
         events: mpsc::Sender<Event>,
         cfg: SessionsConfig,
     ) -> Arc<Self> {
+        Self::with_herdrs(Herdrs::single(herdr.socket()), hooks, events, cfg)
+    }
+
+    /// Each new task in a Herdr session of its own.
+    pub fn with_herdrs(
+        herdrs: Herdrs,
+        hooks: Arc<HookHub>,
+        events: mpsc::Sender<Event>,
+        cfg: SessionsConfig,
+    ) -> Arc<Self> {
         Arc::new(Self {
-            herdr,
+            herdrs,
             hooks,
             events,
             cfg,
             sessions: Mutex::default(),
         })
+    }
+
+    /// The Herdr server a task runs in.
+    pub(crate) fn herdr_for(&self, s: &RunnerSession) -> Client {
+        self.herdrs.client(s.herdr_session.as_deref())
+    }
+
+    /// Where a named agent lives: `<session>/<agent>`, a task's own agent, or the legacy server.
+    fn resolve_agent<'a>(&self, name: &'a str) -> (Client, &'a str, Option<RunnerSession>) {
+        let (session, agent) = split_qualified(name);
+        let owned = self.all().into_iter().find(|s| {
+            s.agent_name == agent && (session.is_none() || s.herdr_session.as_deref() == session)
+        });
+        match (session, &owned) {
+            (Some(s), _) => (self.herdrs.client(Some(s)), agent, owned),
+            (None, Some(o)) => (self.herdr_for(o), agent, owned.clone()),
+            (None, None) => (self.herdrs.client(None), agent, None),
+        }
+    }
+
+    /// Named agents in every running Herdr session; agents outside tasks are `<session>/<agent>`.
+    async fn all_agents(&self) -> Result<Vec<crate::proto::AgentSummary>, ProtoError> {
+        let names: HashMap<String, String> = self
+            .all()
+            .into_iter()
+            .map(|s| (s.agent_name, s.session_id))
+            .collect();
+        let mut out = Vec::new();
+        for (server, client) in self.herdrs.running().await {
+            let Ok(list) = agents::list(&client, &names).await else {
+                continue;
+            };
+            for mut a in list {
+                if a.session_id.is_none() {
+                    a.name = qualified(server.as_deref(), &a.name);
+                }
+                a.herdr_session = server.clone();
+                out.push(a);
+            }
+        }
+        Ok(out)
     }
 
     fn dir(&self, session_id: &str) -> PathBuf {
@@ -138,6 +204,16 @@ impl Sessions {
     pub(crate) fn emit(&self, event: Event) {
         if let Err(e) = self.events.try_send(event) {
             tracing::warn!(error = %e, "dropping runner event");
+        }
+    }
+
+    /// For status updates that come again anyway: they never take the room approvals and
+    /// lifecycle events need while the hub is away.
+    pub(crate) fn emit_status(&self, event: Event) {
+        if self.events.capacity() > STATUS_RESERVE {
+            self.emit(event);
+        } else {
+            tracing::debug!("event queue nearly full; skipping a status update");
         }
     }
 
@@ -229,6 +305,17 @@ impl Sessions {
         Ok(n)
     }
 
+    /// Undoes starts a previous runner process didn't finish; the hub fails them once they're gone.
+    pub async fn undo_interrupted_starts(&self) -> usize {
+        let interrupted: Vec<RunnerSession> =
+            self.all().into_iter().filter(|s| !s.launched).collect();
+        let e = err(ErrorCode::Internal, "the runner restarted during the start");
+        for s in &interrupted {
+            self.abort(s, &e).await;
+        }
+        interrupted.len()
+    }
+
     pub async fn handle(&self, op: Op) -> Result<Value, ProtoError> {
         match op {
             Op::StartSession {
@@ -267,15 +354,7 @@ impl Sessions {
                 remove_worktree_if_clean,
             } => self.stop(&session_id, remove_worktree_if_clean).await,
             Op::ListSessions => Ok(serde_json::to_value(self.owned().await).expect("serializes")),
-            Op::Agents => {
-                let names = self
-                    .all()
-                    .into_iter()
-                    .map(|s| (s.agent_name, s.session_id))
-                    .collect();
-                let list = agents::list(&self.herdr, &names).await.map_err(herdr_err)?;
-                Ok(serde_json::to_value(list).expect("serializes"))
-            }
+            Op::Agents => Ok(serde_json::to_value(self.all_agents().await?).expect("serializes")),
             Op::ReadAgent {
                 agent,
                 lines,
@@ -286,20 +365,22 @@ impl Sessions {
                 } else {
                     lines
                 };
-                let text = agents::read(&self.herdr, &agent, lines, visible)
+                let (herdr, agent, _) = self.resolve_agent(&agent);
+                let text = agents::read(&herdr, agent, lines, visible)
                     .await
                     .map_err(herdr_err)?;
                 Ok(json!({ "text": text, "untrusted": true }))
             }
             Op::PromptAgent { agent, text } => {
+                let (herdr, name, owned) = self.resolve_agent(&agent);
                 // A session's prompts go through its own op, which the hub records and audits.
-                if self.all().iter().any(|s| s.agent_name == agent) {
+                if owned.is_some() {
                     return Err(err(
                         ErrorCode::BadRequest,
                         format!("{agent} is a Switchboard session; prompt the session"),
                     ));
                 }
-                let outcome = agents::prompt(&self.herdr, &agent, &text)
+                let outcome = agents::prompt(&herdr, name, &text)
                     .await
                     .map_err(herdr_err)?;
                 Ok(serde_json::to_value(outcome).expect("serializes"))
@@ -402,6 +483,8 @@ impl Sessions {
             req.deny_patterns.clone(),
         );
 
+        let short = &req.session_id[..req.session_id.len().min(4)];
+        let herdr_base = format!("{}-{short}", req.project_id);
         let mut session = RunnerSession {
             session_id: req.session_id.clone(),
             agent: req.agent,
@@ -415,12 +498,24 @@ impl Sessions {
             worktree_path: None,
             codex_version,
             start_commit: None,
+            herdr_session: None,
+            launched: false,
         };
+        // Each task gets a Herdr session of its own, named after the project.
+        let name = self.herdrs.free_name(&herdr_base, &req.session_id);
+        match self.herdrs.create(&name).await {
+            Ok(created) => session.herdr_session = created,
+            Err(e) => {
+                let e = err(ErrorCode::Herdr, e);
+                self.abort(&session, &e).await;
+                return Err(e);
+            }
+        }
         self.save(&session)
             .map_err(|e| err(ErrorCode::Internal, format!("saving session: {e}")))?;
+        let herdr = self.herdr_for(&session);
 
-        let created = match self
-            .herdr
+        let created = match herdr
             .worktree_create(WorktreeCreateParams {
                 cwd: Some(req.repo_path.to_string_lossy().into_owned()),
                 branch: Some(req.branch.clone()),
@@ -446,20 +541,32 @@ impl Sessions {
             self.abort(&session, &e).await;
             return Err(e);
         }
-        self.herdr
+        session.launched = true;
+        self.save(&session)
+            .map_err(|e| err(ErrorCode::Internal, format!("saving session: {e}")))?;
+        if let Err(e) = herdr
             .agent_prompt(AgentPromptParams {
                 target: session.agent_name.clone(),
                 text: req.prompt,
                 wait: None,
             })
             .await
-            .map_err(herdr_err)?;
+        {
+            let e = herdr_err(e);
+            // The hub marks the task failed, so its agent mustn't keep running out of sight. If the
+            // prompt may have arrived, the task is left for the hub to reconcile.
+            if e.code != ErrorCode::OutcomeUnknown {
+                self.abort(&session, &e).await;
+            }
+            return Err(e);
+        }
         self.audit(&session.session_id, "prompt", json!({ "initial": true }));
         Ok(started_json(&session))
     }
 
     /// Starts the agent and returns only once it is safe to send the task prompt.
     async fn launch(&self, s: &RunnerSession, args: Vec<String>) -> Result<(), ProtoError> {
+        let herdr = self.herdr_for(s);
         let pane_id = s.pane_id.clone().expect("set after worktree creation");
         let params = AgentStartParams {
             name: s.agent_name.clone(),
@@ -470,7 +577,7 @@ impl Sessions {
         };
         let mut attempt = 0;
         let started = loop {
-            match self.herdr.agent_start(params.clone()).await {
+            match herdr.agent_start(params.clone()).await {
                 Err(e)
                     if e.server_code() == Some("agent_pane_busy")
                         && attempt < PANE_BUSY_ATTEMPTS =>
@@ -484,7 +591,7 @@ impl Sessions {
         match s.agent {
             Agent::Claude => {
                 if let Err(e) = started {
-                    let screen = self.visible(&s.agent_name).await;
+                    let screen = visible(&herdr, &s.agent_name).await;
                     return Err(err(
                         ErrorCode::StartupFailed,
                         format!("{e}; screen:\n{}", excerpt(&screen)),
@@ -509,8 +616,7 @@ impl Sessions {
                 {
                     return Err(herdr_err(e));
                 }
-                let pane =
-                    CodexPane::new(&self.herdr, s.agent, &s.agent_name).expect("codex session");
+                let pane = CodexPane::new(&herdr, s.agent, &s.agent_name).expect("codex session");
                 let version = s.codex_version.as_deref().unwrap_or_default();
                 clear_startup(&pane, version, self.cfg.startup_timeout)
                     .await
@@ -539,7 +645,11 @@ impl Sessions {
     async fn wait_interactive(&self, s: &RunnerSession) -> Result<(), ProtoError> {
         let deadline = Instant::now() + self.cfg.startup_timeout;
         loop {
-            let snap = self.herdr.session_snapshot().await.map_err(herdr_err)?;
+            let snap = self
+                .herdr_for(s)
+                .session_snapshot()
+                .await
+                .map_err(herdr_err)?;
             let ready = snap
                 .agents
                 .iter()
@@ -562,9 +672,14 @@ impl Sessions {
     async fn abort(&self, s: &RunnerSession, e: &ProtoError) {
         self.hooks.unregister(&s.session_id);
         if let Some(ws) = &s.workspace_id
-            && let Err(close) = self.herdr.workspace_close(ws).await
+            && let Err(close) = self.herdr_for(s).workspace_close(ws).await
         {
             tracing::warn!(error = %close, "closing workspace of failed start");
+        }
+        if let Some(name) = &s.herdr_session
+            && let Err(stop) = self.herdrs.stop(name).await
+        {
+            tracing::warn!(error = %stop, "stopping the Herdr session of a failed start");
         }
         self.audit(
             &s.session_id,
@@ -579,18 +694,10 @@ impl Sessions {
         let _ = std::fs::remove_dir_all(self.dir(session_id));
     }
 
-    async fn visible(&self, target: &str) -> String {
-        self.herdr
-            .agent_read(target, ReadSource::Visible, None)
-            .await
-            .map(|r| r.text)
-            .unwrap_or_default()
-    }
-
     async fn prompt(&self, session_id: &str, text: &str) -> Result<Value, ProtoError> {
         let s = self.session(session_id)?;
         let agent = self
-            .herdr
+            .herdr_for(&s)
             .agent_prompt(AgentPromptParams {
                 target: s.agent_name.clone(),
                 text: text.to_owned(),
@@ -613,14 +720,14 @@ impl Sessions {
         } else {
             lines
         });
+        let herdr = self.herdr_for(&s);
         // Herdr refuses history reads while an agent sits at a dialog.
-        let read = match self
-            .herdr
+        let read = match herdr
             .agent_read(&s.agent_name, ReadSource::RecentUnwrapped, lines)
             .await
         {
             Err(e) if e.server_code() == Some("agent_not_idle") => {
-                self.herdr
+                herdr
                     .agent_read(&s.agent_name, ReadSource::Visible, None)
                     .await
             }
@@ -659,22 +766,30 @@ impl Sessions {
 
     async fn stop(&self, session_id: &str, remove_if_clean: bool) -> Result<Value, ProtoError> {
         let s = self.session(session_id)?;
+        let herdr = self.herdr_for(&s);
         self.hooks.unregister(session_id);
         let mut removed = false;
         let mut kept_because = None;
         if let (Some(ws), Some(path)) = (&s.workspace_id, &s.worktree_path) {
             if remove_if_clean {
                 match worktree_clean_and_merged(Path::new(path), &s.repo_path, &s.branch).await {
-                    Ok(()) => {
-                        self.herdr.worktree_remove(ws).await.map_err(herdr_err)?;
-                        removed = true;
-                    }
+                    // A failed removal keeps the worktree; the stop itself still completes.
+                    Ok(()) => match herdr.worktree_remove(ws).await {
+                        Ok(_) => removed = true,
+                        Err(e) => kept_because = Some(format!("removing it failed: {e}")),
+                    },
                     Err(why) => kept_because = Some(why),
                 }
             }
-            if !removed && let Err(e) = self.herdr.workspace_close(ws).await {
+            if !removed && let Err(e) = herdr.workspace_close(ws).await {
                 tracing::warn!(error = %e, "closing workspace on stop");
             }
+        }
+        // The task's own Herdr session stops too; it stays listed, with its worktree kept.
+        if let Some(name) = &s.herdr_session
+            && let Err(e) = self.herdrs.stop(name).await
+        {
+            tracing::warn!(error = %e, herdr_session = name, "stopping the task's Herdr session");
         }
         self.audit(
             session_id,
@@ -689,12 +804,19 @@ impl Sessions {
     }
 
     pub async fn owned(&self) -> Vec<OwnedSession> {
-        let snap = self.herdr.session_snapshot().await.ok();
+        let mut snaps = HashMap::new();
+        for s in self.all() {
+            if !snaps.contains_key(&s.herdr_session) {
+                let snap = self.herdr_for(&s).session_snapshot().await.ok();
+                snaps.insert(s.herdr_session.clone(), snap);
+            }
+        }
         self.all()
             .into_iter()
             .filter_map(|s| {
-                let status = snap
-                    .as_ref()
+                let status = snaps
+                    .get(&s.herdr_session)
+                    .and_then(Option::as_ref)
                     .and_then(|snap| {
                         snap.agents
                             .iter()
@@ -738,7 +860,16 @@ fn started_json(s: &RunnerSession) -> Value {
         "agent_name": s.agent_name,
         "codex_version": s.codex_version,
         "start_commit": s.start_commit,
+        "herdr_session": s.herdr_session,
     })
+}
+
+async fn visible(herdr: &Client, target: &str) -> String {
+    herdr
+        .agent_read(target, ReadSource::Visible, None)
+        .await
+        .map(|r| r.text)
+        .unwrap_or_default()
 }
 
 fn create_private_dir(dir: &Path) -> std::io::Result<()> {

@@ -80,6 +80,7 @@ impl Rig {
                 hook_failed: false,
                 error: None,
                 start_commit: None,
+                herdr_session: None,
             })
             .await
             .unwrap();

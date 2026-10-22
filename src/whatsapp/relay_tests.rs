@@ -67,6 +67,7 @@ impl Script {
             kind: Some("claude".into()),
             agent_status: status.into(),
             session_id: None,
+            herdr_session: None,
         });
     }
 

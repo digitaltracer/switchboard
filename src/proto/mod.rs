@@ -123,6 +123,9 @@ pub struct AgentSummary {
     pub agent_status: String,
     /// Set when the agent is one of this runner's sessions.
     pub session_id: Option<String>,
+    /// The Herdr session it runs in, when the runner follows several.
+    #[serde(default)]
+    pub herdr_session: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

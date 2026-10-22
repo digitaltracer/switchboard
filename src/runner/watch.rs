@@ -17,23 +17,66 @@ use crate::proto::conn::Backoff;
 
 /// Snapshot reconciliation interval; also how often blocked Codex panes are re-checked.
 pub const TICK: Duration = Duration::from_secs(2);
+/// How long a Herdr server may refuse connections before its tasks count as exited. Its panes,
+/// and the agents in them, go with it.
+pub const SERVER_GONE_AFTER: Duration = Duration::from_secs(30);
 
+/// Follows every Herdr server that hosts a task, one watcher each, as tasks come and go.
 pub async fn watch(sessions: Arc<Sessions>) {
+    let mut watchers: HashMap<Option<String>, tokio::task::JoinHandle<()>> = HashMap::new();
+    loop {
+        let wanted: HashSet<Option<String>> = if sessions.herdrs.is_multi() {
+            sessions
+                .all()
+                .into_iter()
+                .map(|s| s.herdr_session)
+                .collect()
+        } else {
+            HashSet::from([None])
+        };
+        watchers.retain(|server, task| {
+            let keep = wanted.contains(server) && !task.is_finished();
+            if !keep {
+                task.abort();
+            }
+            keep
+        });
+        for server in wanted {
+            watchers
+                .entry(server.clone())
+                .or_insert_with(|| tokio::spawn(watch_server(sessions.clone(), server)));
+        }
+        tokio::time::sleep(TICK).await;
+    }
+}
+
+/// One Herdr server and the tasks in it; pane ids only mean something within their server.
+async fn watch_server(sessions: Arc<Sessions>, server: Option<String>) {
+    let herdr = sessions.herdrs.client(server.as_deref());
     let mut backoff = Backoff::default();
-    let mut tracker = Tracker::default();
+    let mut tracker = Tracker {
+        server: server.clone(),
+        ..Default::default()
+    };
+    let mut gone_since: Option<Instant> = None;
     loop {
         let mut mirror = Mirror::new();
-        let mut stream = match sessions
-            .herdr
-            .sync(&mut mirror, Subscription::lifecycle())
-            .await
-        {
+        let mut stream = match herdr.sync(&mut mirror, Subscription::lifecycle()).await {
             Ok((stream, _)) => {
                 backoff.reset();
+                gone_since = None;
                 stream
             }
             Err(e) => {
-                tracing::warn!(error = %e, "herdr sync failed");
+                tracing::warn!(error = %e, herdr_session = ?server, "herdr sync failed");
+                if e.server_gone() {
+                    let since = *gone_since.get_or_insert_with(Instant::now);
+                    if since.elapsed() >= SERVER_GONE_AFTER {
+                        tracker.server_gone(&sessions);
+                    }
+                } else {
+                    gone_since = None;
+                }
                 tokio::time::sleep(backoff.next_delay()).await;
                 continue;
             }
@@ -41,7 +84,7 @@ pub async fn watch(sessions: Arc<Sessions>) {
         sessions.emit(Event::Resynced {
             sessions: sessions.owned().await,
         });
-        tracker.observe(&sessions, &mirror).await;
+        tracker.observe(&sessions, &herdr, &mirror).await;
         let mut tick = tokio::time::interval(TICK);
         loop {
             tokio::select! {
@@ -50,23 +93,25 @@ pub async fn watch(sessions: Arc<Sessions>) {
                     Some(Ok(ev)) => { mirror.apply(&ev); }
                     Some(Err(e)) => tracing::warn!(error = %e, "bad herdr event"),
                 },
-                _ = tick.tick() => match sessions.herdr.session_snapshot().await {
+                _ = tick.tick() => match herdr.session_snapshot().await {
                     Ok(snap) => { mirror.install(&snap); }
                     Err(e) => {
-                        tracing::warn!(error = %e, "herdr snapshot failed");
+                        tracing::warn!(error = %e, herdr_session = ?server, "herdr snapshot failed");
                         break;
                     }
                 },
             }
-            tracker.observe(&sessions, &mirror).await;
+            tracker.observe(&sessions, &herdr, &mirror).await;
         }
-        tracing::info!("herdr event stream ended; resyncing");
+        tracing::info!(herdr_session = ?server, "herdr event stream ended; resyncing");
         tokio::time::sleep(backoff.next_delay()).await;
     }
 }
 
 #[derive(Default)]
 struct Tracker {
+    /// The Herdr server this tracker watches; tasks in other servers are not its business.
+    server: Option<String>,
     status: HashMap<String, AgentStatus>,
     blocked_since: HashMap<String, Instant>,
     /// Sessions whose pane has appeared in Herdr; only those can be reported as exited.
@@ -77,8 +122,36 @@ struct Tracker {
 }
 
 impl Tracker {
-    async fn observe(&mut self, sessions: &Sessions, mirror: &Mirror) {
+    /// The server is gone, so every task in it has exited, whether or not it was seen running.
+    fn server_gone(&mut self, sessions: &Sessions) {
+        let multi = sessions.herdrs.is_multi();
         for s in sessions.all() {
+            if (!multi || s.herdr_session == self.server)
+                && s.launched
+                && self.exited.insert(s.session_id.clone())
+            {
+                tracing::warn!(session_id = %s.session_id, herdr_session = ?self.server, "the task's Herdr server is gone");
+                sessions.emit(Event::SessionExited {
+                    session_id: s.session_id,
+                });
+            }
+        }
+    }
+
+    async fn observe(
+        &mut self,
+        sessions: &Sessions,
+        herdr: &crate::herdr::Client,
+        mirror: &Mirror,
+    ) {
+        let server = self.server.clone();
+        let multi = sessions.herdrs.is_multi();
+        let mine: Vec<RunnerSession> = sessions
+            .all()
+            .into_iter()
+            .filter(|s| !multi || s.herdr_session == server)
+            .collect();
+        for s in mine {
             let id = s.session_id.clone();
             let Some(pane_id) = s.pane_id.as_deref() else {
                 continue;
@@ -114,12 +187,17 @@ impl Tracker {
                 self.blocked_since.remove(&id);
             }
             if s.agent == Agent::Codex {
-                self.fallback(sessions, &s).await;
+                self.fallback(sessions, herdr, &s).await;
             }
         }
     }
 
-    async fn fallback(&mut self, sessions: &Sessions, s: &RunnerSession) {
+    async fn fallback(
+        &mut self,
+        sessions: &Sessions,
+        herdr: &crate::herdr::Client,
+        s: &RunnerSession,
+    ) {
         let Some(hooks) = sessions.hooks.state(&s.session_id) else {
             return;
         };
@@ -134,7 +212,7 @@ impl Tracker {
             Gate::Wait(_) | Gate::Refuse(_) => {}
             Gate::HookFailed(reason) => sessions.hook_failed(s, reason, None),
             Gate::ReadScreen => {
-                let Some(pane) = CodexPane::new(&sessions.herdr, s.agent, &s.agent_name) else {
+                let Some(pane) = CodexPane::new(herdr, s.agent, &s.agent_name) else {
                     return;
                 };
                 let version = s.codex_version.as_deref().unwrap_or_default();

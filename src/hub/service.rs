@@ -348,6 +348,8 @@ pub struct SessionView {
     pub pending_approvals: Vec<ApprovalView>,
     /// The commit the worktree started from; none for sessions from before it was kept.
     pub start_commit: Option<String>,
+    /// The Herdr session it runs in: `herdr session attach <name>` opens it.
+    pub herdr_session: Option<String>,
 }
 
 /// Every session, newest first, at one list revision.
@@ -834,6 +836,7 @@ impl SessionService {
             hook_failed: false,
             error: None,
             start_commit: None,
+            herdr_session: None,
         };
         let op_id = rid
             .map(str::to_owned)
@@ -883,6 +886,7 @@ impl SessionService {
                             workspace_id: str_field("workspace_id"),
                             pane_id: str_field("pane_id"),
                             start_commit: str_field("start_commit"),
+                            herdr_session: str_field("herdr_session"),
                             ..Default::default()
                         },
                     )
@@ -1603,6 +1607,7 @@ impl SessionService {
             updated_at: s.updated_at,
             muted: s.muted,
             start_commit: s.start_commit,
+            herdr_session: s.herdr_session,
         })
     }
 

@@ -61,6 +61,11 @@ impl HerdrError {
         matches!(self, HerdrError::Io { .. } | HerdrError::Timeout { .. })
     }
 
+    /// Nothing listens on the socket: the server isn't running, as opposed to slow.
+    pub fn server_gone(&self) -> bool {
+        matches!(self, HerdrError::Connect { .. })
+    }
+
     pub fn server_code(&self) -> Option<&str> {
         match self {
             HerdrError::Server { code, .. } => Some(code),

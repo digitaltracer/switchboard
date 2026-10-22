@@ -118,6 +118,8 @@ pub struct SessionRecord {
     pub error: Option<String>,
     /// The commit the worktree was created from; absent for sessions from before it was kept.
     pub start_commit: Option<String>,
+    /// The Herdr session the task runs in.
+    pub herdr_session: Option<String>,
 }
 
 /// Fields to change on a session; `None` leaves a field as it is. Every update bumps the revision.
@@ -133,6 +135,7 @@ pub struct SessionPatch {
     pub workspace_id: Option<String>,
     pub pane_id: Option<String>,
     pub start_commit: Option<String>,
+    pub herdr_session: Option<String>,
     /// The agent finished a turn: queue a "finished" notification unless the session is muted.
     pub finished: bool,
 }
@@ -556,7 +559,8 @@ impl Store {
                      muted = COALESCE(?5, muted), error = COALESCE(?6, error),
                      branch = COALESCE(?7, branch), worktree_path = COALESCE(?8, worktree_path),
                      workspace_id = COALESCE(?9, workspace_id), pane_id = COALESCE(?10, pane_id),
-                     start_commit = COALESCE(?11, start_commit), revision = ?12, updated_at = ?13
+                     start_commit = COALESCE(?11, start_commit), revision = ?12, updated_at = ?13,
+                     herdr_session = COALESCE(?14, herdr_session)
                      WHERE id = ?1 RETURNING *",
                     params![
                         id,
@@ -571,7 +575,8 @@ impl Store {
                         patch.pane_id,
                         patch.start_commit,
                         revision,
-                        now
+                        now,
+                        patch.herdr_session
                     ],
                     raw_session,
                 )
@@ -1136,8 +1141,8 @@ fn insert_session(c: &rusqlite::Connection, s: &SessionRecord) -> Result<()> {
     c.execute(
         "INSERT INTO sessions (id, project_id, machine_id, agent, prompt_sha256, branch,
          worktree_path, workspace_id, pane_id, lifecycle, agent_status, revision,
-         created_at, updated_at, agent_name, muted, hook_failed, error, start_commit)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+         created_at, updated_at, agent_name, muted, hook_failed, error, start_commit, herdr_session)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
         params![
             s.id,
             s.project_id,
@@ -1157,7 +1162,8 @@ fn insert_session(c: &rusqlite::Connection, s: &SessionRecord) -> Result<()> {
             s.muted,
             s.hook_failed,
             s.error,
-            s.start_commit
+            s.start_commit,
+            s.herdr_session
         ],
     )?;
     Ok(())
@@ -1238,6 +1244,7 @@ fn raw_session(r: &Row<'_>) -> rusqlite::Result<RawSession> {
             hook_failed: r.get("hook_failed")?,
             error: r.get("error")?,
             start_commit: r.get("start_commit")?,
+            herdr_session: r.get("herdr_session")?,
         },
         r.get("lifecycle")?,
     ))

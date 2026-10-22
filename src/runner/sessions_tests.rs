@@ -18,6 +18,8 @@ fn fixture(name: &str) -> String {
 struct FakeHerdr {
     socket: PathBuf,
     calls: Arc<StdMutex<Vec<Value>>>,
+    /// Answers that replace the scripted ones, by method.
+    answers: Arc<StdMutex<HashMap<String, Value>>>,
 }
 
 fn agent_info(status: &str) -> Value {
@@ -39,8 +41,9 @@ impl FakeHerdr {
         let socket = dir.join("herdr.sock");
         let listener = UnixListener::bind(&socket).unwrap();
         let calls = Arc::new(StdMutex::new(Vec::new()));
+        let answers: Arc<StdMutex<HashMap<String, Value>>> = Arc::default();
         let screens = Arc::new(StdMutex::new(std::collections::VecDeque::from(screens)));
-        let log = calls.clone();
+        let (log, set) = (calls.clone(), answers.clone());
         tokio::spawn(async move {
             loop {
                 let (stream, _) = listener.accept().await.unwrap();
@@ -49,7 +52,12 @@ impl FakeHerdr {
                 BufReader::new(read).read_line(&mut line).await.unwrap();
                 let req: Value = serde_json::from_str(&line).unwrap();
                 log.lock().unwrap().push(req.clone());
-                let result = match req["method"].as_str().unwrap() {
+                let answer = set
+                    .lock()
+                    .unwrap()
+                    .get(req["method"].as_str().unwrap())
+                    .cloned();
+                let result = answer.unwrap_or_else(|| match req["method"].as_str().unwrap() {
                     "worktree.create" => json!({"type": "worktree_created",
                         "workspace": {"workspace_id": "w2", "label": "sb-s1", "agent_status": "unknown"},
                         "tab": {"tab_id": "w2:t1", "workspace_id": "w2"},
@@ -77,8 +85,9 @@ impl FakeHerdr {
                         json!({"type": "session_snapshot", "snapshot": {"version": "0.9.1", "protocol": 22,
                                "workspaces": [], "tabs": [], "panes": [], "layouts": [], "agents": [agent]}})
                     }
+                    "ping" => json!({"type": "pong", "version": "0.9.1", "protocol": 22}),
                     _ => json!({"type": "ok"}),
-                };
+                });
                 let resp = if result.get("error").is_some() {
                     json!({"id": req["id"], "error": result["error"]})
                 } else {
@@ -90,7 +99,18 @@ impl FakeHerdr {
                     .unwrap();
             }
         });
-        Self { socket, calls }
+        Self {
+            socket,
+            calls,
+            answers,
+        }
+    }
+
+    fn answer(&self, method: &str, result: Value) {
+        self.answers
+            .lock()
+            .unwrap()
+            .insert(method.to_owned(), result);
     }
 
     fn methods(&self) -> Vec<String> {
@@ -455,3 +475,248 @@ async fn clean_and_merged_check() {
         Err("unmerged".into())
     );
 }
+
+// Each task in a Herdr session of its own.
+
+use super::super::herdrs::{Herdrs, Starter};
+
+/// The Herdr sessions a multi-mode runner started, by name.
+type Started = Arc<StdMutex<Vec<(String, FakeHerdr)>>>;
+
+/// A runner in multi mode whose new Herdr sessions are scripted Herdrs; returns the sessions it started.
+fn multi_rig(dir: tempfile::TempDir, screens: Vec<String>) -> (Rig, PathBuf, Started) {
+    let config_dir = dir.path().join("herdr");
+    let started: Started = Arc::default();
+    let log = started.clone();
+    let starter = Starter::Func(Arc::new(move |name: String, socket: PathBuf| {
+        let (log, screens) = (log.clone(), screens.clone());
+        Box::pin(async move {
+            let folder = socket.parent().unwrap().to_owned();
+            std::fs::create_dir_all(&folder).unwrap();
+            let fake = FakeHerdr::start(
+                &folder,
+                json!({"type": "agent_started", "agent": agent_info("idle"), "argv": []}),
+                screens,
+            );
+            log.lock().unwrap().push((name, fake));
+            Ok(())
+        })
+    }));
+    // The legacy server doesn't exist: nothing may go there.
+    let herdrs = Herdrs::multi(config_dir.clone(), dir.path().join("nowhere.sock"), starter);
+    let (tx, events) = mpsc::channel(64);
+    let hooks = HookHub::new(tx.clone(), Duration::from_secs(5));
+    let cfg = SessionsConfig {
+        state_dir: dir.path().join("state"),
+        claude_config: dir.path().join("claude.json"),
+        exe: PathBuf::from("/opt/sb/switchboard"),
+        hook_addr: "127.0.0.1:9".parse().unwrap(),
+        codex_version_cmd: vec!["echo".into(), "codex-cli 0.163.0".into()],
+        liveness_timeout: Duration::from_secs(1),
+        startup_timeout: Duration::from_secs(2),
+    };
+    let rig = Rig {
+        sessions: Sessions::with_herdrs(herdrs, hooks, tx, cfg),
+        dir,
+        events,
+    };
+    (rig, config_dir, started)
+}
+
+#[tokio::test]
+async fn every_new_task_starts_in_a_new_herdr_session_of_its_own() {
+    let dir = tempfile::tempdir().unwrap();
+    let screens = vec![fixture("folder-access"), fixture("ready")];
+    let (r, config_dir, started) = multi_rig(dir, screens);
+    let first = r.sessions.start(start_req(Agent::Codex)).await.unwrap();
+    assert_eq!(first["herdr_session"], "p-s1");
+    let mut second_req = start_req(Agent::Codex);
+    second_req.session_id = "s2".into();
+    second_req.branch = "sb/s2".into();
+    let second = r.sessions.start(second_req).await.unwrap();
+    assert_eq!(second["herdr_session"], "p-s2");
+
+    let started = started.lock().unwrap();
+    let names: Vec<&str> = started.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, ["p-s1", "p-s2"], "one new Herdr session per task");
+    for (name, fake) in started.iter() {
+        assert_eq!(
+            fake.socket,
+            config_dir.join("sessions").join(name).join("herdr.sock")
+        );
+        let m = fake.methods();
+        assert!(
+            m.contains(&"worktree.create".to_owned()) && m.contains(&"agent.prompt".to_owned()),
+            "{name}: {m:?}"
+        );
+    }
+    assert_eq!(
+        r.sessions.get("s1").unwrap().herdr_session.as_deref(),
+        Some("p-s1")
+    );
+    let saved: RunnerSession = serde_json::from_slice(
+        &std::fs::read(r.dir.path().join("state/sessions/s2/meta.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        saved.herdr_session.as_deref(),
+        Some("p-s2"),
+        "it survives a runner restart"
+    );
+}
+
+/// A Herdr session with one named agent, as a user's own session looks.
+fn named_herdr(folder: &Path, agent: &'static str, screen: &'static str) {
+    std::fs::create_dir_all(folder).unwrap();
+    let listener = UnixListener::bind(folder.join("herdr.sock")).unwrap();
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (read, mut write) = stream.into_split();
+            let mut line = String::new();
+            BufReader::new(read).read_line(&mut line).await.unwrap();
+            let req: Value = serde_json::from_str(&line).unwrap();
+            let result = match req["method"].as_str().unwrap() {
+                "ping" => json!({"type": "pong", "version": "0.9.1", "protocol": 22}),
+                "session.snapshot" => {
+                    let mut a = agent_info("idle");
+                    a["name"] = json!(agent);
+                    a["agent"] = json!("claude");
+                    json!({"type": "session_snapshot", "snapshot": {"version": "0.9.1", "protocol": 22,
+                           "workspaces": [], "tabs": [], "panes": [], "layouts": [], "agents": [a]}})
+                }
+                "agent.read" => {
+                    json!({"type": "pane_read", "read": {"pane_id": "w2:p1", "text": screen, "revision": 1, "truncated": false}})
+                }
+                _ => json!({"type": "ok"}),
+            };
+            let resp = json!({"id": req["id"], "result": result});
+            write
+                .write_all(format!("{resp}\n").as_bytes())
+                .await
+                .unwrap();
+        }
+    });
+}
+
+#[tokio::test]
+async fn agents_in_every_running_herdr_session_are_listed_and_reached_by_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let (r, config_dir, _) = multi_rig(dir, vec![]);
+    named_herdr(&config_dir.join("sessions/mono1"), "claude", "mono1 screen");
+    named_herdr(&config_dir.join("sessions/pca-udp"), "claude", "pca screen");
+    // A stopped session: a folder with nothing answering.
+    std::fs::create_dir_all(config_dir.join("sessions/old-one")).unwrap();
+
+    let list: Vec<crate::proto::AgentSummary> =
+        serde_json::from_value(r.sessions.handle(Op::Agents).await.unwrap()).unwrap();
+    let names: Vec<(&str, Option<&str>)> = list
+        .iter()
+        .map(|a| (a.name.as_str(), a.herdr_session.as_deref()))
+        .collect();
+    assert_eq!(
+        names,
+        [
+            ("mono1/claude", Some("mono1")),
+            ("pca-udp/claude", Some("pca-udp"))
+        ]
+    );
+
+    let read = r
+        .sessions
+        .handle(Op::ReadAgent {
+            agent: "pca-udp/claude".into(),
+            lines: 0,
+            visible: true,
+        })
+        .await
+        .unwrap();
+    assert_eq!(read["text"], "pca screen");
+    let read = r
+        .sessions
+        .handle(Op::ReadAgent {
+            agent: "mono1/claude".into(),
+            lines: 0,
+            visible: true,
+        })
+        .await
+        .unwrap();
+    assert_eq!(read["text"], "mono1 screen");
+}
+
+fn codex_herdr(dir: &Path) -> FakeHerdr {
+    FakeHerdr::start(
+        dir,
+        json!({"type": "agent_started", "agent": agent_info("idle"), "argv": []}),
+        vec![fixture("folder-access"), fixture("ready")],
+    )
+}
+
+#[tokio::test]
+async fn a_first_prompt_that_fails_undoes_the_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let herdr = codex_herdr(dir.path());
+    herdr.answer(
+        "agent.prompt",
+        json!({"error": {"code": "pane_gone", "message": "the pane went away"}}),
+    );
+    let mut r = rig_with(dir, &herdr.socket, "codex-cli 0.163.0");
+    let e = r.sessions.start(start_req(Agent::Codex)).await.unwrap_err();
+    assert_eq!(e.code, ErrorCode::Herdr);
+    assert!(
+        r.sessions.get("s1").is_none(),
+        "the hub fails it, so the runner doesn't keep it"
+    );
+    assert!(herdr.methods().contains(&"workspace.close".to_owned()));
+    assert!(!r.dir.path().join("state/sessions/s1").exists());
+    assert!(audit_kinds(&mut r.events).contains(&"start_failed".to_owned()));
+}
+
+#[tokio::test]
+async fn a_start_cut_short_by_a_runner_restart_is_undone() {
+    let dir = tempfile::tempdir().unwrap();
+    let herdr = codex_herdr(dir.path());
+    let r = rig_with(dir, &herdr.socket, "codex-cli 0.163.0");
+    r.sessions.start(start_req(Agent::Codex)).await.unwrap();
+    assert!(r.sessions.get("s1").unwrap().launched);
+    assert_eq!(r.sessions.undo_interrupted_starts().await, 0);
+
+    // As a runner that died between creating the worktree and launching the agent left it.
+    let meta = r.dir.path().join("state/sessions/s1/meta.json");
+    let mut saved: Value = serde_json::from_slice(&std::fs::read(&meta).unwrap()).unwrap();
+    saved["launched"] = json!(false);
+    std::fs::write(&meta, saved.to_string()).unwrap();
+    r.sessions.load().unwrap();
+    assert_eq!(r.sessions.undo_interrupted_starts().await, 1);
+    assert!(r.sessions.get("s1").is_none());
+    assert!(herdr.methods().contains(&"workspace.close".to_owned()));
+
+    // Tasks saved before the field existed were complete starts.
+    saved.as_object_mut().unwrap().remove("launched");
+    let old: RunnerSession = serde_json::from_value(saved).unwrap();
+    assert!(old.launched);
+}
+
+#[tokio::test]
+async fn a_task_whose_herdr_server_is_gone_is_reported_exited() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut r, config_dir, _) = multi_rig(dir, vec![fixture("folder-access"), fixture("ready")]);
+    r.sessions.start(start_req(Agent::Codex)).await.unwrap();
+    while r.events.try_recv().is_ok() {}
+    // A reboot or `herdr server stop`: nothing listens any more.
+    std::fs::remove_file(config_dir.join("sessions/p-s1/herdr.sock")).unwrap();
+
+    tokio::time::pause();
+    tokio::spawn(super::super::watch::watch(r.sessions.clone()));
+    let exited = tokio::time::timeout(Duration::from_secs(300), async {
+        loop {
+            if let Some(Event::SessionExited { session_id }) = r.events.recv().await {
+                return session_id;
+            }
+        }
+    })
+    .await
+    .expect("reported once the server has been gone a while");
+    assert_eq!(exited, "s1");
+}
+

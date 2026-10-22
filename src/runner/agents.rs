@@ -29,6 +29,7 @@ pub async fn list(
             let name = a.name?;
             Some(AgentSummary {
                 session_id: sessions.get(&name).cloned(),
+                herdr_session: None,
                 agent_status: status_str(a.agent_status),
                 name,
                 pane_id: a.pane_id,

@@ -251,6 +251,9 @@ pub struct Session {
     pub notifies: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub start_commit: Option<String>,
+    /// The Herdr session it runs in; `herdr session attach <name>` opens it on the machine.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub herdr_session: Option<String>,
     pub pending_approvals: Vec<Approval>,
 }
 
@@ -260,6 +263,7 @@ impl From<SessionView> for Session {
             label: crate::whatsapp::route::label(&s.project_id, &s.id),
             machine_status: enum_str(&s.machine),
             lifecycle: s.lifecycle.as_str().to_owned(),
+            herdr_session: s.herdr_session,
             pending_approvals: s.pending_approvals.into_iter().map(Into::into).collect(),
             id: s.id,
             project_id: s.project_id,

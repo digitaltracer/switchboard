@@ -1684,6 +1684,13 @@
               "null"
             ]
           },
+          "herdr_session": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The Herdr session it runs in; `herdr session attach <name>` opens it on the machine."
+          },
           "pending_approvals": {
             "type": "array",
             "items": {
