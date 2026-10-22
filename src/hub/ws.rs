@@ -36,11 +36,12 @@ async fn upgrade(
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(bearer);
+    // The hub's own machine has no token, so no runner can connect as it.
     let machines = svc
         .config()
         .machines
         .iter()
-        .map(|m| (m.id.as_str(), m.token_hash.as_str()));
+        .filter_map(|m| Some((m.id.as_str(), m.token_hash.as_deref()?)));
     let Some(machine) = token.and_then(|t| authenticate(t, machines)) else {
         return (StatusCode::UNAUTHORIZED, "runner token required").into_response();
     };

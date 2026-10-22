@@ -1,5 +1,6 @@
-//! Hub: the runner WebSocket endpoint, the session service and the audit log. MCP and OAuth
-//! (step 7) mount on the same router and call the session service.
+//! Hub: the session service, the runner WebSocket endpoint, the built-in runner for its own
+//! machine, and the audit log. MCP and OAuth (step 7) mount on the same router and call the
+//! session service.
 
 pub mod app;
 pub mod relay_link;
@@ -48,6 +49,29 @@ pub async fn run(config: PathBuf, whatsapp_pair_phone: Option<String>) -> anyhow
         .with_context(|| format!("binding {listen}"))?;
     let hub = serve(svc.clone(), listener)?;
     tracing::info!(addr = %hub.addr, "hub listening");
+    let local = svc
+        .config()
+        .local_machine()
+        .map(|(id, l)| crate::runner::Settings {
+            machine_id: id.to_owned(),
+            state_dir: l.state_dir.clone(),
+            claude_config: l.claude_config.clone(),
+            herdr_session: l.herdr_session.clone(),
+        });
+    let _local = match local {
+        Some(settings) => {
+            let machine = settings.machine_id.clone();
+            let runner = crate::runner::start(settings).await?;
+            Some(AbortOnDrop(tokio::spawn(crate::runner::local::run(
+                svc.clone(),
+                machine,
+                runner.herdr_version,
+                runner.sessions,
+                runner.events,
+            ))))
+        }
+        None => None,
+    };
     let link = match &relay {
         Some(r) => {
             let keys = crate::relay::seal::HubKeys::load_or_create(&r.key_file)?;

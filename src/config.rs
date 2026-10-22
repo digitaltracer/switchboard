@@ -35,7 +35,7 @@ pub struct HubConfig {
     pub database: PathBuf,
     /// OAuth for step 7's MCP endpoint; the hub doesn't need it until then.
     pub auth: Option<AuthConfig>,
-    /// Where a session starts when the caller names no machine. Defaults to `vps`.
+    /// Where a session starts when the caller names no machine. Defaults to the local machine, else `vps`.
     pub default_machine: Option<String>,
     #[serde(default)]
     pub machines: Vec<MachineConfig>,
@@ -268,8 +268,22 @@ fn default_refresh_ttl() -> u64 {
 #[serde(deny_unknown_fields)]
 pub struct MachineConfig {
     pub id: String,
-    /// SHA-256 hex of the runner token.
-    pub token_hash: String,
+    /// SHA-256 hex of the runner token, for a runner on another machine that dials in.
+    pub token_hash: Option<String>,
+    /// The hub's own machine: the hub drives Herdr here itself, with no runner process or token.
+    pub local: Option<LocalRunnerConfig>,
+}
+
+/// The runner built into the hub, for the machine the hub runs on.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalRunnerConfig {
+    /// Per-session hook settings and secrets live here, outside every worktree.
+    pub state_dir: PathBuf,
+    /// Claude Code's config, written to pre-trust repo roots. Defaults to `~/.claude.json`.
+    pub claude_config: Option<PathBuf>,
+    /// Overrides the Herdr server the `herdr` CLI would find from the environment.
+    pub herdr_session: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -334,6 +348,13 @@ impl HubConfig {
         self.machines.iter().find(|m| m.id == id)
     }
 
+    /// The machine the hub runs on and drives itself, if any.
+    pub fn local_machine(&self) -> Option<(&str, &LocalRunnerConfig)> {
+        self.machines
+            .iter()
+            .find_map(|m| Some((m.id.as_str(), m.local.as_ref()?)))
+    }
+
     fn validate(&self) -> Result<(), ConfigError> {
         match &self.public_url {
             Some(url) => {
@@ -361,6 +382,9 @@ impl HubConfig {
         if let Some(push) = &self.push {
             push.validate()?;
         }
+        if let Some(relay) = &self.relay {
+            relay.validate()?;
+        }
 
         let mut machine_ids = HashSet::new();
         for m in &self.machines {
@@ -368,7 +392,25 @@ impl HubConfig {
             if !machine_ids.insert(m.id.as_str()) {
                 return Err(invalid(format!("duplicate machine id {:?}", m.id)));
             }
-            check_sha256_hex(&m.token_hash, &format!("machine {:?} token_hash", m.id))?;
+            match (&m.token_hash, &m.local) {
+                (Some(hash), None) => {
+                    check_sha256_hex(hash, &format!("machine {:?} token_hash", m.id))?
+                }
+                (None, Some(local)) => check_runner_paths(
+                    &local.state_dir,
+                    local.claude_config.as_deref(),
+                    local.herdr_session.as_deref(),
+                )?,
+                _ => {
+                    return Err(invalid(format!(
+                        "machine {:?} needs either token_hash (a runner on another machine) or [machines.local] (this one)",
+                        m.id
+                    )));
+                }
+            }
+        }
+        if self.machines.iter().filter(|m| m.local.is_some()).count() > 1 {
+            return Err(invalid("only one machine can be local"));
         }
         if let Some(d) = &self.default_machine
             && !machine_ids.contains(d.as_str())
@@ -382,9 +424,6 @@ impl HubConfig {
         for p in &self.projects {
             check_id(&p.id, "project id")?;
             for name in std::iter::once(&p.id).chain(&p.aliases) {
-        if let Some(relay) = &self.relay {
-            relay.validate()?;
-        }
                 check_id(name, "project alias")?;
                 if !names.insert(name.as_str()) {
                     return Err(invalid(format!(
@@ -460,20 +499,42 @@ impl RunnerConfig {
         if !self.token_file.is_absolute() {
             return Err(invalid("token_file must be an absolute path"));
         }
-        if !self.state_dir.is_absolute() {
-            return Err(invalid("state_dir must be an absolute path"));
+        if let Some(repo) = enclosing_git_tree(&self.token_file) {
+            return Err(invalid(format!(
+                "token_file is inside the git working tree {}; keep it outside any repo",
+                repo.display()
+            )));
         }
-        if self
-            .claude_config
-            .as_ref()
-            .is_some_and(|p| !p.is_absolute())
-        {
-            return Err(invalid("claude_config must be an absolute path"));
-        }
-        match &self.herdr_session {
-            Some(s) => check_herdr_session(s),
-            None => Ok(()),
-        }
+        check_runner_paths(
+            &self.state_dir,
+            self.claude_config.as_deref(),
+            self.herdr_session.as_deref(),
+        )
+    }
+}
+
+/// A runner's own settings, whether it runs alone or inside the hub.
+fn check_runner_paths(
+    state_dir: &Path,
+    claude_config: Option<&Path>,
+    herdr_session: Option<&str>,
+) -> Result<(), ConfigError> {
+    if !state_dir.is_absolute() {
+        return Err(invalid("state_dir must be an absolute path"));
+    }
+    // The hook secrets kept under the state folder stay out of every repo.
+    if let Some(repo) = enclosing_git_tree(state_dir) {
+        return Err(invalid(format!(
+            "state_dir is inside the git working tree {}; keep it outside any repo",
+            repo.display()
+        )));
+    }
+    if claude_config.is_some_and(|p| !p.is_absolute()) {
+        return Err(invalid("claude_config must be an absolute path"));
+    }
+    match herdr_session {
+        Some(s) => check_herdr_session(s),
+        None => Ok(()),
     }
 }
 
@@ -644,6 +705,52 @@ mac = "/Users/me/switchboard"
 
     fn err(text: &str) -> String {
         HubConfig::parse(text).unwrap_err().to_string()
+    }
+
+    #[test]
+    fn the_hubs_own_machine_needs_no_token() {
+        let local =
+            "id = \"mac\"\n[machines.local]\nstate_dir = \"/Users/me/.local/state/switchboard\"";
+        let text = hub_toml("").replace(&format!("id = \"mac\"\ntoken_hash = \"{HASH}\""), local);
+        let cfg = HubConfig::parse(&text).unwrap();
+        let (id, l) = cfg.local_machine().unwrap();
+        assert_eq!(
+            (id, l.state_dir.as_path()),
+            ("mac", Path::new("/Users/me/.local/state/switchboard"))
+        );
+        assert!(cfg.machine("vps").unwrap().local.is_none());
+        assert!(
+            HubConfig::parse(&hub_toml(""))
+                .unwrap()
+                .local_machine()
+                .is_none()
+        );
+
+        let both = text.replace(
+            "id = \"mac\"\n",
+            &format!("id = \"mac\"\ntoken_hash = \"{HASH}\"\n"),
+        );
+        assert!(err(&both).contains("either token_hash"));
+        let neither = hub_toml("").replace(
+            &format!("id = \"mac\"\ntoken_hash = \"{HASH}\""),
+            "id = \"mac\"",
+        );
+        assert!(err(&neither).contains("either token_hash"));
+        let two = text.replace(
+            &format!("id = \"vps\"\ntoken_hash = \"{HASH}\""),
+            "id = \"vps\"\n[machines.local]\nstate_dir = \"/srv/state\"",
+        );
+        assert!(err(&two).contains("only one machine can be local"));
+        let relative = text.replace("/Users/me/.local/state/switchboard", "state");
+        assert!(err(&relative).contains("state_dir must be an absolute path"));
+
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::create_dir(repo.path().join(".git")).unwrap();
+        let in_repo = text.replace(
+            "/Users/me/.local/state/switchboard",
+            &repo.path().join("state").display().to_string(),
+        );
+        assert!(err(&in_repo).contains("state_dir is inside the git working tree"));
     }
 
     #[test]
@@ -819,6 +926,39 @@ vps = "/srv/sb"
     }
 
     #[test]
+    fn relay_sections() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = dir.path().join("relay-key.json");
+        let section = format!(
+            "\n[relay]\nurl = \"https://adarshnb.com/relay/\"\nkey_file = \"{}\"\n",
+            key.display()
+        );
+        let r = HubConfig::parse(&hub_toml(&section))
+            .unwrap()
+            .relay
+            .unwrap();
+        assert_eq!(r.phone_url(), "https://adarshnb.com/relay");
+        assert_eq!(r.hub_url(), "wss://adarshnb.com/relay/hub");
+        let local = section.replace("https://adarshnb.com/relay/", "http://127.0.0.1:9090");
+        let r = HubConfig::parse(&hub_toml(&local)).unwrap().relay.unwrap();
+        assert_eq!(r.hub_url(), "ws://127.0.0.1:9090/hub");
+        let no_url = |t: &str| t.replace("public_url = \"https://sb.example.com\"\n", "");
+        assert!(
+            HubConfig::parse(&no_url(&hub_toml(&section))).is_ok(),
+            "a relay needs no domain"
+        );
+        assert!(err(&no_url(&hub_toml(""))).contains("[relay]"));
+        let plain = section.replace("https://adarshnb.com", "http://adarshnb.com");
+        assert!(err(&hub_toml(&plain)).contains("relay.url"));
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+        assert!(err(&hub_toml(&section)).contains("outside any repo"));
+
+        let relay = RelayConfig::parse("listen = \"127.0.0.1:9090\"\n[push]\nsender = \"log\"\nbundle_id = \"com.digitaltracer.switchboard\"\n").unwrap();
+        assert_eq!(relay.push.unwrap().sender, PushSenderKind::Log);
+        assert!(RelayConfig::parse("listen = \"127.0.0.1:9090\"\nprojects = []\n").is_err());
+    }
+
+    #[test]
     fn default_machine_and_optional_auth() {
         let text = hub_toml("").replace("listen =", "default_machine = \"mac\"\nlisten =");
         assert_eq!(
@@ -858,38 +998,17 @@ state_dir = "/Users/me/.local/state/switchboard"
         assert!(RunnerConfig::parse(&bad_session).is_err());
         let found = ok.replace("herdr_session = \"switchboard\"\n", "");
         assert_eq!(RunnerConfig::parse(&found).unwrap().herdr_session, None);
+
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::create_dir(repo.path().join(".git")).unwrap();
+        let in_repo = repo.path().join("state").display().to_string();
+        let state = ok.replace("/Users/me/.local/state/switchboard", &in_repo);
+        assert!(err_runner(&state).contains("state_dir is inside the git working tree"));
+        let token = ok.replace("/Users/me/.config/switchboard/runner.token", &in_repo);
+        assert!(err_runner(&token).contains("token_file is inside the git working tree"));
     }
 
-    #[test]
-    fn relay_sections() {
-        let dir = tempfile::tempdir().unwrap();
-        let key = dir.path().join("relay-key.json");
-        let section = format!(
-            "\n[relay]\nurl = \"https://adarshnb.com/relay/\"\nkey_file = \"{}\"\n",
-            key.display()
-        );
-        let r = HubConfig::parse(&hub_toml(&section))
-            .unwrap()
-            .relay
-            .unwrap();
-        assert_eq!(r.phone_url(), "https://adarshnb.com/relay");
-        assert_eq!(r.hub_url(), "wss://adarshnb.com/relay/hub");
-        let local = section.replace("https://adarshnb.com/relay/", "http://127.0.0.1:9090");
-        let r = HubConfig::parse(&hub_toml(&local)).unwrap().relay.unwrap();
-        assert_eq!(r.hub_url(), "ws://127.0.0.1:9090/hub");
-        let no_url = |t: &str| t.replace("public_url = \"https://sb.example.com\"\n", "");
-        assert!(
-            HubConfig::parse(&no_url(&hub_toml(&section))).is_ok(),
-            "a relay needs no domain"
-        );
-        assert!(err(&no_url(&hub_toml(""))).contains("[relay]"));
-        let plain = section.replace("https://adarshnb.com", "http://adarshnb.com");
-        assert!(err(&hub_toml(&plain)).contains("relay.url"));
-        std::fs::create_dir(dir.path().join(".git")).unwrap();
-        assert!(err(&hub_toml(&section)).contains("outside any repo"));
-
-        let relay = RelayConfig::parse("listen = \"127.0.0.1:9090\"\n[push]\nsender = \"log\"\nbundle_id = \"com.digitaltracer.switchboard\"\n").unwrap();
-        assert_eq!(relay.push.unwrap().sender, PushSenderKind::Log);
-        assert!(RelayConfig::parse("listen = \"127.0.0.1:9090\"\nprojects = []\n").is_err());
+    fn err_runner(text: &str) -> String {
+        RunnerConfig::parse(text).unwrap_err().to_string()
     }
 }

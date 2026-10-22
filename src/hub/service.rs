@@ -488,11 +488,12 @@ impl SessionService {
         self.events.subscribe()
     }
 
-    /// The machine a start goes to when the caller names none.
+    /// The machine a start goes to when the caller names none: as configured, else the hub's own.
     pub fn default_machine(&self) -> &str {
         self.cfg
             .default_machine
             .as_deref()
+            .or(self.cfg.local_machine().map(|(id, _)| id))
             .unwrap_or(DEFAULT_MACHINE)
     }
 

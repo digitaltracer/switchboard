@@ -120,6 +120,13 @@ async fn connect_once<H: Handler>(
     }
 }
 
+/// The frame with secrets masked, as the in-process link hands it to the hub.
+pub(crate) fn mask(frame: &Frame) -> Result<Frame, serde_json::Error> {
+    serde_json::from_value(redact(
+        &serde_json::to_value(frame).expect("frames serialize"),
+    ))
+}
+
 /// The frame as JSON text with secrets masked.
 fn masked(frame: &Frame) -> String {
     redact(&serde_json::to_value(frame).expect("frames serialize")).to_string()

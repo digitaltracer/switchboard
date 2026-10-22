@@ -5,6 +5,7 @@ pub mod codex;
 pub mod herdrs;
 pub mod hooks;
 pub mod link;
+pub mod local;
 pub mod sessions;
 pub mod watch;
 

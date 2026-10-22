@@ -33,7 +33,16 @@ use url::Url;
 
 const TOKEN: &str = "mac-runner-token";
 
-fn hub_config(db: &Path) -> HubConfig {
+/// A hub whose runner dials in with a token, or one that drives its own machine (`local`).
+fn hub_config(db: &Path, local: bool) -> HubConfig {
+    let machine = if local {
+        format!(
+            "[machines.local]\nstate_dir = \"{}\"",
+            db.parent().unwrap().join("runner-state").display()
+        )
+    } else {
+        format!("token_hash = \"{}\"", hash_token(TOKEN))
+    };
     HubConfig::parse(&format!(
         r#"
         public_url = "https://hub.example.com"
@@ -43,14 +52,14 @@ fn hub_config(db: &Path) -> HubConfig {
         passphrase_hash = "$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA"
         [[machines]]
         id = "mac"
-        token_hash = "{}"
+        {}
         [[projects]]
         id = "demo"
         description = "scratch project"
         repos = {{ mac = "/srv/demo" }}
         "#,
         db.display(),
-        hash_token(TOKEN)
+        machine
     ))
     .unwrap()
 }
@@ -190,18 +199,28 @@ struct World {
     bot: Caller,
 }
 
-async fn start_hub(db: &Path) -> Hub {
+async fn start_hub(db: &Path, local: bool) -> Hub {
     let store = Store::open(db).await.unwrap();
-    let svc = SessionService::new(hub_config(db), store, Clock::System);
+    let svc = SessionService::new(hub_config(db, local), store, Clock::System);
     svc.recover().await.unwrap();
     serve(svc, TcpListener::bind("127.0.0.1:0").await.unwrap()).unwrap()
 }
 
 impl World {
+    /// The runner dials the hub over WebSocket, through a proxy that can cut it.
     async fn new() -> Self {
+        Self::with(false).await
+    }
+
+    /// The hub drives its own machine through the built-in runner.
+    async fn local() -> Self {
+        Self::with(true).await
+    }
+
+    async fn with(local: bool) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let herdr = FakeHerdr::start(dir.path());
-        let hub = start_hub(&dir.path().join("hub.db")).await;
+        let hub = start_hub(&dir.path().join("hub.db"), local).await;
         let proxy = Proxy::start(hub.addr).await;
 
         let hook_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -230,7 +249,17 @@ impl World {
             machine_id: "mac".into(),
             herdr_version: Some("0.9.1".into()),
         };
-        tokio::spawn(link::run(link_cfg, sessions, events_rx));
+        if local {
+            tokio::spawn(switchboard::runner::local::run(
+                hub.service.clone(),
+                "mac".into(),
+                Some("0.9.1".into()),
+                sessions,
+                events_rx,
+            ));
+        } else {
+            tokio::spawn(link::run(link_cfg, sessions, events_rx));
+        }
         tokio::spawn(claude_session_starts(state_dir.clone()));
         let w = Self {
             dir,
@@ -361,7 +390,17 @@ where
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn start_approve_deny_prompt_read_and_stop_over_real_websocket() {
-    let w = World::new().await;
+    full_flow(World::new().await).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn start_approve_deny_prompt_read_and_stop_with_the_built_in_runner() {
+    let w = World::local().await;
+    assert_eq!(w.svc().default_machine(), "mac", "the hub's own machine");
+    full_flow(w).await;
+}
+
+async fn full_flow(w: World) {
     let started = w.start("build the thing", "rq-1").await.unwrap();
     assert_eq!(started.outcome, StartOutcome::Started);
     let sid = started.session_id.clone();
@@ -568,7 +607,7 @@ async fn hub_restart_on_its_database_keeps_sessions_and_denies_the_open_approval
     let approval = w.pending_approval(&sid).await;
 
     w.hub.take().unwrap().shutdown().await;
-    let hub = start_hub(&w.dir.path().join("hub.db")).await;
+    let hub = start_hub(&w.dir.path().join("hub.db"), false).await;
     w.proxy.point_at(hub.addr);
     w.proxy.cut();
     w.hub = Some(hub);
@@ -638,9 +677,26 @@ mod handshake {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_runner_cannot_connect_as_the_hubs_own_machine() {
+    let w = World::local().await;
+    let url = format!("ws://{}/runner", w.hub.as_ref().unwrap().addr);
+    let mut req = handshake::request(&url, &format!("Bearer {TOKEN}"));
+    let err = handshake::connect(&mut req).await;
+    assert!(err.contains("401"), "{err}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_token_in_a_command_or_terminal_output_never_reaches_the_hub_api_or_database() {
+    tokens_stay_masked(World::new().await).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_built_in_runner_masks_tokens_too() {
+    tokens_stay_masked(World::local().await).await;
+}
+
+async fn tokens_stay_masked(w: World) {
     const TOKEN: &str = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
-    let w = World::new().await;
     let sid = w.start("task", "rq-5").await.unwrap().session_id;
     *w.herdr.screen.lock().unwrap() =
         format!("$ export GITHUB_TOKEN={TOKEN}\nlogged in with {TOKEN}\n");
