@@ -1,7 +1,8 @@
 # Switchboard for iOS
 
-SwiftUI app for the Switchboard hub: pair the phone, see and start sessions, approve with Face ID
-or deny, and get pushes for approvals and finished turns.
+SwiftUI app for the Switchboard hub: pair the phone, tell agents what to do by voice or keyboard,
+see where a message will go before it's sent, follow sessions, approve with Face ID or deny, and
+get pushes for approvals and finished turns.
 
 ## Layout
 
@@ -59,3 +60,32 @@ trust prompt. When `api/openapi.json` changes, the next build regenerates the cl
   - an APNs auth key (`.p8`) configured in `hub.toml` under `[push.apns]`;
   - the `aps-environment` entitlement, which needs your team for signing.
 - See the main report for the exact steps.
+
+## TestFlight
+
+The App Store Connect record is "Switchboard: Agent Control" (SKU `switchboard-ios`) for the
+bundle id in `Config.xcconfig`. Its internal group, "Internal", has automatic distribution, so an
+upload reaches its testers once Apple has processed it, usually within minutes.
+
+Each upload needs a higher build number than the last. The app reads `CFBundleVersion` as an
+integer to compare with the hub's oldest supported build, so keep it a plain number.
+
+```sh
+cd apps/ios
+BUILD=2   # one more than the last upload
+xcodebuild archive -project Switchboard.xcodeproj -scheme Switchboard -configuration Release \
+  -destination 'generic/platform=iOS' -archivePath build/Switchboard.xcarchive \
+  -derivedDataPath build -skipPackagePluginValidation -allowProvisioningUpdates \
+  CURRENT_PROJECT_VERSION=$BUILD
+xcodebuild -exportArchive -archivePath build/Switchboard.xcarchive \
+  -exportOptionsPlist ExportOptions.plist -exportPath build/export -allowProvisioningUpdates
+```
+
+`ExportOptions.plist` signs for App Store Connect and uploads in the same step. Signing is
+automatic: Xcode, signed in to the team's account, creates the distribution certificate and
+profile when they're missing. Change its `teamID` along with `DEVELOPMENT_TEAM` for another team.
+
+`Switchboard/PrivacyInfo.xcprivacy` declares the app's one required-reason API (UserDefaults) and
+that it collects no data. `ITSAppUsesNonExemptEncryption` is `NO`: the relay encryption uses
+Apple's CryptoKit.
+
