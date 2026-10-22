@@ -31,32 +31,42 @@ public enum HubError: Error, LocalizedError, Equatable {
 
 /// What a paired phone remembers about its hub. Nothing here is secret; the keys are.
 public struct Pairing: Codable, Equatable, Sendable {
+    /// The hub's own address, or the relay's when `relay` is set.
     public var hubURL: URL
     public var hubId: String
     public var deviceId: String
     public var name: String
+    /// Set when the phone reaches the hub through a relay.
+    public var relay: RelayRoute?
 
-    public init(hubURL: URL, hubId: String, deviceId: String, name: String) {
+    public init(hubURL: URL, hubId: String, deviceId: String, name: String, relay: RelayRoute? = nil) {
         self.hubURL = hubURL
         self.hubId = hubId
         self.deviceId = deviceId
         self.name = name
+        self.relay = relay
     }
 }
 
-/// `switchboard://pair?url=…&code=…&hub=…`, from the QR code `switchboard admin pair-device` shows.
+/// The QR code `switchboard admin pair-device` shows: `switchboard://pair?url=…&code=…&hub=…` for
+/// a hub with its own address, or `?relay=…&k=…&s=…&code=…&hub=…` for one behind a relay.
 public struct PairingLink: Equatable, Sendable {
     public var hubURL: URL
     public var code: String
     public var hubId: String
+    public var relay: RelayRoute?
 
     public init?(_ text: String) {
         guard let c = URLComponents(string: text.trimmingCharacters(in: .whitespacesAndNewlines)),
               c.scheme == "switchboard", c.host == "pair" else { return nil }
         let q = Dictionary((c.queryItems ?? []).compactMap { i in i.value.map { (i.name, $0) } }, uniquingKeysWith: { a, _ in a })
-        guard let raw = q["url"], let url = URL(string: raw)?.withoutTrailingSlash, let scheme = url.scheme,
+        guard let raw = q["relay"] ?? q["url"], let url = URL(string: raw)?.withoutTrailingSlash, let scheme = url.scheme,
               ["https", "http"].contains(scheme), let code = q["code"], !code.isEmpty,
               let hub = q["hub"], !hub.isEmpty else { return nil }
+        if q["relay"] != nil {
+            guard let k = q["k"], let s = q["s"], let route = RelayRoute(relayURL: url, hubKey: k, signKey: s) else { return nil }
+            relay = route
+        }
         hubURL = url
         self.code = code
         hubId = hub
@@ -151,12 +161,28 @@ public final class Hub: Sendable {
     private let keys: DeviceKeys
 
     /// A hub the phone hasn't paired with yet: only meta and pairing calls work.
-    public convenience init(url: URL, keys: DeviceKeys, build: Int, transport: any ClientTransport = URLSessionTransport()) {
+    public convenience init(url: URL, keys: DeviceKeys, build: Int, transport: any ClientTransport = Hub.directTransport()) {
         self.init(url: url, pairing: nil, keys: keys, build: build, transport: transport)
     }
 
-    public convenience init(pairing: Pairing, keys: DeviceKeys, build: Int, transport: any ClientTransport = URLSessionTransport()) {
-        self.init(url: pairing.hubURL, pairing: pairing, keys: keys, build: build, transport: transport)
+    /// The hub a pairing link names, directly or through its relay.
+    public convenience init(link: PairingLink, keys: DeviceKeys, build: Int) {
+        self.init(url: link.hubURL, pairing: nil, keys: keys, build: build, transport: Self.transport(link.relay))
+    }
+
+    public convenience init(pairing: Pairing, keys: DeviceKeys, build: Int, transport: (any ClientTransport)? = nil) {
+        self.init(url: pairing.hubURL, pairing: pairing, keys: keys, build: build, transport: transport ?? Self.transport(pairing.relay))
+    }
+
+    static func transport(_ relay: RelayRoute?) -> any ClientTransport {
+        relay.map { RelayTransport(route: $0) } ?? directTransport()
+    }
+
+    /// Long-polls answer within 25 s, so a request silent for 40 s is on a dead connection.
+    public static func directTransport() -> any ClientTransport {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 40
+        return URLSessionTransport(configuration: .init(session: URLSession(configuration: config)))
     }
 
     private init(url: URL, pairing: Pairing?, keys: DeviceKeys, build: Int, transport: any ClientTransport) {

@@ -7,10 +7,14 @@ use anyhow::{Context, bail};
 use std::time::Duration;
 
 use crate::auth::device::{CODE_TTL, Devices};
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
+
 use crate::cli::AdminCommand;
 use crate::config::{HubConfig, RunnerConfig};
 use crate::hub::service::Clock;
 use crate::proto::auth::hash_token;
+use crate::relay::seal::HubKeys;
 use crate::runner::random_id;
 use crate::store::Store;
 
@@ -45,9 +49,26 @@ pub fn run(command: AdminCommand) -> anyhow::Result<()> {
         }
         AdminCommand::PairDevice { config } => with_devices(&config, |d, cfg| async move {
             let stdin = std::io::stdin();
+            let target = match &cfg.relay {
+                Some(r) => {
+                    let keys = HubKeys::load_or_create(&r.key_file)?;
+                    PairTarget::Relay {
+                        url: r.phone_url(),
+                        kx: B64.encode(keys.kx_public()),
+                        sign: B64.encode(keys.sign_public()),
+                    }
+                }
+                None => PairTarget::Direct(
+                    cfg.public_url
+                        .as_ref()
+                        .expect("validated: public_url without [relay]")
+                        .as_str()
+                        .to_owned(),
+                ),
+            };
             pair_device(
                 &d,
-                cfg.public_url.as_str(),
+                &target,
                 &mut stdin.lock(),
                 &mut std::io::stdout(),
                 PAIR_POLL,
@@ -106,29 +127,54 @@ where
         })
 }
 
-/// The link a phone scans: the hub's URL, the code and the hub id, which the phone checks.
-pub fn pairing_link(public_url: &str, code: &str, hub_id: &str) -> String {
+/// How a phone reaches the hub: its own public address, or a relay plus the hub's relay keys.
+pub enum PairTarget {
+    Direct(String),
+    /// The phone derives the relay id from both keys and encrypts to `kx`.
+    Relay {
+        url: String,
+        kx: String,
+        sign: String,
+    },
+}
+
+/// The link a phone scans: how to reach the hub, the code and the hub id, which the phone checks.
+pub fn pairing_link(target: &PairTarget, code: &str, hub_id: &str) -> String {
     let mut url = url::Url::parse("switchboard://pair").expect("valid");
-    url.query_pairs_mut()
-        .append_pair("url", public_url)
-        .append_pair("code", code)
-        .append_pair("hub", hub_id);
+    {
+        let mut q = url.query_pairs_mut();
+        match target {
+            PairTarget::Direct(public_url) => {
+                q.append_pair("url", public_url);
+            }
+            PairTarget::Relay { url, kx, sign } => {
+                q.append_pair("relay", url)
+                    .append_pair("k", kx)
+                    .append_pair("s", sign);
+            }
+        }
+        q.append_pair("code", code).append_pair("hub", hub_id);
+    }
     url.into()
 }
 
 /// Shows a code, waits for a phone to claim it, and pairs only if you confirm its fingerprint.
 pub async fn pair_device(
     d: &Devices,
-    public_url: &str,
+    target: &PairTarget,
     input: &mut impl std::io::BufRead,
     out: &mut impl Write,
     poll: Duration,
 ) -> anyhow::Result<()> {
     let code = d.issue_code().await?;
-    let link = pairing_link(public_url, &code.code, &code.hub_id);
+    let link = pairing_link(target, &code.code, &code.hub_id);
+    let via = match target {
+        PairTarget::Direct(u) => format!("hub  {u}"),
+        PairTarget::Relay { url, .. } => format!("relay {url}"),
+    };
     writeln!(
         out,
-        "\nScan this with the Switchboard app (valid for {} minutes, once):\n\n{}\n\nOr paste this link in the app:\n  {link}\n\nOr enter by hand:\n  hub  {public_url}\n  code {}\n",
+        "\nScan this with the Switchboard app (valid for {} minutes, once):\n\n{}\n\nOr paste this link in the app:\n  {link}\n\n  {via}\n  code {}\n",
         CODE_TTL.as_secs() / 60,
         render_qr(&link),
         code.code
@@ -442,14 +488,9 @@ mod tests {
                 d.claim(claim).await.unwrap()
             };
             let mut w = out.clone();
+            let target = PairTarget::Direct("https://hub.example".into());
             let (result, claimed) = tokio::join!(
-                pair_device(
-                    &d,
-                    "https://hub.example",
-                    &mut input,
-                    &mut w,
-                    Duration::from_millis(5)
-                ),
+                pair_device(&d, &target, &mut input, &mut w, Duration::from_millis(5)),
                 phone_side
             );
             assert_eq!(result.is_ok(), want == DeviceState::Active);
@@ -467,7 +508,11 @@ mod tests {
 
     #[test]
     fn the_pairing_link_carries_the_hub_url_code_and_hub_id() {
-        let link = pairing_link("https://hub.example.com", "c0de", "h1");
+        let link = pairing_link(
+            &PairTarget::Direct("https://hub.example.com".into()),
+            "c0de",
+            "h1",
+        );
         let url = url::Url::parse(&link).unwrap();
         let q: HashMap<_, _> = url.query_pairs().into_owned().collect();
         assert_eq!(
@@ -476,6 +521,18 @@ mod tests {
         );
         assert_eq!(q["url"], "https://hub.example.com");
         assert_eq!((q["code"].as_str(), q["hub"].as_str()), ("c0de", "h1"));
+        let relay = PairTarget::Relay {
+            url: "https://adarshnb.com/relay".into(),
+            kx: "K".into(),
+            sign: "S".into(),
+        };
+        let url = url::Url::parse(&pairing_link(&relay, "c0de", "h1")).unwrap();
+        let q: HashMap<_, _> = url.query_pairs().into_owned().collect();
+        assert!(!q.contains_key("url"));
+        assert_eq!(
+            (q["relay"].as_str(), q["k"].as_str(), q["s"].as_str()),
+            ("https://adarshnb.com/relay", "K", "S")
+        );
     }
 
     #[test]

@@ -2,6 +2,7 @@
 //! (step 7) mount on the same router and call the session service.
 
 pub mod app;
+pub mod relay_link;
 pub mod runners;
 pub mod service;
 pub mod ws;
@@ -33,6 +34,8 @@ pub async fn run(config: PathBuf, whatsapp_pair_phone: Option<String>) -> anyhow
         .with_context(|| format!("opening {}", cfg.database.display()))?;
     let listen = cfg.listen;
     let push = cfg.push.clone();
+    let relay = cfg.relay.clone();
+    let _ = rustls::crypto::ring::default_provider().install_default();
     tracing::info!(
         projects = cfg.projects.len(),
         machines = cfg.machines.len(),
@@ -45,8 +48,19 @@ pub async fn run(config: PathBuf, whatsapp_pair_phone: Option<String>) -> anyhow
         .with_context(|| format!("binding {listen}"))?;
     let hub = serve(svc.clone(), listener)?;
     tracing::info!(addr = %hub.addr, "hub listening");
-    let _push = match &push {
-        Some(p) => {
+    let link = match &relay {
+        Some(r) => {
+            let keys = crate::relay::seal::HubKeys::load_or_create(&r.key_file)?;
+            let link =
+                relay_link::RelayLink::new(r.hub_url(), keys, hub.app.clone(), Clock::System);
+            tracing::info!(relay = %r.phone_url(), relay_id = %link.relay_id(), "phones reach this hub through the relay");
+            Some(link)
+        }
+        None => None,
+    };
+    let _relay = link.as_ref().map(|l| AbortOnDrop(l.spawn()));
+    let _push = match (&push, &link) {
+        (Some(p), _) => {
             tracing::info!(sender = ?p.sender, "push notifications on");
             Some(AbortOnDrop(crate::push::start(
                 p,
@@ -54,7 +68,14 @@ pub async fn run(config: PathBuf, whatsapp_pair_phone: Option<String>) -> anyhow
                 Clock::System,
             )?))
         }
-        None => None,
+        (None, Some(link)) => {
+            tracing::info!("push notifications go through the relay");
+            let sender = relay_link::RelaySender(link.clone());
+            Some(AbortOnDrop(
+                crate::push::Dispatcher::new(svc.store().clone(), Clock::System, sender).spawn(),
+            ))
+        }
+        (None, None) => None,
     };
     let Some(wa) = whatsapp else {
         tokio::signal::ctrl_c().await?;
@@ -88,6 +109,8 @@ impl Drop for AbortOnDrop {
 pub struct Hub {
     pub addr: SocketAddr,
     pub service: Arc<SessionService>,
+    /// The app API alone, which a relay link serves to phones.
+    pub app: axum::Router,
     server: JoinHandle<std::io::Result<()>>,
     sweeper: JoinHandle<()>,
 }
@@ -96,10 +119,11 @@ pub struct Hub {
 pub fn serve(svc: Arc<SessionService>, listener: TcpListener) -> anyhow::Result<Hub> {
     let addr = listener.local_addr()?;
     let devices = Arc::new(Devices::new(svc.store().clone(), svc.clock().clone()));
-    let app = ws::routes(svc.clone()).merge(app::routes(app::AppState {
+    let app_api = app::routes(app::AppState {
         svc: svc.clone(),
         devices,
-    }));
+    });
+    let app = ws::routes(svc.clone()).merge(app_api.clone());
     let mut stop = svc.shutdown_signal();
     let server = tokio::spawn(async move {
         axum::serve(listener, app)
@@ -110,6 +134,7 @@ pub fn serve(svc: Arc<SessionService>, listener: TcpListener) -> anyhow::Result<
     });
     Ok(Hub {
         addr,
+        app: app_api,
         sweeper: svc.spawn_sweeper(),
         service: svc,
         server,

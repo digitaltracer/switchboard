@@ -29,7 +29,8 @@ fn invalid(msg: impl Into<String>) -> ConfigError {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HubConfig {
-    pub public_url: Url,
+    /// The hub's own HTTPS address, for phones that reach it directly. Not needed with `[relay]`.
+    pub public_url: Option<Url>,
     pub listen: SocketAddr,
     pub database: PathBuf,
     /// OAuth for step 7's MCP endpoint; the hub doesn't need it until then.
@@ -45,8 +46,77 @@ pub struct HubConfig {
     /// Which front doors may approve; every authenticated caller may deny.
     #[serde(default)]
     pub approve: ApproveRights,
-    /// Push notifications to paired phones. Without it nothing is sent; the outbox still fills.
+    /// Push notifications to paired phones. Without it they go through `[relay]`, if set.
     pub push: Option<PushConfig>,
+    /// Reach phones through a relay instead of a public address of the hub's own.
+    pub relay: Option<HubRelayConfig>,
+}
+
+/// The hub's side of a relay: where it is, and the hub's own relay keys.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HubRelayConfig {
+    /// The relay's public address, e.g. `https://adarshnb.com/relay`.
+    pub url: Url,
+    /// The hub's relay keys; created with mode 0600 on first start. Keep it outside any repo.
+    pub key_file: PathBuf,
+}
+
+impl HubRelayConfig {
+    fn validate(&self) -> Result<(), ConfigError> {
+        check_url(&self.url, "relay.url", &["https"], &["http"])?;
+        if self.url.query().is_some() || self.url.fragment().is_some() {
+            return Err(invalid("relay.url must not have a query or fragment"));
+        }
+        if !self.key_file.is_absolute() {
+            return Err(invalid("relay.key_file must be an absolute path"));
+        }
+        if let Some(repo) = enclosing_git_tree(&self.key_file) {
+            return Err(invalid(format!(
+                "relay.key_file is inside the git working tree {}; keep it outside any repo",
+                repo.display()
+            )));
+        }
+        Ok(())
+    }
+
+    /// The address phones post to, without a trailing slash.
+    pub fn phone_url(&self) -> String {
+        self.url.as_str().trim_end_matches('/').to_owned()
+    }
+
+    /// The WebSocket the hub dials: the same address with `ws`/`wss` and `/hub`.
+    pub fn hub_url(&self) -> String {
+        let base = self.phone_url();
+        let ws = match base.strip_prefix("https://") {
+            Some(rest) => format!("wss://{rest}"),
+            None => format!("ws://{}", base.trim_start_matches("http://")),
+        };
+        format!("{ws}/hub")
+    }
+}
+
+/// `relay.toml`: the relay that sits between phones and hubs, and sends their pushes.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RelayConfig {
+    pub listen: SocketAddr,
+    /// Pushes for every hub, with the app publisher's key. Without it pushes are refused.
+    pub push: Option<PushConfig>,
+}
+
+impl RelayConfig {
+    pub fn load(path: &Path) -> Result<Self, ConfigError> {
+        Self::parse(&read(path)?)
+    }
+
+    pub fn parse(text: &str) -> Result<Self, ConfigError> {
+        let cfg: Self = toml::from_str(text)?;
+        if let Some(p) = &cfg.push {
+            p.validate()?;
+        }
+        Ok(cfg)
+    }
 }
 
 /// How push notifications leave the hub.
@@ -265,9 +335,19 @@ impl HubConfig {
     }
 
     fn validate(&self) -> Result<(), ConfigError> {
-        check_url(&self.public_url, "public_url", &["https"], &["http"])?;
-        if self.public_url.query().is_some() || self.public_url.fragment().is_some() {
-            return Err(invalid("public_url must not have a query or fragment"));
+        match &self.public_url {
+            Some(url) => {
+                check_url(url, "public_url", &["https"], &["http"])?;
+                if url.query().is_some() || url.fragment().is_some() {
+                    return Err(invalid("public_url must not have a query or fragment"));
+                }
+            }
+            None if self.relay.is_none() => {
+                return Err(invalid(
+                    "set [relay] for phones to reach the hub, or public_url for direct HTTPS",
+                ));
+            }
+            None => {}
         }
         if !self.database.is_absolute() {
             return Err(invalid("database must be an absolute path"));
@@ -302,6 +382,9 @@ impl HubConfig {
         for p in &self.projects {
             check_id(&p.id, "project id")?;
             for name in std::iter::once(&p.id).chain(&p.aliases) {
+        if let Some(relay) = &self.relay {
+            relay.validate()?;
+        }
                 check_id(name, "project alias")?;
                 if !names.insert(name.as_str()) {
                     return Err(invalid(format!(
@@ -775,5 +858,38 @@ state_dir = "/Users/me/.local/state/switchboard"
         assert!(RunnerConfig::parse(&bad_session).is_err());
         let found = ok.replace("herdr_session = \"switchboard\"\n", "");
         assert_eq!(RunnerConfig::parse(&found).unwrap().herdr_session, None);
+    }
+
+    #[test]
+    fn relay_sections() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = dir.path().join("relay-key.json");
+        let section = format!(
+            "\n[relay]\nurl = \"https://adarshnb.com/relay/\"\nkey_file = \"{}\"\n",
+            key.display()
+        );
+        let r = HubConfig::parse(&hub_toml(&section))
+            .unwrap()
+            .relay
+            .unwrap();
+        assert_eq!(r.phone_url(), "https://adarshnb.com/relay");
+        assert_eq!(r.hub_url(), "wss://adarshnb.com/relay/hub");
+        let local = section.replace("https://adarshnb.com/relay/", "http://127.0.0.1:9090");
+        let r = HubConfig::parse(&hub_toml(&local)).unwrap().relay.unwrap();
+        assert_eq!(r.hub_url(), "ws://127.0.0.1:9090/hub");
+        let no_url = |t: &str| t.replace("public_url = \"https://sb.example.com\"\n", "");
+        assert!(
+            HubConfig::parse(&no_url(&hub_toml(&section))).is_ok(),
+            "a relay needs no domain"
+        );
+        assert!(err(&no_url(&hub_toml(""))).contains("[relay]"));
+        let plain = section.replace("https://adarshnb.com", "http://adarshnb.com");
+        assert!(err(&hub_toml(&plain)).contains("relay.url"));
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+        assert!(err(&hub_toml(&section)).contains("outside any repo"));
+
+        let relay = RelayConfig::parse("listen = \"127.0.0.1:9090\"\n[push]\nsender = \"log\"\nbundle_id = \"com.digitaltracer.switchboard\"\n").unwrap();
+        assert_eq!(relay.push.unwrap().sender, PushSenderKind::Log);
+        assert!(RelayConfig::parse("listen = \"127.0.0.1:9090\"\nprojects = []\n").is_err());
     }
 }

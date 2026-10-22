@@ -9,6 +9,7 @@ pub mod hub;
 pub mod proto;
 pub mod push;
 pub mod redact;
+pub mod relay;
 pub mod runner;
 pub mod store;
 pub mod whatsapp;

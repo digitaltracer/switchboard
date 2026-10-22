@@ -30,6 +30,9 @@ const BATCH: u32 = 50;
 #[derive(Debug, Clone, PartialEq)]
 pub struct Push {
     pub device_id: String,
+    pub kind: OutboxKind,
+    pub session_id: Option<String>,
+    pub approval_id: Option<String>,
     pub token: Option<String>,
     pub env: PushEnv,
     /// The APNs payload: `aps` plus ids.
@@ -71,16 +74,22 @@ pub fn text(kind: OutboxKind) -> (&'static str, &'static str) {
     }
 }
 
-pub fn payload(d: &DueDelivery) -> Value {
-    let (title, body) = text(d.kind);
-    let thread = d.session_id.as_deref().unwrap_or("switchboard");
+/// The whole notification: generic text for its kind plus ids. A relay builds it the same way,
+/// so a hub can't put its own text on someone's lock screen.
+pub fn payload_for(kind: OutboxKind, session_id: Option<&str>, approval_id: Option<&str>) -> Value {
+    let (title, body) = text(kind);
+    let thread = session_id.unwrap_or("switchboard");
     // Ids only; masked anyway, like everything that leaves the machine.
     redact(&json!({
         "aps": { "alert": { "title": title, "body": body }, "sound": "default", "thread-id": thread },
-        "kind": d.kind.as_str(),
-        "session_id": d.session_id,
-        "approval_id": d.approval_id,
+        "kind": kind.as_str(),
+        "session_id": session_id,
+        "approval_id": approval_id,
     }))
+}
+
+pub fn payload(d: &DueDelivery) -> Value {
+    payload_for(d.kind, d.session_id.as_deref(), d.approval_id.as_deref())
 }
 
 fn backoff(attempts: i64) -> Duration {
@@ -132,6 +141,9 @@ impl<S: Sender> Dispatcher<S> {
         }
         let push = Push {
             device_id: d.device_id.clone(),
+            kind: d.kind,
+            session_id: d.session_id.clone(),
+            approval_id: d.approval_id.clone(),
             token: d.push_token.clone(),
             env: d.push_env.unwrap_or(PushEnv::Production),
             payload: payload(d),
@@ -184,24 +196,52 @@ impl Sender for LogSender {
     }
 }
 
+/// The sender `[push]` names; the hub and the relay both build theirs here.
+pub enum AnySender {
+    Apns(Box<apns::Apns>),
+    Simctl(simctl::Simctl),
+    Log(LogSender),
+}
+
+impl AnySender {
+    pub fn from_config(cfg: &PushConfig) -> anyhow::Result<Self> {
+        Ok(match cfg.sender {
+            PushSenderKind::Apns => {
+                let a = cfg
+                    .apns
+                    .as_ref()
+                    .expect("validated: apns needs [push.apns]");
+                AnySender::Apns(Box::new(apns::Apns::new(a, &cfg.bundle_id)?))
+            }
+            PushSenderKind::Simctl => {
+                AnySender::Simctl(simctl::Simctl::new(&cfg.simulator, &cfg.bundle_id))
+            }
+            PushSenderKind::Log => AnySender::Log(LogSender),
+        })
+    }
+}
+
+impl Sender for AnySender {
+    fn needs_token(&self) -> bool {
+        match self {
+            AnySender::Apns(s) => s.needs_token(),
+            AnySender::Simctl(s) => s.needs_token(),
+            AnySender::Log(s) => s.needs_token(),
+        }
+    }
+
+    async fn send(&self, push: &Push) -> SendOutcome {
+        match self {
+            AnySender::Apns(s) => s.send(push).await,
+            AnySender::Simctl(s) => s.send(push).await,
+            AnySender::Log(s) => s.send(push).await,
+        }
+    }
+}
+
 /// Starts the configured sender over the hub's outbox.
 pub fn start(cfg: &PushConfig, store: Store, clock: Clock) -> anyhow::Result<JoinHandle<()>> {
-    Ok(match cfg.sender {
-        PushSenderKind::Apns => {
-            let a = cfg
-                .apns
-                .as_ref()
-                .expect("validated: apns needs [push.apns]");
-            Dispatcher::new(store, clock, apns::Apns::new(a, &cfg.bundle_id)?).spawn()
-        }
-        PushSenderKind::Simctl => Dispatcher::new(
-            store,
-            clock,
-            simctl::Simctl::new(&cfg.simulator, &cfg.bundle_id),
-        )
-        .spawn(),
-        PushSenderKind::Log => Dispatcher::new(store, clock, LogSender).spawn(),
-    })
+    Ok(Dispatcher::new(store, clock, AnySender::from_config(cfg)?).spawn())
 }
 
 #[cfg(test)]

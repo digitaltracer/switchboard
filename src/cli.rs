@@ -26,6 +26,11 @@ pub enum Command {
         #[arg(long)]
         whatsapp_pair_phone: Option<String>,
     },
+    /// Run the relay that phones and hubs dial out to; it forwards and sends pushes.
+    Relay {
+        #[arg(long, env = "SWITCHBOARD_RELAY_CONFIG", default_value = "relay.toml")]
+        config: PathBuf,
+    },
     /// Run a runner that dials out to the hub and drives the local Herdr session.
     Runner {
         #[arg(long, env = "SWITCHBOARD_RUNNER_CONFIG", default_value = "runner.toml")]
@@ -141,6 +146,10 @@ pub fn run() -> ExitCode {
                     whatsapp_pair_phone,
                 } => block_on(hub::run(config, whatsapp_pair_phone)),
                 Command::Runner { config } => block_on(runner::run(config)),
+                Command::Relay { config } => block_on(async move {
+                    let cfg = crate::config::RelayConfig::load(&config)?;
+                    crate::relay::server::run(cfg).await
+                }),
                 Command::Admin { command } => admin::run(command),
                 Command::Hook { .. } => unreachable!(),
             };

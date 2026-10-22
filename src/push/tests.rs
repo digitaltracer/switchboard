@@ -9,7 +9,7 @@ use super::apns::{Apns, Hosts, classify};
 use super::*;
 use crate::auth::device::Devices;
 use crate::auth::device::tests::{Phone, paired};
-use crate::store::{ApprovalRecord, Decision, Lifecycle, SessionRecord};
+use crate::store::{ApprovalRecord, Decision, Lifecycle, OutboxKind, SessionRecord};
 
 const T0: i64 = 1_700_000_000_000;
 
@@ -387,6 +387,9 @@ fn requests_go_to_the_devices_environment_with_apns_headers() {
     let mut push = Push {
         device_id: "d1".into(),
         token: Some("aa11".into()),
+        kind: OutboxKind::Approval,
+        session_id: None,
+        approval_id: None,
         env: PushEnv::Sandbox,
         payload: json!({"aps": {}}),
         collapse_id: "a1".into(),
@@ -464,6 +467,9 @@ async fn apns_sandbox_is_reachable() {
     let push = Push {
         device_id: "d1".into(),
         token: Some("00".repeat(32)),
+        kind: OutboxKind::Approval,
+        session_id: None,
+        approval_id: None,
         env: PushEnv::Sandbox,
         payload: json!({"aps": {"alert": "test"}}),
         collapse_id: "t".into(),
@@ -499,6 +505,9 @@ async fn apns_key_is_accepted() {
             .send(&Push {
                 device_id: "d1".into(),
                 token: Some("00".repeat(32)),
+                kind: OutboxKind::Approval,
+                session_id: None,
+                approval_id: None,
                 env,
                 payload: json!({"aps": {"alert": "test"}}),
                 collapse_id: "t".into(),
