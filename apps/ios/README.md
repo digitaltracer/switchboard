@@ -34,7 +34,7 @@ cd apps/ios && xcodebuild -project Switchboard.xcodeproj -scheme Switchboard \
   -destination 'platform=iOS Simulator,name=iPhone 18 Pro' -derivedDataPath build \
   -skipPackagePluginValidation build
 
-# UI tests against a throwaway local hub, with a simulator push at the end
+# UI tests against a throwaway local hub and a scripted runner, with a simulator push at the end
 apps/ios/scripts/e2e.sh
 ```
 
