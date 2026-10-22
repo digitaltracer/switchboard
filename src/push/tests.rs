@@ -387,10 +387,10 @@ fn requests_go_to_the_devices_environment_with_apns_headers() {
     let a = apns(key());
     let mut push = Push {
         device_id: "d1".into(),
-        token: Some("aa11".into()),
         kind: OutboxKind::Approval,
         session_id: None,
         approval_id: None,
+        token: Some("aa11".into()),
         env: PushEnv::Sandbox,
         payload: json!({"aps": {}}),
         collapse_id: "a1".into(),
@@ -467,10 +467,10 @@ async fn apns_sandbox_is_reachable() {
     let a = apns(key());
     let push = Push {
         device_id: "d1".into(),
-        token: Some("00".repeat(32)),
         kind: OutboxKind::Approval,
         session_id: None,
         approval_id: None,
+        token: Some("00".repeat(32)),
         env: PushEnv::Sandbox,
         payload: json!({"aps": {"alert": "test"}}),
         collapse_id: "t".into(),
@@ -505,10 +505,10 @@ async fn apns_key_is_accepted() {
         let outcome = a
             .send(&Push {
                 device_id: "d1".into(),
-                token: Some("00".repeat(32)),
                 kind: OutboxKind::Approval,
                 session_id: None,
                 approval_id: None,
+                token: Some("00".repeat(32)),
                 env,
                 payload: json!({"aps": {"alert": "test"}}),
                 collapse_id: "t".into(),
