@@ -28,6 +28,7 @@ const AGENT_START_TIMEOUT_MS: u64 = 60_000;
 const PANE_BUSY_RETRY: Duration = Duration::from_millis(500);
 const PANE_BUSY_ATTEMPTS: u32 = 20;
 const DEFAULT_READ_LINES: u32 = 80;
+const MAX_CHANGED_FILES: usize = 200;
 /// Queue slots status updates leave free for approvals and lifecycle events.
 const STATUS_RESERVE: usize = 64;
 
@@ -384,6 +385,15 @@ impl Sessions {
                     .await
                     .map_err(herdr_err)?;
                 Ok(serde_json::to_value(outcome).expect("serializes"))
+            }
+            Op::Changes { session_id } => {
+                let s = self.session(&session_id)?;
+                match (&s.worktree_path, &s.start_commit) {
+                    (Some(wt), Some(base)) => changes(Path::new(wt), base)
+                        .await
+                        .map_err(|e| err(ErrorCode::Internal, e)),
+                    _ => Ok(json!({ "files": [], "truncated": false })),
+                }
             }
         }
     }
@@ -896,6 +906,34 @@ pub async fn worktree_clean_and_merged(
         return Err("unmerged".into());
     }
     Ok(())
+}
+
+/// Files changed since `base`, committed or not, with line counts; new untracked files have none.
+async fn changes(worktree: &Path, base: &str) -> Result<Value, String> {
+    let diff = git(worktree, &["diff", "--numstat", "--no-renames", base, "--"]).await?;
+    if !diff.status.success() {
+        return Err(format!(
+            "git diff: {}",
+            String::from_utf8_lossy(&diff.stderr).trim()
+        ));
+    }
+    let mut files: Vec<Value> = String::from_utf8_lossy(&diff.stdout)
+        .lines()
+        .filter_map(|l| {
+            let mut f = l.splitn(3, '\t');
+            let (added, deleted, path) = (f.next()?, f.next()?, f.next()?);
+            Some(json!({ "path": path, "added": added.parse::<u64>().ok(), "deleted": deleted.parse::<u64>().ok() }))
+        })
+        .collect();
+    let new = git(worktree, &["ls-files", "--others", "--exclude-standard"]).await?;
+    files.extend(
+        String::from_utf8_lossy(&new.stdout)
+            .lines()
+            .map(|path| json!({ "path": path, "added": null, "deleted": null })),
+    );
+    let truncated = files.len() > MAX_CHANGED_FILES;
+    files.truncate(MAX_CHANGED_FILES);
+    Ok(json!({ "files": files, "truncated": truncated }))
 }
 
 /// The commit a fresh worktree is on; `None` when git can't say.

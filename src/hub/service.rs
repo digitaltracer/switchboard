@@ -410,6 +410,21 @@ pub struct ReadResult {
     pub untrusted: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChangedFile {
+    pub path: String,
+    /// Lines added and deleted; none for a binary or new untracked file.
+    pub added: Option<u64>,
+    pub deleted: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChangesResult {
+    pub files: Vec<ChangedFile>,
+    #[serde(default)]
+    pub truncated: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NotifyResult {
     pub session_id: String,
@@ -1049,6 +1064,25 @@ impl SessionService {
             truncated: v.get("truncated").and_then(Value::as_bool).unwrap_or(false),
             untrusted: true,
         })
+    }
+
+    /// Files the session changed since it started, with masked paths.
+    pub async fn changes(&self, session_id: &str) -> Result<ChangesResult, HubError> {
+        let s = self.session(session_id).await?;
+        let op = Op::Changes {
+            session_id: session_id.to_owned(),
+        };
+        let v = self
+            .runners
+            .call(&s.machine_id, op, CALL_TIMEOUT)
+            .await
+            .map_err(|e| runner_error(&s.machine_id, e))?;
+        let mut r: ChangesResult = serde_json::from_value(v)
+            .map_err(|e| HubError::BadRequest(format!("runner changes: {e}")))?;
+        for f in &mut r.files {
+            f.path = redact_str(&f.path);
+        }
+        Ok(r)
     }
 
     /// The session agent's visible screen, which shows any dialog. Untrusted text.

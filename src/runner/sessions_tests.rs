@@ -720,3 +720,48 @@ async fn a_task_whose_herdr_server_is_gone_is_reported_exited() {
     assert_eq!(exited, "s1");
 }
 
+#[tokio::test]
+async fn changes_lists_edits_since_the_start_commit_and_new_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let wt = dir.path();
+    let run = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(wt)
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{args:?}: {out:?}");
+    };
+    run(&["init", "-q"]);
+    std::fs::write(wt.join("a.rs"), "one\ntwo\n").unwrap();
+    run(&["add", "a.rs"]);
+    run(&["commit", "-qm", "start"]);
+    let base = head_commit(wt).await.unwrap();
+    std::fs::write(wt.join("a.rs"), "one\n2\nthree\n").unwrap();
+    run(&["commit", "-qam", "agent work"]);
+    std::fs::write(wt.join("a.rs"), "one\n2\nthree\nfour\n").unwrap();
+    std::fs::write(wt.join("new.rs"), "x\n").unwrap();
+
+    let v = changes(wt, &base).await.unwrap();
+    assert_eq!(
+        v,
+        json!({"files": [
+            {"path": "a.rs", "added": 3, "deleted": 1},
+            {"path": "new.rs", "added": null, "deleted": null},
+        ], "truncated": false})
+    );
+    assert!(
+        changes(wt, "0000000000000000000000000000000000000000")
+            .await
+            .is_err()
+    );
+}

@@ -1103,3 +1103,81 @@ async fn the_app_lists_and_reads_agents_switchboard_didnt_start_masked() {
     assert!(!text.contains(SECRET) && text.contains("ok"), "{text}");
 }
 
+#[tokio::test]
+async fn preview_says_where_a_message_would_go_without_doing_it() {
+    let mut r = rig_with(
+        "[[projects]]\nid = \"kraft\"\ndescription = \"k\"\nrepos = { mac = \"/Users/me/kraft\" }",
+    )
+    .await;
+    let (_, token) = r.pair(&Phone::new()).await;
+    let preview = |body: Value| r.call("POST", "/messages/preview", Some(&token), Some(body));
+
+    let start = preview(json!({"text": "in kraft, run the benchmarks"})).await;
+    assert_eq!(start.status, StatusCode::OK, "{}", start.body);
+    assert_eq!(
+        (
+            start.body["outcome"].as_str(),
+            start.body["project_id"].as_str(),
+            start.body["machine_id"].as_str()
+        ),
+        (Some("start"), Some("kraft"), Some("mac"))
+    );
+
+    let ask = preview(json!({"text": "fix the flaky test"})).await;
+    assert_eq!(ask.body["outcome"], "choose_project", "{}", ask.body);
+    assert_eq!(ask.body["options"].as_array().unwrap().len(), 2);
+
+    let sid = r.start(&token, "s1").await;
+    let send = r
+        .call(
+            "POST",
+            "/messages/preview",
+            Some(&token),
+            Some(json!({"text": "also add a test", "current": {"session_id": sid}})),
+        )
+        .await;
+    assert_eq!(
+        (
+            send.body["outcome"].as_str(),
+            send.body["target"]["session_id"].as_str()
+        ),
+        (Some("send"), Some(sid.as_str()))
+    );
+    // Nothing reached the runner: a preview never starts or sends.
+    assert!(r.runner.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn changes_come_from_the_runner_with_paths_masked() {
+    let mut r = rig().await;
+    let (_, token) = r.pair(&Phone::new()).await;
+    let sid = r.start(&token, "c1").await;
+    let call = r.call_later(
+        "GET",
+        &format!("/sessions/{sid}/changes"),
+        &token,
+        Value::Null,
+    );
+    let req = r.req().await;
+    assert!(matches!(req.op, Op::Changes { ref session_id } if *session_id == sid));
+    r.ok(
+        req.id,
+        json!({"files": [
+            {"path": "src/a.rs", "added": 3, "deleted": 1},
+            {"path": "export API_TOKEN=abc123secret", "added": null, "deleted": null}
+        ], "truncated": false}),
+    )
+    .await;
+    let got = call.await.unwrap();
+    assert_eq!(got.status, StatusCode::OK, "{}", got.body);
+    assert_eq!(
+        got.body["files"][0],
+        json!({"path": "src/a.rs", "added": 3, "deleted": 1})
+    );
+    assert!(got.body["files"][1].get("added").is_none());
+    assert!(
+        !got.body.to_string().contains("abc123secret"),
+        "{}",
+        got.body
+    );
+}

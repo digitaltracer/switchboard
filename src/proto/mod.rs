@@ -102,6 +102,10 @@ pub enum Op {
         agent: String,
         text: String,
     },
+    /// Files the session's worktree changed since it started. Read-only.
+    Changes {
+        session_id: String,
+    },
 }
 
 impl Op {
@@ -109,7 +113,11 @@ impl Op {
     pub fn is_mutating(&self) -> bool {
         !matches!(
             self,
-            Op::Read { .. } | Op::ListSessions | Op::Agents | Op::ReadAgent { .. }
+            Op::Read { .. }
+                | Op::ListSessions
+                | Op::Agents
+                | Op::ReadAgent { .. }
+                | Op::Changes { .. }
         )
     }
 }

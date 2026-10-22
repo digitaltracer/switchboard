@@ -8,8 +8,8 @@ use utoipa::{IntoParams, ToSchema};
 
 use crate::hub::route::Target;
 use crate::hub::service::{
-    ApprovalView, DecideResult, MachineView, ProjectView, PromptResult, SessionList, SessionView,
-    StartResult, StopResult,
+    ApprovalView, ChangesResult, DecideResult, MachineView, ProjectView, PromptResult, SessionList,
+    SessionView, StartResult, StopResult,
 };
 use crate::store::{DeviceRecord, Operation};
 
@@ -401,6 +401,43 @@ pub struct Output {
     pub truncated: bool,
 }
 
+/// One file a session changed since it started.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ChangedFile {
+    /// Relative to the worktree, masked.
+    pub path: String,
+    /// Lines added; absent for a binary or new untracked file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    pub added: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    pub deleted: Option<u64>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct Changes {
+    pub files: Vec<ChangedFile>,
+    /// More files changed than are listed.
+    pub truncated: bool,
+}
+
+impl From<ChangesResult> for Changes {
+    fn from(c: ChangesResult) -> Self {
+        Self {
+            files: c
+                .files
+                .into_iter()
+                .map(|f| ChangedFile {
+                    path: f.path,
+                    added: f.added,
+                    deleted: f.deleted,
+                })
+                .collect(),
+            truncated: c.truncated,
+        }
+    }
+}
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct PromptRequest {
@@ -516,6 +553,36 @@ pub struct MessageResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(nullable = false)]
     pub start: Option<StartResponse>,
+    pub options: Vec<MessageChoice>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct MessagePreviewRequest {
+    pub text: String,
+    /// Where text that names no project goes.
+    #[serde(default)]
+    #[schema(nullable = false)]
+    pub current: Option<TargetRef>,
+}
+
+/// Where a message would go, without sending it.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MessagePreview {
+    /// `start`, `send`, `select`, `choose_project`, `choose_target` or `refused`.
+    pub outcome: String,
+    /// What sending would do, or the question sending would ask, in a sentence.
+    pub message: String,
+    /// For `send` and `select`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    pub target: Option<TargetView>,
+    /// For `start`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    /// For `start`: the machine it would run on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub machine_id: Option<String>,
+    /// For `choose_project` and `choose_target`.
     pub options: Vec<MessageChoice>,
 }
 

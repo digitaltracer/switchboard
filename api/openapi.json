@@ -594,6 +594,62 @@
         ]
       }
     },
+    "/app/v1/sessions/{id}/changes": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Files the session's worktree changed since it started, committed or not. Read-only.",
+        "operationId": "get_changes",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Changes"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Machine offline or reconciling",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
     "/app/v1/sessions/{id}/prompt": {
       "post": {
         "tags": [
@@ -1069,6 +1125,52 @@
         ]
       }
     },
+    "/app/v1/messages/preview": {
+      "post": {
+        "tags": [
+          "messages"
+        ],
+        "summary": "Where `/messages` would send this text, without starting or sending anything.",
+        "operationId": "preview_message",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MessagePreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessagePreview"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
     "/app/v1/agents": {
       "get": {
         "tags": [
@@ -1348,6 +1450,49 @@
           }
         }
       },
+      "ChangedFile": {
+        "type": "object",
+        "description": "One file a session changed since it started.",
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Relative to the worktree, masked."
+          },
+          "added": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Lines added; absent for a binary or new untracked file.",
+            "minimum": 0
+          },
+          "deleted": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "Changes": {
+        "type": "object",
+        "required": [
+          "files",
+          "truncated"
+        ],
+        "properties": {
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChangedFile"
+            }
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "More files changed than are listed."
+          }
+        }
+      },
       "DecisionKind": {
         "type": "string",
         "enum": [
@@ -1545,6 +1690,65 @@
           "target": {
             "$ref": "#/components/schemas/TargetView",
             "description": "Set for something running to send to."
+          }
+        }
+      },
+      "MessagePreview": {
+        "type": "object",
+        "description": "Where a message would go, without sending it.",
+        "required": [
+          "outcome",
+          "message",
+          "options"
+        ],
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "description": "`start`, `send`, `select`, `choose_project`, `choose_target` or `refused`."
+          },
+          "message": {
+            "type": "string",
+            "description": "What sending would do, or the question sending would ask, in a sentence."
+          },
+          "target": {
+            "$ref": "#/components/schemas/TargetView",
+            "description": "For `send` and `select`."
+          },
+          "project_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For `start`."
+          },
+          "machine_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For `start`: the machine it would run on."
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MessageChoice"
+            },
+            "description": "For `choose_project` and `choose_target`."
+          }
+        }
+      },
+      "MessagePreviewRequest": {
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "current": {
+            "$ref": "#/components/schemas/TargetRef",
+            "description": "Where text that names no project goes."
           }
         }
       },

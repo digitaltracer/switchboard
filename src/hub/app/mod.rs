@@ -52,6 +52,7 @@ pub fn routes(state: AppState) -> Router {
         .route("/sessions", get(list_sessions).post(start_session))
         .route("/sessions/{id}", get(get_session))
         .route("/sessions/{id}/output", get(get_output))
+        .route("/sessions/{id}/changes", get(get_changes))
         .route("/sessions/{id}/prompt", post(prompt_session))
         .route("/sessions/{id}/stop", post(stop_session))
         .route("/sessions/{id}/mute", put(mute_session))
@@ -63,6 +64,7 @@ pub fn routes(state: AppState) -> Router {
         .route("/devices/self/push", put(set_push_token))
         .layer(middleware::from_fn(check_build))
         .route("/messages", post(post_message))
+        .route("/messages/preview", post(preview_message))
         .route("/agents", get(list_agents))
         .route("/agents/output", get(get_agent_output))
         .route("/meta", get(get_meta));
@@ -430,6 +432,19 @@ pub async fn get_output(
     }))
 }
 
+#[utoipa::path(get, path = "/app/v1/sessions/{id}/changes", tag = "sessions",
+    security(("device_token" = [])), params(("id" = String, Path)),
+    responses((status = 200, description = "OK", body = Changes), (status = 404, description = "Not found", body = ApiError),
+              (status = 503, description = "Machine offline or reconciling", body = ApiError)))]
+/// Files the session's worktree changed since it started, committed or not. Read-only.
+pub async fn get_changes(
+    State(st): State<AppState>,
+    _d: DeviceAuth,
+    Path(id): Path<String>,
+) -> ApiResult<Changes> {
+    Ok(Json(st.svc.changes(&id).await?.into()))
+}
+
 #[utoipa::path(post, path = "/app/v1/sessions/{id}/prompt", tag = "sessions",
     security(("device_token" = [])), params(("id" = String, Path)), request_body = PromptRequest,
     responses((status = 200, description = "OK", body = PromptResponse), (status = 409, description = "Conflict", body = ApiError)))]
@@ -481,6 +496,90 @@ pub async fn post_message(
     Ok(Json(
         follow(&st.svc, &d.caller(), r, &req.request_id, current).await?,
     ))
+}
+
+#[utoipa::path(post, path = "/app/v1/messages/preview", tag = "messages",
+    security(("device_token" = [])), request_body = MessagePreviewRequest,
+    responses((status = 200, description = "OK", body = MessagePreview), (status = 400, description = "Bad request", body = ApiError)))]
+/// Where `/messages` would send this text, without starting or sending anything.
+pub async fn preview_message(
+    State(st): State<AppState>,
+    _d: DeviceAuth,
+    Json(req): Json<MessagePreviewRequest>,
+) -> ApiResult<MessagePreview> {
+    let current = match &req.current {
+        Some(t) => Some(resolve(&st.svc, t).await?),
+        None => None,
+    };
+    let r = st.svc.route(&req.text, current.as_ref()).await?;
+    Ok(Json(preview(&st.svc, r)))
+}
+
+fn preview(svc: &SessionService, r: Route) -> MessagePreview {
+    let p = |outcome: &str, message: String| MessagePreview {
+        outcome: outcome.into(),
+        message,
+        target: None,
+        project_id: None,
+        machine_id: None,
+        options: vec![],
+    };
+    match r {
+        Route::Start {
+            project_id,
+            machine_id,
+            ..
+        } => {
+            let machine = machine_id.unwrap_or_else(|| svc.default_machine().to_owned());
+            MessagePreview {
+                project_id: Some(project_id.clone()),
+                machine_id: Some(machine.clone()),
+                ..p(
+                    "start",
+                    format!("Starts a new session in {project_id} on {machine}."),
+                )
+            }
+        }
+        Route::Send { target, .. } => MessagePreview {
+            target: Some((&target).into()),
+            ..p("send", format!("Sends to {}.", target.label()))
+        },
+        Route::Select(target) => MessagePreview {
+            target: Some((&target).into()),
+            ..p(
+                "select",
+                format!(
+                    "Makes {} where messages that name no project go.",
+                    target.label()
+                ),
+            )
+        },
+        Route::ChooseProject {
+            question, options, ..
+        } => MessagePreview {
+            options: options
+                .into_iter()
+                .map(|p| MessageChoice {
+                    label: p.clone(),
+                    project_id: Some(p),
+                    target: None,
+                })
+                .collect(),
+            ..p("choose_project", question)
+        },
+        Route::ChooseTarget { options, .. } => MessagePreview {
+            options: options
+                .iter()
+                .map(|t| MessageChoice {
+                    label: t.label().to_owned(),
+                    project_id: None,
+                    target: Some(t.into()),
+                })
+                .collect(),
+            ..p("choose_target", "That matches more than one. Which?".into())
+        },
+        Route::Refuse(why) => p("refused", why),
+    }
 }
 
 async fn resolve(svc: &SessionService, t: &TargetRef) -> Result<Target, AppError> {
