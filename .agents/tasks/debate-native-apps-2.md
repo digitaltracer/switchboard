@@ -204,3 +204,90 @@ Steps 1 to 4 are built. Step 5 is built up to real APNs delivery, which needs yo
   - A dispatcher over per-device delivery rows: backoff, 8 attempts, stale after 30 minutes, decided approvals dropped, invalid tokens forgotten.
   - Senders are `apns` (ES256 JWT, HTTP/2, rustls with ring), `simctl` and `log`, chosen in `hub.toml [push]`.
 - **Not done.** WhatsApp does not go quiet while an app device is paired (acceptance 9), because WhatsApp is frozen. Per-device mutes are not built either; push follows the shared mute state.
+
+## Relay (2026-10-20)
+
+Decided: the VPS is only a relay. Every user runs the hub and runner on their own machine; nobody else needs a VPS, domain or Tailscale.
+
+- `switchboard relay` (`src/relay/`), deployed at `https://adarshnb.com/relay` behind nginx (`location /relay/` to 127.0.0.1:9090), as the `switchboard-relay` systemd unit with `/etc/switchboard/relay.toml`. It holds the APNs key and runs no agents.
+- A hub with `[relay]` dials `wss://…/relay/hub` and proves its relay id: `hex(sha256(kx_pub ‖ sign_pub))[..32]`, signed challenge. Phones post to `/relay/h/<relay_id>`.
+- End-to-end encryption phone to hub (`src/relay/seal.rs`, the app's `Relay.swift`): one-off P-256 ECDH, HKDF-SHA256, ChaCha20-Poly1305. A ±5-minute window and a replay cache stop resent requests. Only the app API is reachable through it, never the runner endpoint. A shared fixture pins the format between Rust and CryptoKit.
+- Pushes: a hub with `[relay]` and no `[push]` asks the relay, which writes the generic text from the event kind and sends with its own key, at most 120 per hub per minute.
+- The pairing QR code for a relay hub carries `relay`, `k` and `s` instead of `url`. Direct mode stays for self-hosters.
+
+### As built (2026-10-21): relay audit fixes
+
+- **Replies never share a keystream.** Format version 2: each reply carries a random 12-byte nonce (`n`), and the reply key is consumed when it seals. A replayed or stale request gets an unsealed `Reject`. Before this, the hub sealed a predictable 409 under the same key and zero nonce as the first reply, which let a relay that replays a request recover that reply, including a device token. Hub, relay and app must run version 2 together.
+- **Relay limits:** pushes per hub (120 per minute, kept across reconnects), per device token (30), and in total (3000). At most 4096 hub connections. Phone envelopes are shape-checked before they're forwarded. A second connection for the same hub closes the first. A phone that hangs up frees its slot. Ready goes out before any request. SIGTERM shuts down cleanly. Push ids are checked.
+- **Hub link:** timeouts on the connect and every send. The backoff resets only after a minute connected.
+- **App:** a relay or nginx 5xx without the relay's own error body is "can't reach", so a start goes to reconciling.
+- **Config:** `public_url` is optional when `[relay]` is set.
+- **Deployed** to the VPS on 2026-10-21: built from a synced copy in `/opt/switchboard-src`, with the previous binary kept as `/usr/local/bin/switchboard.bak-20261020`. The live round trip passed through nginx and TLS.
+- **Deploy notes, not in code:** nginx `client_max_body_size 3m` (envelopes grow about 1.8 times), `proxy_read_timeout` of at least 60 s, WebSocket upgrade headers, and `limit_req` / `limit_conn` per IP on `/relay/`.
+
+## As built (2026-10-21): one message box
+
+- **Routing lives in the hub** (`src/hub/route.rs`, `SessionService::route`):
+  - A message that names one project starts a session there.
+  - `new <project> <prompt>` starts one explicitly.
+  - `use <x>[: text]` picks a running session, or an agent Switchboard didn't start.
+  - Anything else goes to the current target.
+  - When the hub can't tell, it asks.
+  - WhatsApp's free text and `new` go through the same step. Only its numbered `use <n>` stays WhatsApp-only.
+- **`POST /app/v1/messages` is stateless.** The app sends `current`, and the reply says where plain text goes next. Its outcomes are `started`, `sent`, `selected`, `choose_project`, `choose_target` and `refused`. A choice is answered with `project_id` or `target` and the same `request_id`. Starts and session prompts are idempotent by that id; prompts to outside agents are not.
+- **Agents Switchboard didn't start:**
+  - `GET /app/v1/agents` lists them.
+  - `GET /app/v1/agents/output` reads them, masked like everything else.
+  - Prompting them goes through `/messages` with a `target`.
+  - They have no hooks, so the app says to answer their dialogs in Herdr.
+- **The app:**
+  - A compose bar sits under the sessions list, with a chip for the current target, and a "Which one?" sheet when the hub asks.
+  - A "Your Herdr agents" section refreshes every 5 s, and each agent has a detail screen whose output refreshes every 3 s.
+  - Sending in a session's detail makes it current.
+- **Schema note:** optional object fields carry `#[schema(nullable = false)]`. swift-openapi-generator silently drops `oneOf [ref, null]` properties.
+
+## As built (2026-10-21): app audit fixes
+
+- **Push environment:** `aps-environment` is read from the build's `embedded.mobileprovision`. A development profile means sandbox; no profile (TestFlight, App Store) means production. It no longer follows `#if DEBUG`, which gave Release builds installed from Xcode tokens APNs rejects. The push token is resent after each successful list poll until the hub has it. Forget asks the hub to drop it first.
+- **Freshness:** a session's output is read every 3 s while it runs and is on screen, and a failed read says so. Coming back to the foreground restarts every poll (`AppModel.wakes`). Direct requests time out after 40 s of silence, relayed ones after 50 s.
+- **Lost answers:**
+  - Session prompts use one request id per draft.
+  - The message box checks a lost send for up to a minute.
+  - Start reconciliation doesn't call a request "never reached the hub" until the third look, since it may still be queued at the relay.
+  - Cancelling the start sheet stops watching a start that's still reconciling.
+- **The rest:**
+  - A cold-launch notification tap opens its session.
+  - Action errors aren't cleared by the next poll.
+  - Pairing has Cancel and gives up after the code's 10 minutes.
+  - Camera access being off is explained.
+  - The unused badge permission is gone.
+- **Not done (low):** one shared token refresh for parallel requests, real Secure Enclave error messages beyond "set a passcode", and approval countdowns that ignore the phone's clock skew.
+
+## As built (2026-10-22): design E, voice first
+
+- **Layout:** the home screen is "Agents", and the old sessions list and compose bar are gone. From the top it has:
+  - Approval cards.
+  - Live tiles for running sessions, each showing its last output line.
+  - Finished today, then your Herdr sessions.
+  - Browse: all sessions, machines and projects.
+
+  A session reads like a message: status, what this phone last said, the approval, the latest output, changed files and details.
+- **Voice:** a mic sits on the home screen and in each session's toolbar.
+  - Speech is transcribed on the device only (`requiresOnDeviceRecognition`). Where that isn't available it refuses and offers the keyboard, so audio never leaves the phone.
+  - A pause of 1.8 s ends the listen.
+  - Voice never approves: approvals stay a tap plus Face ID.
+- **The listening glow** is a Metal shader compiled from source at runtime (`EdgeGlowView`), so building the app needs no Metal toolchain.
+- **Review before sending:** `POST /app/v1/messages/preview` runs the hub's routing step without acting. The sheet shows the hub's choice first, then alternatives:
+  - A start offers the project's running sessions.
+  - A send offers a new task in that session's project.
+
+  An alternative is sent with `project_id` or `target`, as before.
+- **Changed files:** `GET /app/v1/sessions/{id}/changes` asks the runner for `git diff --numstat <start commit>` plus untracked files, at most 200. Paths are masked. A runner that predates the op fails the call, and the section stays hidden.
+- **"You said"** is kept on the phone (`AppModel.said`): the hub stores only a prompt's hash.
+- **e2e:** `examples/fake_runner.rs` stands in for a Mac. The UI test now:
+  - starts a session from the keyboard;
+  - opens it from the "Sent" card and checks its output, changes and approval;
+  - denies the approval;
+  - runs a scripted voice listen (`SB_FAKE_VOICE`).
+
+  `KEEP_RESULT=<path>` keeps the result bundle and its screenshots.

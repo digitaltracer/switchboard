@@ -244,3 +244,35 @@ Built: steps 1 to 6, and the WhatsApp bridge as a front door to the hub (2026-10
 - **Integrations.** The dot and Grok integration facts come from web sources dated September and October 2026, some of them third-party.
 - **Unverified.** Crate maintenance status and versions, release-signing details and Keycloak's fit were not checked. Nothing was built or run.
 - **Review.** Both reviewing agents checked the architecture across three rounds and the Rust draft across two. They agreed on everything here except OAuth, where one held that Keycloak is the safer choice. Their corrections are folded in: exact redirect matching, relative deadlines, `outcome_unknown` with reconciliation, stateless MCP, signed releases, the missing worktree calls and hook secret files kept outside the worktree. They haven't seen this final wording.
+
+## Herdr sessions per task (2026-10-21)
+
+The user's requirement: Switchboard creates a new Herdr session for each new task and can reuse any existing Herdr session. The runner had been built to drive a single Herdr server; it now follows all of them (`src/runner/herdrs.rs`).
+
+- One runner per machine, started from any terminal. It finds every Herdr session under `$XDG_CONFIG_HOME/herdr` (normally `~/.config/herdr`): the default plus `sessions/*`.
+- A new task starts a new headless Herdr session named `<project>-<first 4 of the task id>` (`herdr --session <name> server`, detached, with `HERDR_*` and Claude Code variables removed). Its worktree and agent are created in that session, which the task records. Stopping the task stops that session; it stays listed with its worktree, and `herdr session attach <name>` opens it.
+- Agents in every running Herdr session are listed, read and prompted as `<session>/<agent>`; a task's own agent keeps its plain `sb-` name.
+- Tasks from before this change, and the existing tests, use the single-server mode (`Sessions::new`).
+- The hub stores each task's Herdr session (migration 6), and the app shows it.
+
+### As built (2026-10-21): runner audit fixes
+
+- **Detached servers.** Herdr servers start with `setsid`, so stopping the runner, including systemd's control-group kill, leaves them running. A server that doesn't answer with the right protocol within 20 s is killed, and the error carries its log tail.
+- **Dead servers.** A task whose Herdr server refuses connections for 30 s is reported exited, after a reboot or a `server stop` for example. It used to stay "running" for good.
+- **Failed starts are undone.**
+  - A task records `launched` once its agent is up. A runner that restarts undoes starts that never launched.
+  - A first prompt that fails is undone too, unless its outcome is unknown.
+- **The event queue.** Outside agents' statuses go out on change, or once a minute, and never fill the last 64 queue slots. That room is left for approvals and lifecycle events while the hub is away. An aborted follower stops its watcher.
+- **Startup.**
+  - `herdr` is found by absolute path: `PATH`, then `~/.local/bin`, `~/.cargo/bin` and Homebrew's bin.
+  - The runner's `token_file` and `state_dir` must be outside every git working tree.
+- **Stopping.** A stop whose worktree removal fails keeps the worktree and still completes.
+
+### As built (2026-10-21): the hub drives its own machine
+
+The user chose one process for a single machine.
+- A `[[machines]]` entry has either a `token_hash`, for a runner on another machine that dials in, or a `[machines.local]` table with `state_dir`, and optionally `claude_config` and `herdr_session`. Only one machine can be local.
+- `switchboard hub` starts the runner inside itself for that machine (`src/runner/local.rs`). It's the same `runner::start` as `switchboard runner`. Frames pass in memory, masked as on the WebSocket, through the same `runner_connected`, `runner_frame` and `runner_disconnected`.
+- No runner can authenticate as the local machine, since it has no token.
+- With no `default_machine`, starts go to the local machine.
+- Herdr servers stay separate, detached processes, so a hub restart leaves sessions and agents running. Pending approvals end in deny, as before.
