@@ -155,3 +155,31 @@ func tokenAnswers(_ op: String) -> (Int, String)? {
     let settled = await StartFlow.reconcile(hub: hub, requestId: "r9")
     #expect(settled == .started(sessionId: "s9", alreadyRunning: false))
 }
+
+@Test func aRequestNotYetSeenIsGivenTimeBeforeItCountsAsNeverSent() async throws {
+    let fake = FakeHub { op, _, _ in
+        if let t = tokenAnswers(op) { return t }
+        return (404, #"{"error":{"code":"unknown_operation","message":"no request with this id reached the hub"}}"#)
+    }
+    let hub = Hub(pairing: pairing, keys: SoftwareKeys(), build: 1, transport: fake)
+    #expect(await StartFlow.reconcile(hub: hub, requestId: "r1", attempt: 0) == .unknown(requestId: "r1"))
+    if case .failed = await StartFlow.reconcile(hub: hub, requestId: "r1", attempt: 2) {} else {
+        Issue.record("after a few looks it never reached the hub")
+    }
+}
+
+@Test func pushTokensUseTheEnvironmentTheBuildWasSignedFor() {
+    func profile(_ env: String) -> Data {
+        let plist = """
+        <?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Entitlements</key>\
+        <dict><key>aps-environment</key><string>\(env)</string></dict></dict></plist>
+        """
+        // The plist sits between the binary parts of a signed envelope.
+        return Data([0x30, 0x82, 0x01]) + Data(plist.utf8) + Data([0xA0, 0x00])
+    }
+    #expect(APNsEnvironment.apsEnvironment(profile: profile("development")) == "development")
+    #expect(APNsEnvironment.isSandbox(profile: profile("development"), simulator: false))
+    #expect(!APNsEnvironment.isSandbox(profile: profile("production"), simulator: false), "ad hoc")
+    #expect(!APNsEnvironment.isSandbox(profile: nil, simulator: false), "TestFlight and the App Store carry no profile")
+    #expect(APNsEnvironment.isSandbox(profile: nil, simulator: true))
+}

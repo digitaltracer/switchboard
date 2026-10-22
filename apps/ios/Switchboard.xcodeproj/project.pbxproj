@@ -235,6 +235,8 @@
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Scans the pairing QR code from your hub.";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "Face ID confirms that you approve what an agent wants to run.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Lets you tell your agents what to do by voice.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Turns what you say into text on this iPhone. Only the text is sent to your hub.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
@@ -315,6 +317,8 @@
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Scans the pairing QR code from your hub.";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "Face ID confirms that you approve what an agent wants to run.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Lets you tell your agents what to do by voice.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Turns what you say into text on this iPhone. Only the text is sent to your hub.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;

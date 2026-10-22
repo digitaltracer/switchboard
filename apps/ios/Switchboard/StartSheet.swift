@@ -16,6 +16,7 @@ struct StartSheet: View {
     @State private var state: StartState?
     @State private var loadError: String?
     @State private var sending = false
+    @State private var startTask: Task<Void, Never>?
 
     var body: some View {
         NavigationStack {
@@ -49,9 +50,12 @@ struct StartSheet: View {
             }
             .navigationTitle("New session")
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { done(nil) } }
+                ToolbarItem(placement: .cancellationAction) {
+                    // A start still reconciling stops being watched; the hub still settles it.
+                    Button("Cancel") { startTask?.cancel(); done(nil) }
+                }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Start") { Task { await start() } }
+                    Button("Start") { startTask = Task { await start() } }
                         .disabled(project.isEmpty || prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || sending)
                         .accessibilityIdentifier("submitStart")
                 }
@@ -83,10 +87,10 @@ struct StartSheet: View {
         var tries = 0
         while case .unknown = state, tries < 150, !Task.isCancelled {
             try? await Task.sleep(for: .seconds(2))
-            state = await StartFlow.reconcile(hub: hub, requestId: requestId)
+            state = await StartFlow.reconcile(hub: hub, requestId: requestId, attempt: tries)
             tries += 1
         }
-        if case .started(let id, false) = state { done(id) }
+        if !Task.isCancelled, case .started(let id, false) = state { done(id) }
     }
 }
 

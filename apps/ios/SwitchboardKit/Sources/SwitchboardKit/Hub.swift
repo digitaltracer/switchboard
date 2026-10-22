@@ -19,6 +19,12 @@ public enum HubError: Error, LocalizedError, Equatable {
         return nil
     }
 
+    /// The request may have done its work; look it up by its id before calling it failed.
+    public var outcomeUnknown: Bool {
+        if case .unreachable = self { return true }
+        return ["outcome_unknown", "reconciling"].contains(code ?? "")
+    }
+
     public var errorDescription: String? {
         switch self {
         case .hub(_, let message, _, _): return message
@@ -263,6 +269,11 @@ public final class Hub: Sendable {
         try await Self.unwrap { try await client.getOutput(path: .init(id: id), query: .init(lines: Int32(lines))).ok.body.json }
     }
 
+    /// Files the session changed since it started, committed or not.
+    public func changes(_ id: String) async throws -> Schemas.Changes {
+        try await Self.unwrap { try await client.getChanges(path: .init(id: id)).ok.body.json }
+    }
+
     public func start(project: String, prompt: String, machine: String?, agent: String?, notify: Bool, requestId: String) async throws -> Schemas.StartResponse {
         try await Self.unwrap {
             try await client.startSession(body: .json(.init(
@@ -289,6 +300,39 @@ public final class Hub: Sendable {
 
     public func mute(_ id: String, muted: Bool) async throws -> Schemas.MuteResponse {
         try await Self.unwrap { try await client.muteSession(path: .init(id: id), body: .json(.init(muted: muted))).ok.body.json }
+    }
+
+    // One message box: the hub decides between a new session and an existing one.
+
+    /// Routes `text`. `current` is where text that names no project goes; `projectId` or
+    /// `target` answers the hub's question from a previous call with the same `requestId`.
+    public func message(
+        _ text: String, requestId: String, current: Schemas.TargetView?,
+        projectId: String? = nil, target: Schemas.TargetView? = nil
+    ) async throws -> Schemas.MessageResponse {
+        try await Self.unwrap {
+            try await client.postMessage(body: .json(.init(
+                text: text, requestId: requestId, current: current?.ref, projectId: projectId, target: target?.ref
+            ))).ok.body.json
+        }
+    }
+
+    /// Where `message` would send `text`, without starting or sending anything.
+    public func preview(_ text: String, current: Schemas.TargetView?) async throws -> Schemas.MessagePreview {
+        try await Self.unwrap {
+            try await client.previewMessage(body: .json(.init(text: text, current: current?.ref))).ok.body.json
+        }
+    }
+
+    /// Named Herdr agents Switchboard didn't start.
+    public func agents() async throws -> [Schemas.AgentView] {
+        try await Self.unwrap { try await client.listAgents().ok.body.json.agents }
+    }
+
+    public func agentOutput(machine: String, agent: String, lines: Int = 80) async throws -> Schemas.Output {
+        try await Self.unwrap {
+            try await client.getAgentOutput(query: .init(machineId: machine, agent: agent, lines: Int32(lines))).ok.body.json
+        }
     }
 
     // Approvals.
@@ -327,5 +371,20 @@ public final class Hub: Sendable {
         _ = try await Self.unwrap {
             try await client.setPushToken(body: .json(.init(token: hex, environment: sandbox ? .sandbox : .production))).noContent
         }
+    }
+}
+
+extension Schemas.TargetView {
+    public static func session(_ s: Schemas.Session) -> Self {
+        .init(kind: "session", sessionId: s.id, machineId: s.machineId, agent: s.agentName, label: s.label)
+    }
+
+    public static func agent(machine: String, name: String) -> Self {
+        .init(kind: "agent", machineId: machine, agent: name, label: name)
+    }
+
+    /// What a request names this by.
+    public var ref: Schemas.TargetRef {
+        .init(sessionId: sessionId, machineId: kind == "agent" ? machineId : nil, agent: kind == "agent" ? agent : nil)
     }
 }

@@ -8,7 +8,7 @@ struct RootView: View {
     var body: some View {
         switch model.phase {
         case .paired:
-            SessionsView()
+            HomeView()
         case .unpaired, .confirming:
             PairingView()
         }
@@ -22,6 +22,8 @@ struct PairingView: View {
     @State private var name = "iPhone"
     @State private var scanning = false
     @State private var working = false
+    @State private var pairTask: Task<Void, Never>?
+    @State private var cameraNote: String?
 
     var body: some View {
         NavigationStack {
@@ -34,13 +36,22 @@ struct PairingView: View {
                             .font(.title3.monospaced())
                             .accessibilityIdentifier("fingerprint")
                         ProgressView("Waiting for the hub…")
+                        Button("Cancel", role: .cancel) { pairTask?.cancel() }
+                            .accessibilityIdentifier("cancelPairing")
                     }
                 default:
                     Section {
                         Text("On the hub's machine run `switchboard admin pair-device`, then scan its QR code or paste the link.")
                             .font(.callout)
                         if DataScannerViewController.isSupported {
-                            Button("Scan QR code") { scanning = true }
+                            Button("Scan QR code") {
+                                if DataScannerViewController.isAvailable {
+                                    scanning = true
+                                } else {
+                                    cameraNote = "Switchboard can't use the camera. Allow it in Settings, or paste the link."
+                                }
+                            }
+                            if let cameraNote { Text(cameraNote).font(.caption).foregroundStyle(.orange) }
                         }
                         TextField("switchboard://pair?…", text: $linkText, axis: .vertical)
                             .textInputAutocapitalization(.never)
@@ -75,7 +86,7 @@ struct PairingView: View {
     private func pair() {
         guard let link = PairingLink(linkText) else { return }
         working = true
-        Task {
+        pairTask = Task {
             await model.pair(link: link, name: name.trimmingCharacters(in: .whitespaces))
             working = false
         }

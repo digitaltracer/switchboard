@@ -5,11 +5,16 @@ import UserNotifications
 @main
 struct SwitchboardApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var delegate
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
             RootView()
                 .environment(delegate.model)
+                .environment(delegate.voice)
+        }
+        .onChange(of: scenePhase) { old, new in
+            if new == .active, old != .active { delegate.model.becameActive() }
         }
     }
 }
@@ -18,6 +23,7 @@ struct SwitchboardApp: App {
 /// fetches the current state from the hub before showing or acting on anything.
 final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     @MainActor let model = AppModel()
+    @MainActor let voice = Voice()
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions _: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = self

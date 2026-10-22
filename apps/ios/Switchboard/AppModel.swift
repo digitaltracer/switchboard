@@ -26,16 +26,48 @@ final class AppModel {
     var banner: String?
     /// Set from a notification tap; the sessions screen opens it.
     var openSessionId: String?
+    /// Where text in the message box that names no project goes.
+    var current: Schemas.TargetView?
+    /// Named Herdr agents Switchboard didn't start, refreshed while the list is on screen.
+    private(set) var agents: [Schemas.AgentView] = []
+    /// Bumped each time the app comes back to the foreground; screens restart their polls on it,
+    /// since a long-poll begun before the phone slept may be on a dead connection.
+    private(set) var wakes = 0
+    /// What this phone last said to each session or agent, by its id. Kept on the phone only:
+    /// the hub doesn't store prompts.
+    private(set) var said: [String: Said] = [:]
+    /// The last message sent from the home screen's voice or keyboard, shown there for a while.
+    var lastSent: Sent?
     private var pollTask: Task<Void, Never>?
     private var pendingPushToken: Data?
+    /// The push token the hub has; resent until it does.
+    private var sentPushToken: Data?
 
     private static let pairingKey = "pairing"
+    private static let saidStore = "said"
+    private static let maxSaid = 50
+
+    struct Said: Codable, Equatable {
+        let text: String
+        let at: Date
+    }
+
+    struct Sent: Equatable {
+        let target: Schemas.TargetView?
+        let text: String
+        let started: Bool
+        let at: Date
+    }
 
     init(keys: DeviceKeys = SecureEnclaveKeys()) {
         self.keys = keys
         build = Int(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "") ?? 1
         if ProcessInfo.processInfo.environment["SB_RESET"] == "1" {
             forget()
+        }
+        if let data = UserDefaults.standard.data(forKey: Self.saidStore),
+           let s = try? JSONDecoder().decode([String: Said].self, from: data) {
+            said = s
         }
         if let data = UserDefaults.standard.data(forKey: Self.pairingKey),
            let p = try? JSONDecoder().decode(Pairing.self, from: data) {
@@ -56,7 +88,7 @@ final class AppModel {
     /// Checks the link's hub, claims the code with fresh keys, then waits for the admin's yes.
     func pair(link: PairingLink, name: String) async {
         pairingError = nil
-        let open = Hub(url: link.hubURL, keys: keys, build: build)
+        let open = Hub(link: link, keys: keys, build: build)
         do {
             let meta = try await open.meta()
             guard meta.hubId == link.hubId else {
@@ -76,32 +108,77 @@ final class AppModel {
             }
             phase = .confirming(fingerprint: claimed.fingerprint)
             var state = claimed.state
-            while state == "pending" {
+            // The code lives ten minutes; Cancel ends the wait sooner.
+            let deadline = Date().addingTimeInterval(600)
+            while state == "pending", Date() < deadline {
                 state = try await open.pairState(deviceId: claimed.deviceId)
+                if Task.isCancelled { phase = .unpaired; return }
             }
+            if state == "pending" { state = "not confirmed in time" }
             guard state == "active" else {
                 phase = .unpaired
                 pairingError = "Pairing was \(state) at the hub. Ask for a new code."
                 return
             }
-            let p = Pairing(hubURL: link.hubURL, hubId: claimed.hubId, deviceId: claimed.deviceId, name: name)
+            let p = Pairing(hubURL: link.hubURL, hubId: claimed.hubId, deviceId: claimed.deviceId, name: name, relay: link.relay)
             UserDefaults.standard.set(try JSONEncoder().encode(p), forKey: Self.pairingKey)
             use(p)
         } catch {
             phase = .unpaired
-            pairingError = error.localizedDescription
+            if !Task.isCancelled { pairingError = error.localizedDescription }
         }
+    }
+
+    /// Forgets the hub at the user's request, first asking it to stop pushing to this phone.
+    func unpair() async {
+        if let hub { try? await hub.setPushToken(nil, sandbox: sandbox) }
+        forget()
     }
 
     /// Forgets the hub and this phone's keys. The hub keeps the device until it's revoked.
     func forget() {
         pollTask?.cancel()
         UserDefaults.standard.removeObject(forKey: Self.pairingKey)
+        UserDefaults.standard.removeObject(forKey: Self.saidStore)
+        said = [:]
+        lastSent = nil
         try? keys.reset()
         pairing = nil
         hub = nil
         sessions = []
+        agents = []
+        current = nil
+        meta = nil
+        connected = false
+        sentPushToken = nil
         phase = .unpaired
+    }
+
+    /// The app is in the foreground again: restart every poll and resend anything still owed.
+    func becameActive() {
+        guard phase == .paired else { return }
+        wakes += 1
+        startPolling()
+    }
+
+    /// Remembers a message this phone sent, for the session page and the home screen.
+    func record(sent text: String, to target: Schemas.TargetView?, started: Bool) {
+        lastSent = Sent(target: target, text: text, started: started, at: Date())
+        guard let key = target.map(Self.saidKey(for:)) else { return }
+        said[key] = Said(text: text, at: Date())
+        if said.count > Self.maxSaid, let oldest = said.min(by: { $0.value.at < $1.value.at })?.key {
+            said[oldest] = nil
+        }
+        UserDefaults.standard.set(try? JSONEncoder().encode(said), forKey: Self.saidStore)
+    }
+
+    static func saidKey(for t: Schemas.TargetView) -> String {
+        t.sessionId ?? "agent:\(t.machineId)/\(t.agent ?? t.label)"
+    }
+
+    func refreshAgents() async {
+        guard let hub, let list = try? await hub.agents() else { return }
+        agents = list
     }
 
     // The session list, long-polled: the hub answers when something newer than our revision exists.
@@ -118,6 +195,9 @@ final class AppModel {
                     self.sessions = list.sessions
                     revision = list.revision
                     self.connected = true
+                    if let token = self.pendingPushToken, token != self.sentPushToken {
+                        await self.sendPushToken(token)
+                    }
                 } catch {
                     self.connected = false
                     if self.handleRevoked(error) { return }
@@ -139,7 +219,7 @@ final class AppModel {
 
     func registerPush() async {
         let center = UNUserNotificationCenter.current()
-        guard (try? await center.requestAuthorization(options: [.alert, .sound, .badge])) == true else { return }
+        guard (try? await center.requestAuthorization(options: [.alert, .sound])) == true else { return }
         UIApplication.shared.registerForRemoteNotifications()
         if let token = pendingPushToken { await sendPushToken(token) }
     }
@@ -151,11 +231,18 @@ final class AppModel {
 
     private func sendPushToken(_ token: Data) async {
         guard let hub else { return }
-        #if DEBUG
-        let sandbox = true
+        if (try? await hub.setPushToken(token, sandbox: sandbox)) != nil { sentPushToken = token }
+    }
+
+    /// From how this build was signed, not Debug or Release: a Release build installed from
+    /// Xcode still gets development-environment tokens.
+    private var sandbox: Bool {
+        let profile = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision")
+            .flatMap { try? Data(contentsOf: $0) }
+        #if targetEnvironment(simulator)
+        return APNsEnvironment.isSandbox(profile: profile, simulator: true)
         #else
-        let sandbox = false
+        return APNsEnvironment.isSandbox(profile: profile, simulator: false)
         #endif
-        try? await hub.setPushToken(token, sandbox: sandbox)
     }
 }

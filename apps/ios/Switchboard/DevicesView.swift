@@ -34,7 +34,7 @@ struct DevicesView: View {
                 }
                 if let p = model.pairing {
                     Section("Hub") {
-                        LabeledContent("Address", value: p.hubURL.absoluteString)
+                        LabeledContent(p.relay == nil ? "Address" : "Relay", value: p.hubURL.absoluteString)
                         if let m = model.meta { LabeledContent("Oldest supported build", value: "\(m.minClientBuild)") }
                         Button("Forget this hub", role: .destructive) { confirmForget = true }
                     }
@@ -49,7 +49,7 @@ struct DevicesView: View {
                 Button("Revoke", role: .destructive) { Task { await revoke() } }
             }
             .confirmationDialog("Forget this hub? This phone's keys are deleted; revoke it at the hub too.", isPresented: $confirmForget) {
-                Button("Forget", role: .destructive) { model.forget() }
+                Button("Forget", role: .destructive) { Task { await model.unpair() } }
             }
         }
     }

@@ -37,8 +37,9 @@ public enum StartFlow {
         }
     }
 
-    /// One look at the hub's record of the request.
-    public static func reconcile(hub: Hub, requestId: String) async -> StartState {
+    /// One look at the hub's record of the request. `attempt` counts from 0: a request sent a
+    /// moment ago may still be on its way, so "never reached" only counts from the third look.
+    public static func reconcile(hub: Hub, requestId: String, attempt: Int = 2) async -> StartState {
         do {
             let op = try await hub.operation(requestId)
             switch op.state {
@@ -51,7 +52,7 @@ public enum StartFlow {
             }
         } catch let e as HubError where e.code == "unknown_operation" {
             // The request never reached the hub, so retrying with the same id is safe.
-            return .failed(message: "The start never reached the hub. Try again.")
+            return attempt < 2 ? .unknown(requestId: requestId) : .failed(message: "The start never reached the hub. Try again.")
         } catch {
             return .unknown(requestId: requestId)
         }
@@ -63,5 +64,28 @@ extension Data {
         var s = base64URL.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
         s += String(repeating: "=", count: (4 - s.count % 4) % 4)
         self.init(base64Encoded: s)
+    }
+}
+
+/// Which APNs environment this build's push tokens belong to. A development-signed build
+/// carries a profile saying `development`; TestFlight and App Store builds carry none and use
+/// production; the simulator's pushes come from `simctl` and only need a token-less sandbox.
+public enum APNsEnvironment {
+    public static func isSandbox(profile: Data?, simulator: Bool) -> Bool {
+        if simulator { return true }
+        guard let profile else { return false }
+        return apsEnvironment(profile: profile) != "production"
+    }
+
+    /// `aps-environment` from a provisioning profile, whose plist sits inside a signed envelope.
+    public static func apsEnvironment(profile: Data) -> String? {
+        guard let start = profile.range(of: Data("<?xml".utf8)),
+              let end = profile.range(of: Data("</plist>".utf8), in: start.lowerBound..<profile.endIndex),
+              let plist = try? PropertyListSerialization.propertyList(
+                  from: profile[start.lowerBound..<end.upperBound], format: nil
+              ) as? [String: Any],
+              let entitlements = plist["Entitlements"] as? [String: Any]
+        else { return nil }
+        return entitlements["aps-environment"] as? String
     }
 }
