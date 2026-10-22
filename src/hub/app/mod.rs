@@ -17,11 +17,13 @@ use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use tokio::time::Instant;
 
+use super::route::{self, Route, Target};
 use super::service::{self, Caller, HubError, MAX_WAIT, SessionService};
 use crate::auth::device::{AuthError, ClaimRequest, Devices, MESSAGE_VERSION};
 use crate::cli::Agent;
 use crate::proto::auth::bearer;
-use crate::store::{DeviceRecord, DeviceState, PushEnv};
+use crate::proto::{AgentPromptOutcome, ErrorCode};
+use crate::store::{DeviceRecord, DeviceState, Lifecycle, PushEnv};
 use types::*;
 
 pub const PREFIX: &str = "/app/v1";
@@ -60,6 +62,9 @@ pub fn routes(state: AppState) -> Router {
         .route("/devices/{id}", delete(revoke_device))
         .route("/devices/self/push", put(set_push_token))
         .layer(middleware::from_fn(check_build))
+        .route("/messages", post(post_message))
+        .route("/agents", get(list_agents))
+        .route("/agents/output", get(get_agent_output))
         .route("/meta", get(get_meta));
     Router::new().nest(PREFIX, api).with_state(state)
 }
@@ -439,6 +444,246 @@ pub async fn prompt_session(
         .prompt(&d.caller(), &id, &req.text, req.request_id.as_deref())
         .await?;
     Ok(Json(r.into()))
+}
+
+#[utoipa::path(post, path = "/app/v1/messages", tag = "messages",
+    security(("device_token" = [])), request_body = MessageRequest,
+    responses((status = 200, description = "Started, sent, a question, or a refusal with its reason", body = MessageResponse),
+              (status = 404, description = "Not found", body = ApiError),
+              (status = 503, description = "Machine offline or reconciling", body = ApiError), (status = 504, description = "Outcome unknown", body = ApiError)))]
+/// One message, routed as WhatsApp routes it: a named project starts a session there, `use <x>`
+/// picks something running, and anything else goes to `current`.
+pub async fn post_message(
+    State(st): State<AppState>,
+    d: DeviceAuth,
+    Json(req): Json<MessageRequest>,
+) -> ApiResult<MessageResponse> {
+    if req.request_id.trim().is_empty() {
+        return Err(bad("request_id is required"));
+    }
+    let current = match &req.current {
+        Some(t) => Some(resolve(&st.svc, t).await?),
+        None => None,
+    };
+    let r = match (&req.project_id, &req.target) {
+        (Some(p), _) => {
+            if st.svc.config().project(p).is_none() {
+                return Err(bad(&format!("unknown project {p:?}")));
+            }
+            st.svc.start_route(p, &req.text)
+        }
+        (None, Some(t)) => Route::Send {
+            target: resolve(&st.svc, t).await?,
+            text: req.text.clone(),
+        },
+        (None, None) => st.svc.route(&req.text, current.as_ref()).await?,
+    };
+    Ok(Json(
+        follow(&st.svc, &d.caller(), r, &req.request_id, current).await?,
+    ))
+}
+
+async fn resolve(svc: &SessionService, t: &TargetRef) -> Result<Target, AppError> {
+    match (&t.session_id, &t.machine_id, &t.agent) {
+        (Some(id), ..) => {
+            let s = svc.get(id, None, Duration::ZERO).await?;
+            Ok(Target::Session {
+                label: route::label(&s.project_id, &s.id),
+                id: s.id,
+                machine: s.machine_id,
+                agent: s.agent_name,
+            })
+        }
+        (None, Some(machine), Some(name)) => Ok(Target::Agent {
+            machine: machine.clone(),
+            name: name.clone(),
+        }),
+        _ => Err(bad(
+            "a target is a session_id, or a machine_id with an agent",
+        )),
+    }
+}
+
+fn reply(outcome: &str, message: String, current: Option<&Target>) -> MessageResponse {
+    MessageResponse {
+        outcome: outcome.into(),
+        message,
+        current: current.map(TargetView::from),
+        start: None,
+        options: vec![],
+    }
+}
+
+async fn follow(
+    svc: &Arc<SessionService>,
+    caller: &Caller,
+    r: Route,
+    request_id: &str,
+    current: Option<Target>,
+) -> Result<MessageResponse, AppError> {
+    Ok(match r {
+        Route::Start {
+            project_id,
+            machine_id,
+            prompt,
+        } => {
+            let started = svc
+                .start(
+                    caller,
+                    service::StartRequest {
+                        project_id,
+                        prompt,
+                        machine_id,
+                        agent: None,
+                        notify: true,
+                        request_id: Some(request_id.to_owned()),
+                    },
+                )
+                .await?;
+            let label = route::label(&started.project_id, &started.session_id);
+            let target = Target::Session {
+                id: started.session_id.clone(),
+                label: label.clone(),
+                machine: started.machine_id.clone(),
+                agent: started.agent_name.clone(),
+            };
+            let branch = started.branch.clone().unwrap_or_default();
+            let mut out = reply(
+                "started",
+                format!(
+                    "Started {label} in {}, branch {branch}.",
+                    started.project_id
+                ),
+                Some(&target),
+            );
+            out.start = Some(started.into());
+            out
+        }
+        Route::Send { target, text } => match &target {
+            Target::Session { id, label, .. } => {
+                match svc.prompt(caller, id, &text, Some(request_id)).await {
+                    Ok(_) => reply("sent", format!("Sent to {label}."), Some(&target)),
+                    Err(HubError::NotRunning { .. } | HubError::UnknownSession(_)) => {
+                        reply("refused", format!("{label} isn't running any more."), None)
+                    }
+                    Err(HubError::Runner(e)) if e.code == ErrorCode::AgentBlocked => reply(
+                        "refused",
+                        format!(
+                            "{label} is waiting for an approval or at a dialog, so nothing was sent."
+                        ),
+                        Some(&target),
+                    ),
+                    Err(e) => return Err(e.into()),
+                }
+            }
+            Target::Agent { machine, name } => {
+                match svc.prompt_agent(caller, machine, name, &text).await? {
+                    AgentPromptOutcome::Sent => {
+                        reply("sent", format!("Sent to {name}."), Some(&target))
+                    }
+                    AgentPromptOutcome::Blocked { .. } => reply(
+                        "refused",
+                        format!(
+                            "{name} is waiting at a dialog, so nothing was sent. Answer it in Herdr."
+                        ),
+                        Some(&target),
+                    ),
+                    AgentPromptOutcome::NotFound => {
+                        reply("refused", format!("{name} isn't running any more."), None)
+                    }
+                }
+            }
+        },
+        Route::Select(target) => reply(
+            "selected",
+            format!(
+                "Messages that name no project now go to {}.",
+                target.label()
+            ),
+            Some(&target),
+        ),
+        Route::ChooseProject {
+            question, options, ..
+        } => MessageResponse {
+            options: options
+                .into_iter()
+                .map(|p| MessageChoice {
+                    label: p.clone(),
+                    project_id: Some(p),
+                    target: None,
+                })
+                .collect(),
+            ..reply("choose_project", question, current.as_ref())
+        },
+        Route::ChooseTarget { options, .. } => MessageResponse {
+            options: options
+                .iter()
+                .map(|t| MessageChoice {
+                    label: t.label().to_owned(),
+                    project_id: None,
+                    target: Some(t.into()),
+                })
+                .collect(),
+            ..reply(
+                "choose_target",
+                "That matches more than one. Which?".into(),
+                current.as_ref(),
+            )
+        },
+        Route::Refuse(why) => reply("refused", why, current.as_ref()),
+    })
+}
+
+#[utoipa::path(get, path = "/app/v1/agents", tag = "agents", security(("device_token" = [])),
+    responses((status = 200, description = "OK", body = Agents)))]
+/// Named Herdr agents Switchboard didn't start, on every connected machine.
+pub async fn list_agents(State(st): State<AppState>, _d: DeviceAuth) -> ApiResult<Agents> {
+    let running = st
+        .svc
+        .list()
+        .await?
+        .into_iter()
+        .filter(|s| matches!(s.lifecycle, Lifecycle::Starting | Lifecycle::Running))
+        .filter_map(|s| s.agent_name)
+        .collect();
+    let agents = st
+        .svc
+        .outside_agents(&running)
+        .await
+        .into_iter()
+        .map(|(machine_id, a)| AgentView {
+            machine_id,
+            name: a.name,
+            herdr_session: a.herdr_session,
+            kind: a.kind,
+            agent_status: a.agent_status,
+        })
+        .collect();
+    Ok(Json(Agents { agents }))
+}
+
+#[utoipa::path(get, path = "/app/v1/agents/output", tag = "agents",
+    security(("device_token" = [])), params(AgentOutputQuery),
+    responses((status = 200, description = "OK", body = Output), (status = 404, description = "Not found", body = ApiError),
+              (status = 503, description = "Machine offline", body = ApiError)))]
+pub async fn get_agent_output(
+    State(st): State<AppState>,
+    _d: DeviceAuth,
+    Query(q): Query<AgentOutputQuery>,
+) -> ApiResult<Output> {
+    let r = st
+        .svc
+        .read_agent(
+            &q.machine_id,
+            &q.agent,
+            q.lines.unwrap_or(DEFAULT_OUTPUT_LINES),
+            false,
+        )
+        .await?;
+    Ok(Json(Output {
+        text: r.text,
+        truncated: r.truncated,
+    }))
 }
 
 #[utoipa::path(post, path = "/app/v1/sessions/{id}/stop", tag = "sessions",

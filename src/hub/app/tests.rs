@@ -210,6 +210,36 @@ impl Rig {
         }
     }
 
+    /// A request in the background, for one the scripted runner has to answer first.
+    fn call_later(
+        &self,
+        method: &'static str,
+        path: &str,
+        token: &str,
+        body: Value,
+    ) -> tokio::task::JoinHandle<Reply> {
+        let app = self.app.clone();
+        let (path, token) = (path.to_owned(), token.to_owned());
+        tokio::spawn(async move {
+            let req = HttpRequest::builder()
+                .method(method)
+                .uri(format!("{PREFIX}{path}"))
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(body.to_string()))
+                .unwrap();
+            let resp = app.oneshot(req).await.unwrap();
+            let status = resp.status();
+            let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+                .await
+                .unwrap();
+            Reply {
+                status,
+                body: serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+            }
+        })
+    }
+
     async fn req(&mut self) -> crate::proto::Req {
         match tokio::time::timeout(Duration::from_secs(5), self.runner.recv())
             .await
@@ -822,3 +852,254 @@ fn the_compatibility_check_catches_breaking_changes() {
     assert_eq!(problems.len(), 3, "{problems:#?}");
     assert!(compat_problems(&old, &old).is_empty());
 }
+
+// One message box: the hub decides between a new session and an existing one.
+
+fn agents_reply() -> Value {
+    json!([
+        {"name": "mono1/claude", "pane_id": "w1:p1", "kind": "claude", "agent_status": "blocked",
+         "session_id": null, "herdr_session": "mono1"},
+        {"name": "sb-task", "pane_id": "w2:p1", "kind": "claude", "agent_status": "working",
+         "session_id": "s-task", "herdr_session": "switchboard-1a2b"}
+    ])
+}
+
+#[tokio::test]
+async fn a_message_naming_a_project_starts_there_and_plain_text_then_goes_to_it() {
+    let mut r = rig().await;
+    let (_, token) = r.pair(&Phone::new()).await;
+    let call = r.call_later(
+        "POST",
+        "/messages",
+        &token,
+        json!({"text": "in switchboard, fix the flaky test", "request_id": "m1"}),
+    );
+    let req = r.req().await;
+    let Op::StartSession {
+        session_id,
+        branch,
+        prompt,
+        ..
+    } = req.op
+    else {
+        panic!("expected a start");
+    };
+    assert_eq!(prompt, "in switchboard, fix the flaky test");
+    r.ok(
+        req.id,
+        json!({"session_id": session_id, "branch": branch, "worktree_path": "/wt",
+               "workspace_id": "w1", "pane_id": "w1:p1"}),
+    )
+    .await;
+    let started = call.await.unwrap();
+    assert_eq!(started.status, StatusCode::OK, "{}", started.body);
+    assert_eq!(started.body["outcome"], "started");
+    assert_eq!(started.body["start"]["session_id"], session_id.as_str());
+    assert_eq!(started.body["current"]["kind"], "session");
+    assert_eq!(started.body["current"]["session_id"], session_id.as_str());
+
+    let call = r.call_later(
+        "POST",
+        "/messages",
+        &token,
+        json!({"text": "also add a test", "request_id": "m2",
+               "current": {"session_id": session_id}}),
+    );
+    let req = r.req().await;
+    match req.op {
+        Op::Prompt {
+            session_id: to,
+            text,
+        } => assert_eq!(
+            (to.as_str(), text.as_str()),
+            (session_id.as_str(), "also add a test")
+        ),
+        other => panic!("expected a prompt, got {other:?}"),
+    }
+    r.ok(req.id, json!({"agent_status": "working"})).await;
+    let sent = call.await.unwrap();
+    assert_eq!(
+        (
+            sent.body["outcome"].as_str(),
+            sent.body["current"]["session_id"].as_str()
+        ),
+        (Some("sent"), Some(session_id.as_str()))
+    );
+}
+
+#[tokio::test]
+async fn with_nothing_current_the_hub_asks_which_project_and_the_answer_starts_it() {
+    let mut r = rig_with(
+        "[[projects]]\nid = \"kraft\"\ndescription = \"k\"\nrepos = { mac = \"/Users/me/kraft\" }",
+    )
+    .await;
+    let (_, token) = r.pair(&Phone::new()).await;
+    let ask = r
+        .call(
+            "POST",
+            "/messages",
+            Some(&token),
+            Some(json!({"text": "fix the flaky test", "request_id": "m1"})),
+        )
+        .await;
+    assert_eq!(ask.body["outcome"], "choose_project", "{}", ask.body);
+    let options: Vec<&str> = ask.body["options"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["project_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(options, ["switchboard", "kraft"]);
+    assert!(ask.body.get("current").is_none());
+
+    let call = r.call_later(
+        "POST",
+        "/messages",
+        &token,
+        json!({"text": "fix the flaky test", "request_id": "m1", "project_id": "kraft"}),
+    );
+    let req = r.req().await;
+    let Op::StartSession {
+        session_id,
+        project_id,
+        branch,
+        ..
+    } = req.op
+    else {
+        panic!("expected a start");
+    };
+    assert_eq!(project_id, "kraft");
+    r.ok(
+        req.id,
+        json!({"session_id": session_id, "branch": branch, "worktree_path": "/wt",
+               "workspace_id": "w1", "pane_id": "w1:p1"}),
+    )
+    .await;
+    assert_eq!(call.await.unwrap().body["outcome"], "started");
+
+    let unknown = r
+        .call(
+            "POST",
+            "/messages",
+            Some(&token),
+            Some(json!({"text": "x", "request_id": "m3", "project_id": "nope"})),
+        )
+        .await;
+    assert_eq!(unknown.status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn use_reaches_an_agent_switchboard_didnt_start_and_it_becomes_current() {
+    let mut r = rig().await;
+    let (_, token) = r.pair(&Phone::new()).await;
+    let call = r.call_later(
+        "POST",
+        "/messages",
+        &token,
+        json!({"text": "use mono1/claude: rerun the tests", "request_id": "m1"}),
+    );
+    let req = r.req().await;
+    assert!(matches!(req.op, Op::Agents), "{:?}", req.op);
+    r.ok(req.id, agents_reply()).await;
+    let req = r.req().await;
+    match req.op {
+        Op::PromptAgent { agent, text } => {
+            assert_eq!(
+                (agent.as_str(), text.as_str()),
+                ("mono1/claude", "rerun the tests")
+            )
+        }
+        other => panic!("expected an agent prompt, got {other:?}"),
+    }
+    r.ok(req.id, json!({"outcome": "sent"})).await;
+    let sent = call.await.unwrap();
+    assert_eq!(sent.body["outcome"], "sent", "{}", sent.body);
+    assert_eq!(
+        (
+            sent.body["current"]["kind"].as_str(),
+            sent.body["current"]["agent"].as_str()
+        ),
+        (Some("agent"), Some("mono1/claude"))
+    );
+
+    // At a dialog, nothing is typed and the reason comes back.
+    let call = r.call_later(
+        "POST",
+        "/messages",
+        &token,
+        json!({"text": "and the lint", "request_id": "m2",
+               "current": {"machine_id": "mac", "agent": "mono1/claude"}}),
+    );
+    let req = r.req().await;
+    assert!(matches!(req.op, Op::PromptAgent { .. }));
+    r.ok(
+        req.id,
+        json!({"outcome": "blocked", "screen": "Allow? (y/n)"}),
+    )
+    .await;
+    let refused = call.await.unwrap();
+    assert_eq!(refused.body["outcome"], "refused");
+    assert!(
+        refused.body["message"]
+            .as_str()
+            .unwrap()
+            .contains("Answer it in Herdr")
+    );
+}
+
+#[tokio::test]
+async fn the_app_lists_and_reads_agents_switchboard_didnt_start_masked() {
+    let mut r = rig().await;
+    let (_, token) = r.pair(&Phone::new()).await;
+    let call = r.call_later("GET", "/agents", &token, Value::Null);
+    let req = r.req().await;
+    assert!(matches!(req.op, Op::Agents));
+    r.ok(req.id, agents_reply()).await;
+    let list = call.await.unwrap();
+    assert_eq!(list.status, StatusCode::OK, "{}", list.body);
+    let agents = list.body["agents"].as_array().unwrap();
+    assert_eq!(
+        agents.len(),
+        1,
+        "a task's own agent is a session, not listed here"
+    );
+    assert_eq!(
+        (
+            agents[0]["name"].as_str(),
+            agents[0]["herdr_session"].as_str(),
+            agents[0]["agent_status"].as_str()
+        ),
+        (Some("mono1/claude"), Some("mono1"), Some("blocked"))
+    );
+
+    const SECRET: &str = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+    let call = r.call_later(
+        "GET",
+        "/agents/output?machine_id=mac&agent=mono1/claude&lines=20",
+        &token,
+        Value::Null,
+    );
+    let req = r.req().await;
+    match req.op {
+        Op::ReadAgent {
+            agent,
+            lines,
+            visible,
+        } => {
+            assert_eq!(
+                (agent.as_str(), lines, visible),
+                ("mono1/claude", 20, false)
+            )
+        }
+        other => panic!("expected a read, got {other:?}"),
+    }
+    r.ok(
+        req.id,
+        json!({"text": format!("export GITHUB_TOKEN={SECRET}\nok\n")}),
+    )
+    .await;
+    let out = call.await.unwrap();
+    let text = out.body["text"].as_str().unwrap();
+    assert!(!text.contains(SECRET) && text.contains("ok"), "{text}");
+}
+

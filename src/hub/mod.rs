@@ -4,6 +4,7 @@
 
 pub mod app;
 pub mod relay_link;
+pub mod route;
 pub mod runners;
 pub mod service;
 pub mod ws;

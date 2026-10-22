@@ -32,12 +32,7 @@ pub enum Command {
     Text(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Reuse {
-    /// The session the conversation is on.
-    This,
-    Named(String),
-}
+pub use crate::hub::route::Reuse;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
@@ -68,36 +63,9 @@ fn after_words(text: &str, n: usize) -> &str {
     rest.trim_end()
 }
 
-/// `use this`, `use <x>`, `use the <x> session`, each optionally followed by `: <text>`.
-/// Anything else that starts with "use" is free text, like "use the other approach".
 fn parse_use(text: &str) -> Option<Command> {
-    let (word, rest) = text.split_once(char::is_whitespace)?;
-    if !word.eq_ignore_ascii_case("use") {
-        return None;
-    }
-    let (head, said) = match rest.split_once(':') {
-        Some((head, said)) => (head, Some(said.trim())),
-        None => (rest, None),
-    };
-    let mut words: Vec<&str> = head.split_whitespace().collect();
-    if words.first().is_some_and(|w| w.eq_ignore_ascii_case("the")) {
-        words.remove(0);
-    }
-    if words.len() == 2 && words[1].eq_ignore_ascii_case("session") {
-        words.pop();
-    }
-    let [x] = words.as_slice() else {
-        return None;
-    };
-    let target = if x.eq_ignore_ascii_case("this") {
-        Reuse::This
-    } else {
-        Reuse::Named((*x).to_owned())
-    };
-    Some(Command::Use {
-        target,
-        text: said.filter(|t| !t.is_empty()).map(str::to_owned),
-    })
+    let (target, text) = crate::hub::route::parse_use(text)?;
+    Some(Command::Use { target, text })
 }
 
 pub fn parse(text: &str) -> Command {

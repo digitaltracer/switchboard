@@ -1,7 +1,7 @@
 //! Chat logic: allowlist, routing, commands, approvals and notifications, on top of the hub's
 //! session service. Knows nothing about WhatsApp beyond the `Transport` trait.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -11,7 +11,7 @@ use tokio::time::Instant;
 
 use super::command::{self, Command, Reuse, Target as Mute};
 use super::limits::{Debouncer, Notify, Outbox, Outgoing};
-use super::route::{self, Live, Target};
+use super::route::{self, Live, Route, Target};
 use super::selfchat::SelfChat;
 use super::text::{fit_one, overfetch, split, tail};
 use super::transport::{Inbound, Transport, jid_phone};
@@ -24,7 +24,7 @@ use crate::hub::service::{
 };
 use crate::proto::{AgentPromptOutcome, ErrorCode};
 use crate::redact::redact_str;
-use crate::store::{Decision, Delivery, Lifecycle};
+use crate::store::{Decision, Delivery};
 
 const EXCERPT_LINES: usize = 20;
 /// Enough to get above a TUI's input box and status bar to the reply itself.
@@ -237,7 +237,7 @@ impl Relay {
             Command::Pick(_) => vec![self.text(m.text.trim(), &to, &rid).await],
             Command::Text(t) => vec![self.text(&t, &to, &rid).await],
             Command::New { project, prompt } => {
-                vec![self.new_session(&project, &prompt, &to, &rid)]
+                vec![self.new_session(&project, &prompt, &to, &rid).await]
             }
             Command::Use { target, text } => vec![self.reuse(target, text, &rid).await],
             Command::Stop(x) => vec![self.stop(&x).await],
@@ -260,79 +260,56 @@ impl Relay {
 
     // Routing.
 
-    /// Free text: a named project starts a session there; otherwise it goes to the current one.
+    /// Free text, routed by the session service: a named project starts a session there;
+    /// otherwise it goes to the current one.
     async fn text(&mut self, text: &str, to: &str, rid: &str) -> String {
         self.pending = None;
-        let projects = self.svc.projects();
-        match route::projects_named(text, &projects).as_slice() {
-            [one] => match self.machine_named(text) {
-                Ok(machine) => self.start(one, text, machine, to, rid),
-                Err(e) => e,
-            },
-            [] if self.current.is_some() => {
-                let target = self.current.clone().expect("checked");
-                self.send(&target, text, rid).await
-            }
-            [] => self.ask_project(
-                projects.into_iter().map(|p| p.id).collect(),
-                text,
-                "Which project should this start in? It names none I know, and no session is current.",
-            ),
-            several => self.ask_project(
-                several.to_vec(),
-                text,
-                "That names more than one project. Which one should this start in?",
-            ),
+        match self.svc.route(text, self.current.as_ref()).await {
+            Ok(r) => self.follow(r, to, rid).await,
+            Err(e) => format!("Couldn't route that: {e}"),
         }
     }
 
-    fn new_session(&mut self, project: &str, prompt: &str, to: &str, rid: &str) -> String {
+    async fn new_session(&mut self, project: &str, prompt: &str, to: &str, rid: &str) -> String {
         self.pending = None;
         let projects = self.svc.projects();
-        match route::project_by_name(project, &projects) {
-            Some(p) => match self.machine_named(prompt) {
-                Ok(machine) => self.start(&p.id.clone(), prompt, machine, to, rid),
-                Err(e) => e,
-            },
-            None => self.ask_project(
+        let r = match route::project_by_name(project, &projects) {
+            Some(p) => self.svc.start_route(&p.id, prompt),
+            None => self.svc.choose_project(
                 projects.into_iter().map(|p| p.id).collect(),
                 prompt,
                 &format!("{project} isn't a project I know. Which one?"),
             ),
-        }
+        };
+        self.follow(r, to, rid).await
     }
 
-    /// A configured machine named in the text, or `None` for the hub's default.
-    fn machine_named(&self, text: &str) -> Result<Option<String>, String> {
-        let ids: Vec<String> = self
-            .svc
-            .config()
-            .machines
-            .iter()
-            .map(|m| m.id.clone())
-            .collect();
-        match route::machines_named(text, &ids).as_slice() {
-            [] => Ok(None),
-            [one] => Ok(Some(one.clone())),
-            several => Err(format!(
-                "That names more than one machine ({}), so I didn't start anything. Name one.",
-                several.join(", ")
-            )),
+    async fn follow(&mut self, r: Route, to: &str, rid: &str) -> String {
+        match r {
+            Route::Start {
+                project_id,
+                machine_id,
+                prompt,
+            } => self.start(&project_id, &prompt, machine_id, to, rid),
+            Route::Send { target, text } => self.send(&target, &text, rid).await,
+            Route::Select(target) => self.adopt(target, None, rid).await,
+            Route::ChooseProject {
+                question,
+                options,
+                prompt,
+                machine_id,
+            } => {
+                let list = numbered(options.iter().map(String::as_str));
+                self.pending = Some(Choice::Project {
+                    options,
+                    prompt,
+                    machine: machine_id,
+                });
+                format!("{question}\n{list}\nReply with the number.")
+            }
+            Route::ChooseTarget { options, text } => self.ask_target(options, Then::Use(text)),
+            Route::Refuse(why) => why,
         }
-    }
-
-    fn ask_project(&mut self, options: Vec<String>, prompt: &str, question: &str) -> String {
-        if options.is_empty() {
-            return "There are no projects in hub.toml yet.".into();
-        }
-        let machine = self.machine_named(prompt).ok().flatten();
-        let list = numbered(options.iter().map(String::as_str));
-        self.pending = Some(Choice::Project {
-            options,
-            prompt: prompt.to_owned(),
-            machine,
-        });
-        format!("{question}\n{list}\nReply with the number.")
     }
 
     fn ask_target(&mut self, options: Vec<Target>, then: Then) -> String {
@@ -474,75 +451,11 @@ impl Relay {
         }
     }
 
-    /// Sessions that are starting or running, then named agents Switchboard didn't create.
     async fn live(&self) -> Result<Vec<Live>, String> {
-        let sessions = self
-            .svc
-            .list()
+        self.svc
+            .live()
             .await
-            .map_err(|e| format!("Couldn't list sessions: {e}"))?;
-        let projects = self.svc.projects();
-        let mut out = Vec::new();
-        let mut session_agents = HashSet::new();
-        for s in sessions
-            .into_iter()
-            .filter(|s| matches!(s.lifecycle, Lifecycle::Starting | Lifecycle::Running))
-        {
-            let label = route::label(&s.project_id, &s.id);
-            let mut names = vec![
-                route::norm(&s.id),
-                route::norm(&label),
-                route::norm(&s.project_id),
-            ];
-            names.extend(s.branch.iter().chain(&s.agent_name).map(|n| route::norm(n)));
-            if let Some(p) = projects.iter().find(|p| p.id == s.project_id) {
-                names.extend(p.aliases.iter().map(|a| route::norm(a)));
-            }
-            session_agents.extend(s.agent_name.clone());
-            out.push(Live {
-                target: Target::Session {
-                    id: s.id.clone(),
-                    label,
-                    machine: s.machine_id.clone(),
-                    agent: s.agent_name.clone(),
-                },
-                names,
-                status: s.agent_status.clone(),
-                detail: format!("{} · {}", s.project_id, s.branch.unwrap_or_default()),
-                notes: s
-                    .pending_approvals
-                    .iter()
-                    .map(|a| {
-                        let n = a.number.unwrap_or_default();
-                        format!(
-                            "  approval {n} waiting: {} (approve {n} / deny {n})",
-                            a.tool_name
-                        )
-                    })
-                    .collect(),
-            });
-        }
-        for m in self.svc.machines().into_iter().filter(|m| m.connected) {
-            match self.svc.agents(&m.id).await {
-                Ok(agents) => out.extend(
-                    agents
-                        .into_iter()
-                        .filter(|a| a.session_id.is_none() && !session_agents.contains(&a.name))
-                        .map(|a| Live {
-                            target: Target::Agent {
-                                machine: m.id.clone(),
-                                name: a.name.clone(),
-                            },
-                            names: vec![route::norm(&a.name)],
-                            status: a.agent_status,
-                            detail: "not started by Switchboard".into(),
-                            notes: vec![],
-                        }),
-                ),
-                Err(e) => tracing::warn!(machine = %m.id, error = %e, "listing agents"),
-            }
-        }
-        Ok(out)
+            .map_err(|e| format!("Couldn't list sessions: {e}"))
     }
 
     // Sending, reading and stopping.
@@ -824,7 +737,9 @@ impl Relay {
                     state.describe(name),
                     self.current_mark(&l.target)
                 ));
-                lines.extend(l.notes.iter().cloned());
+                lines.extend(l.approvals.iter().map(|(n, tool)| {
+                    format!("  approval {n} waiting: {tool} (approve {n} / deny {n})")
+                }));
             }
         }
         for name in state.watched.iter().filter(|n| !seen.contains(n)) {

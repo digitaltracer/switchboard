@@ -10,7 +10,7 @@ use crate::proto::auth::hash_token;
 use crate::proto::{
     AgentSummary, Event, Frame, Hello, Op, Outcome, PROTOCOL_VERSION, ProtoError, Resp,
 };
-use crate::store::Store;
+use crate::store::{Lifecycle, Store};
 use crate::whatsapp::limits::{BURST, HOLD, REFILL};
 use crate::whatsapp::selfchat::{MARKER, SelfChat};
 use crate::whatsapp::transport::FakeTransport;

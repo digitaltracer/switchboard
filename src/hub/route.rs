@@ -1,5 +1,6 @@
-//! Where a message goes: projects named in free text, machines, and sessions or agents named
-//! by `use`. Plain word matching against the hub's allowlist; no language model.
+//! Where a message goes, for every front door: projects named in free text, machines, and
+//! sessions or agents named by `use`. Plain word matching against the hub's allowlist; no
+//! language model.
 
 use crate::hub::service::ProjectView;
 
@@ -106,8 +107,85 @@ pub struct Live {
     pub status: String,
     /// What a listing shows after the label.
     pub detail: String,
-    /// Extra lines for `status`, such as pending approvals.
-    pub notes: Vec<String>,
+    /// A session's pending approvals: short number and tool name.
+    pub approvals: Vec<(i64, String)>,
+}
+
+/// Which running thing `use` names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Reuse {
+    /// The one the conversation is on.
+    This,
+    Named(String),
+}
+
+/// `use this`, `use <x>`, `use the <x> session`, each optionally followed by `: <text>`.
+/// Anything else that starts with "use" is free text, like "use the other approach".
+pub fn parse_use(text: &str) -> Option<(Reuse, Option<String>)> {
+    let (word, rest) = text.trim().split_once(char::is_whitespace)?;
+    if !word.eq_ignore_ascii_case("use") {
+        return None;
+    }
+    let (head, said) = match rest.split_once(':') {
+        Some((head, said)) => (head, Some(said.trim())),
+        None => (rest, None),
+    };
+    let mut words: Vec<&str> = head.split_whitespace().collect();
+    if words.first().is_some_and(|w| w.eq_ignore_ascii_case("the")) {
+        words.remove(0);
+    }
+    if words.len() == 2 && words[1].eq_ignore_ascii_case("session") {
+        words.pop();
+    }
+    let [x] = words.as_slice() else {
+        return None;
+    };
+    let target = if x.eq_ignore_ascii_case("this") {
+        Reuse::This
+    } else {
+        Reuse::Named((*x).to_owned())
+    };
+    Some((target, said.filter(|t| !t.is_empty()).map(str::to_owned)))
+}
+
+/// `new <project> <prompt>`: the project and the rest of the text.
+pub fn parse_new(text: &str) -> Option<(String, String)> {
+    let mut words = text.split_whitespace();
+    if !words.next()?.eq_ignore_ascii_case("new") {
+        return None;
+    }
+    let project = words.next()?;
+    words.next()?;
+    let prompt = text.trim_start()[3..].trim_start()[project.len()..].trim();
+    Some((project.to_owned(), prompt.to_owned()))
+}
+
+/// What a message asks for, decided by the session service for any front door.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Route {
+    Start {
+        project_id: String,
+        machine_id: Option<String>,
+        prompt: String,
+    },
+    Send {
+        target: Target,
+        text: String,
+    },
+    /// `use <x>` with nothing to say: `x` becomes where plain text goes.
+    Select(Target),
+    ChooseProject {
+        question: String,
+        options: Vec<String>,
+        prompt: String,
+        machine_id: Option<String>,
+    },
+    ChooseTarget {
+        options: Vec<Target>,
+        text: Option<String>,
+    },
+    /// Nothing was done; the text says why.
+    Refuse(String),
 }
 
 /// Live entries `x` names: exact names first; failing those, names that start with `x`.
@@ -239,7 +317,7 @@ mod tests {
             names,
             status: "idle".into(),
             detail: String::new(),
-            notes: vec![],
+            approvals: vec![],
         }
     }
 
@@ -252,7 +330,7 @@ mod tests {
             names: vec![name.into()],
             status: "idle".into(),
             detail: String::new(),
-            notes: vec![],
+            approvals: vec![],
         }
     }
 
@@ -299,5 +377,21 @@ mod tests {
         );
         let hits = match_target("switch", &live);
         assert_eq!(hits.len(), 3, "a prefix matches all three");
+    }
+
+    #[test]
+    fn use_and_new_are_parsed_once_for_every_front_door() {
+        assert_eq!(
+            parse_use("use the auth session: also add a test"),
+            Some((Reuse::Named("auth".into()), Some("also add a test".into())))
+        );
+        assert_eq!(parse_use("use this"), Some((Reuse::This, None)));
+        assert_eq!(parse_use("use the other approach"), None);
+        assert_eq!(
+            parse_new("new  kraft  fix the flaky test "),
+            Some(("kraft".into(), "fix the flaky test".into()))
+        );
+        assert_eq!(parse_new("new kraft"), None, "a project alone is free text");
+        assert_eq!(parse_new("renew the cert"), None);
     }
 }

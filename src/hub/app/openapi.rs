@@ -35,6 +35,9 @@ use super::types::*;
         super::list_devices,
         super::revoke_device,
         super::set_push_token,
+        super::post_message,
+        super::list_agents,
+        super::get_agent_output,
     ),
     components(schemas(
         ApiError, ErrorBody, Meta, PairRequest, PairResponse, PairStatus, TokenChallengeRequest,
@@ -42,7 +45,8 @@ use super::types::*;
         StartRequest, StartResponse, OperationStatus, Output, PromptRequest,
         PromptResponse, StopRequest, StopResponse, MuteRequest, MuteResponse, DecisionKind,
         ApprovalChallenge, DecisionRequest, DecisionResponse, Device, PushEnvironment,
-        PushTokenRequest,
+        PushTokenRequest, TargetRef, TargetView, MessageRequest, MessageChoice, MessageResponse,
+        AgentView, Agents,
     )),
     modifiers(&DeviceToken),
 )]

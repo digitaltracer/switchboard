@@ -1002,10 +1002,225 @@
           }
         ]
       }
+    },
+    "/app/v1/messages": {
+      "post": {
+        "tags": [
+          "messages"
+        ],
+        "summary": "One message, routed as WhatsApp routes it: a named project starts a session there, `use <x>`\npicks something running, and anything else goes to `current`.",
+        "operationId": "post_message",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MessageRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Started, sent, a question, or a refusal with its reason",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Machine offline or reconciling",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Outcome unknown",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
+    "/app/v1/agents": {
+      "get": {
+        "tags": [
+          "agents"
+        ],
+        "summary": "Named Herdr agents Switchboard didn't start, on every connected machine.",
+        "operationId": "list_agents",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Agents"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
+    "/app/v1/agents/output": {
+      "get": {
+        "tags": [
+          "agents"
+        ],
+        "operationId": "get_agent_output",
+        "parameters": [
+          {
+            "name": "machine_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "agent",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "lines",
+            "in": "query",
+            "description": "Lines of output; defaults to 80, capped at 500.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Output"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Machine offline",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
     }
   },
   "components": {
     "schemas": {
+      "AgentView": {
+        "type": "object",
+        "description": "A named Herdr agent Switchboard didn't start. It has no permission hooks, so its dialogs\nare answered in Herdr.",
+        "required": [
+          "machine_id",
+          "name",
+          "agent_status"
+        ],
+        "properties": {
+          "machine_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "description": "`<herdr session>/<agent>` when the machine runs several Herdr sessions."
+          },
+          "herdr_session": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "e.g. `claude` or `codex`, as Herdr reports it."
+          },
+          "agent_status": {
+            "type": "string",
+            "description": "`idle`, `working`, `blocked`, `done` or `unknown`."
+          }
+        }
+      },
+      "Agents": {
+        "type": "object",
+        "required": [
+          "agents"
+        ],
+        "properties": {
+          "agents": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentView"
+            }
+          }
+        }
+      },
       "ApiError": {
         "type": "object",
         "required": [
@@ -1308,6 +1523,90 @@
           },
           "default": {
             "type": "boolean"
+          }
+        }
+      },
+      "MessageChoice": {
+        "type": "object",
+        "required": [
+          "label"
+        ],
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Set for a project to start in."
+          },
+          "target": {
+            "$ref": "#/components/schemas/TargetView",
+            "description": "Set for something running to send to."
+          }
+        }
+      },
+      "MessageRequest": {
+        "type": "object",
+        "required": [
+          "text",
+          "request_id"
+        ],
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string",
+            "description": "Required, one per draft: a retried send with the same id is not sent twice."
+          },
+          "current": {
+            "$ref": "#/components/schemas/TargetRef",
+            "description": "Where text that names no project goes."
+          },
+          "project_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Answers a `choose_project`: start in this project."
+          },
+          "target": {
+            "$ref": "#/components/schemas/TargetRef",
+            "description": "Answers a `choose_target`: send to this one."
+          }
+        }
+      },
+      "MessageResponse": {
+        "type": "object",
+        "required": [
+          "outcome",
+          "message",
+          "options"
+        ],
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "description": "`started`, `sent`, `selected`, `choose_project`, `choose_target` or `refused`."
+          },
+          "message": {
+            "type": "string",
+            "description": "What happened, or the question to answer, in a sentence."
+          },
+          "current": {
+            "$ref": "#/components/schemas/TargetView",
+            "description": "Where text that names no project goes from now on."
+          },
+          "start": {
+            "$ref": "#/components/schemas/StartResponse"
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MessageChoice"
+            }
           }
         }
       },
@@ -1829,6 +2128,62 @@
           },
           "already_stopped": {
             "type": "boolean"
+          }
+        }
+      },
+      "TargetRef": {
+        "type": "object",
+        "description": "Something a message can go to: a session by id, or an agent Switchboard didn't start by\nmachine and name.",
+        "properties": {
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "machine_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "agent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "TargetView": {
+        "type": "object",
+        "required": [
+          "kind",
+          "machine_id",
+          "label"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "`session` or `agent` (one Switchboard didn't start)."
+          },
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "machine_id": {
+            "type": "string"
+          },
+          "agent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "label": {
+            "type": "string"
           }
         }
       },

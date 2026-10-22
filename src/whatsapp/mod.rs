@@ -6,7 +6,8 @@ pub mod command;
 pub mod limits;
 pub mod link;
 pub mod relay;
-pub mod route;
+/// The hub's routing, shared by every front door.
+pub use crate::hub::route;
 pub mod selfchat;
 pub mod text;
 pub mod transport;

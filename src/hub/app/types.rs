@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use utoipa::{IntoParams, ToSchema};
 
+use crate::hub::route::Target;
 use crate::hub::service::{
     ApprovalView, DecideResult, MachineView, ProjectView, PromptResult, SessionList, SessionView,
     StartResult, StopResult,
@@ -260,10 +261,9 @@ pub struct Session {
 impl From<SessionView> for Session {
     fn from(s: SessionView) -> Self {
         Self {
-            label: crate::whatsapp::route::label(&s.project_id, &s.id),
+            label: crate::hub::route::label(&s.project_id, &s.id),
             machine_status: enum_str(&s.machine),
             lifecycle: s.lifecycle.as_str().to_owned(),
-            herdr_session: s.herdr_session,
             pending_approvals: s.pending_approvals.into_iter().map(Into::into).collect(),
             id: s.id,
             project_id: s.project_id,
@@ -280,6 +280,7 @@ impl From<SessionView> for Session {
             muted: s.muted,
             notifies: s.notifies,
             start_commit: s.start_commit,
+            herdr_session: s.herdr_session,
         }
     }
 }
@@ -339,7 +340,7 @@ pub struct StartResponse {
 impl From<StartResult> for StartResponse {
     fn from(r: StartResult) -> Self {
         Self {
-            label: crate::whatsapp::route::label(&r.project_id, &r.session_id),
+            label: crate::hub::route::label(&r.project_id, &r.session_id),
             outcome: enum_str(&r.outcome),
             session_id: r.session_id,
             project_id: r.project_id,
@@ -400,6 +401,7 @@ pub struct Output {
     pub truncated: bool,
 }
 
+
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct PromptRequest {
     pub text: String,
@@ -419,6 +421,132 @@ impl From<PromptResult> for PromptResponse {
             agent_status: p.agent_status,
         }
     }
+}
+
+/// Something a message can go to: a session by id, or an agent Switchboard didn't start by
+/// machine and name.
+#[derive(Debug, Clone, Default, Deserialize, ToSchema)]
+pub struct TargetRef {
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub machine_id: Option<String>,
+    #[serde(default)]
+    pub agent: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct TargetView {
+    /// `session` or `agent` (one Switchboard didn't start).
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    pub machine_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    pub label: String,
+}
+
+impl From<&Target> for TargetView {
+    fn from(t: &Target) -> Self {
+        match t {
+            Target::Session {
+                id,
+                label,
+                machine,
+                agent,
+            } => Self {
+                kind: "session".into(),
+                session_id: Some(id.clone()),
+                machine_id: machine.clone(),
+                agent: agent.clone(),
+                label: label.clone(),
+            },
+            Target::Agent { machine, name } => Self {
+                kind: "agent".into(),
+                session_id: None,
+                machine_id: machine.clone(),
+                agent: Some(name.clone()),
+                label: name.clone(),
+            },
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct MessageRequest {
+    pub text: String,
+    /// Required, one per draft: a retried send with the same id is not sent twice.
+    pub request_id: String,
+    /// Where text that names no project goes.
+    #[serde(default)]
+    #[schema(nullable = false)]
+    pub current: Option<TargetRef>,
+    /// Answers a `choose_project`: start in this project.
+    #[serde(default)]
+    pub project_id: Option<String>,
+    /// Answers a `choose_target`: send to this one.
+    #[serde(default)]
+    #[schema(nullable = false)]
+    pub target: Option<TargetRef>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MessageChoice {
+    pub label: String,
+    /// Set for a project to start in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    /// Set for something running to send to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    pub target: Option<TargetView>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MessageResponse {
+    /// `started`, `sent`, `selected`, `choose_project`, `choose_target` or `refused`.
+    pub outcome: String,
+    /// What happened, or the question to answer, in a sentence.
+    pub message: String,
+    /// Where text that names no project goes from now on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    pub current: Option<TargetView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    pub start: Option<StartResponse>,
+    pub options: Vec<MessageChoice>,
+}
+
+/// A named Herdr agent Switchboard didn't start. It has no permission hooks, so its dialogs
+/// are answered in Herdr.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AgentView {
+    pub machine_id: String,
+    /// `<herdr session>/<agent>` when the machine runs several Herdr sessions.
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub herdr_session: Option<String>,
+    /// e.g. `claude` or `codex`, as Herdr reports it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// `idle`, `working`, `blocked`, `done` or `unknown`.
+    pub agent_status: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct Agents {
+    pub agents: Vec<AgentView>,
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct AgentOutputQuery {
+    pub machine_id: String,
+    pub agent: String,
+    /// Lines of output; defaults to 80, capped at 500.
+    pub lines: Option<u32>,
 }
 
 #[derive(Debug, Default, Deserialize, ToSchema)]

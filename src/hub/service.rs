@@ -13,6 +13,7 @@ use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
+use super::route::{self, Live, Reuse, Route, Target};
 use super::runners::{Readiness, RunnerInfo, Runners};
 use crate::cli::Agent;
 use crate::config::{HubConfig, ProjectConfig};
@@ -1208,6 +1209,193 @@ impl SessionService {
             .await
             .map_err(|e| runner_error(machine, e))?;
         serde_json::from_value(v).map_err(|e| HubError::BadRequest(format!("runner prompt: {e}")))
+    }
+
+    // Routing, shared by every front door.
+
+    /// Sessions that are starting or running, then named agents Switchboard didn't create.
+    pub async fn live(&self) -> Result<Vec<Live>, HubError> {
+        let sessions = self.list().await?;
+        let projects = self.projects();
+        let mut out = Vec::new();
+        let mut session_agents = HashSet::new();
+        for s in sessions
+            .into_iter()
+            .filter(|s| matches!(s.lifecycle, Lifecycle::Starting | Lifecycle::Running))
+        {
+            let label = route::label(&s.project_id, &s.id);
+            let mut names = vec![
+                route::norm(&s.id),
+                route::norm(&label),
+                route::norm(&s.project_id),
+            ];
+            names.extend(s.branch.iter().chain(&s.agent_name).map(|n| route::norm(n)));
+            if let Some(p) = projects.iter().find(|p| p.id == s.project_id) {
+                names.extend(p.aliases.iter().map(|a| route::norm(a)));
+            }
+            session_agents.extend(s.agent_name.clone());
+            out.push(Live {
+                target: Target::Session {
+                    id: s.id.clone(),
+                    label,
+                    machine: s.machine_id.clone(),
+                    agent: s.agent_name.clone(),
+                },
+                names,
+                status: s.agent_status.clone(),
+                detail: format!("{} · {}", s.project_id, s.branch.unwrap_or_default()),
+                approvals: s
+                    .pending_approvals
+                    .iter()
+                    .map(|a| (a.number.unwrap_or_default(), a.tool_name.clone()))
+                    .collect(),
+            });
+        }
+        out.extend(
+            self.outside_agents(&session_agents)
+                .await
+                .into_iter()
+                .map(|(machine, a)| Live {
+                    target: Target::Agent {
+                        machine,
+                        name: a.name.clone(),
+                    },
+                    names: vec![route::norm(&a.name)],
+                    status: a.agent_status,
+                    detail: "not started by Switchboard".into(),
+                    approvals: vec![],
+                }),
+        );
+        Ok(out)
+    }
+
+    /// Named agents on every connected machine that aren't one of `session_agents`, with their
+    /// machine. A machine that can't be listed is skipped.
+    pub async fn outside_agents(
+        &self,
+        session_agents: &HashSet<String>,
+    ) -> Vec<(String, AgentSummary)> {
+        let mut out = Vec::new();
+        for m in self.machines().into_iter().filter(|m| m.connected) {
+            match self.agents(&m.id).await {
+                Ok(agents) => out.extend(
+                    agents
+                        .into_iter()
+                        .filter(|a| a.session_id.is_none() && !session_agents.contains(&a.name))
+                        .map(|a| (m.id.clone(), a)),
+                ),
+                Err(e) => tracing::warn!(machine = %m.id, error = %e, "listing agents"),
+            }
+        }
+        out
+    }
+
+    /// Where a message goes. A named project starts a session there; `new <project> <prompt>`
+    /// does so explicitly; `use <x>` picks something running; anything else goes to `current`.
+    pub async fn route(&self, text: &str, current: Option<&Target>) -> Result<Route, HubError> {
+        let text = text.trim();
+        if text.is_empty() {
+            return Err(HubError::BadRequest("the message is empty".into()));
+        }
+        if let Some((reuse, said)) = route::parse_use(text) {
+            let target = match reuse {
+                Reuse::This => match current {
+                    Some(t) => t.clone(),
+                    None => {
+                        return Ok(Route::Refuse(
+                            "No session is current yet. Pick one first.".into(),
+                        ));
+                    }
+                },
+                Reuse::Named(x) => {
+                    let mut hits = route::match_target(&x, &self.live().await?);
+                    match hits.len() {
+                        0 => {
+                            return Ok(Route::Refuse(format!("Nothing running matches {x}.")));
+                        }
+                        1 => hits.remove(0),
+                        _ => {
+                            return Ok(Route::ChooseTarget {
+                                options: hits,
+                                text: said,
+                            });
+                        }
+                    }
+                }
+            };
+            return Ok(match said {
+                Some(text) => Route::Send { target, text },
+                None => Route::Select(target),
+            });
+        }
+        let projects = self.projects();
+        let all = || projects.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
+        if let Some((project, prompt)) = route::parse_new(text) {
+            return Ok(match route::project_by_name(&project, &projects) {
+                Some(p) => self.start_route(&p.id, &prompt),
+                None => self.choose_project(
+                    all(),
+                    &prompt,
+                    &format!("{project} isn't a project I know. Which one?"),
+                ),
+            });
+        }
+        Ok(match route::projects_named(text, &projects).as_slice() {
+            [one] => self.start_route(one, text),
+            [] => match current {
+                Some(t) => Route::Send {
+                    target: t.clone(),
+                    text: text.to_owned(),
+                },
+                None => self.choose_project(
+                    all(),
+                    text,
+                    "Which project should this start in? It names none I know, and no session is current.",
+                ),
+            },
+            several => self.choose_project(
+                several.to_vec(),
+                text,
+                "That names more than one project. Which one should this start in?",
+            ),
+        })
+    }
+
+    /// A start in `project`, on the one machine the prompt names, if it names any.
+    pub fn start_route(&self, project: &str, prompt: &str) -> Route {
+        match self.machine_named(prompt) {
+            Ok(machine_id) => Route::Start {
+                project_id: project.to_owned(),
+                machine_id,
+                prompt: prompt.to_owned(),
+            },
+            Err(why) => Route::Refuse(why),
+        }
+    }
+
+    pub fn choose_project(&self, options: Vec<String>, prompt: &str, question: &str) -> Route {
+        if options.is_empty() {
+            return Route::Refuse("There are no projects in hub.toml yet.".into());
+        }
+        Route::ChooseProject {
+            question: question.to_owned(),
+            options,
+            prompt: prompt.to_owned(),
+            machine_id: self.machine_named(prompt).ok().flatten(),
+        }
+    }
+
+    /// A configured machine named in the text, or `None` for the hub's default.
+    fn machine_named(&self, text: &str) -> Result<Option<String>, String> {
+        let ids: Vec<String> = self.cfg.machines.iter().map(|m| m.id.clone()).collect();
+        match route::machines_named(text, &ids).as_slice() {
+            [] => Ok(None),
+            [one] => Ok(Some(one.clone())),
+            several => Err(format!(
+                "That names more than one machine ({}), so I didn't start anything. Name one.",
+                several.join(", ")
+            )),
+        }
     }
 
     // Approvals.
