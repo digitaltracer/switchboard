@@ -171,8 +171,9 @@ struct HomeView: View {
                 InsetGroup(title: "Your Herdr sessions") {
                     ForEach(Array(model.agents.enumerated()), id: \.element) { i, a in
                         NavigationLink(value: AgentRef(machine: a.machineId, name: a.name)) {
-                            ListRow(symbol: "terminal", tint: .secondary, title: a.name,
-                                    subtitle: "\(SessionStatus(agentStatus: a.agentStatus).text) · \(a.machineId)", trailing: "", first: i == 0)
+                            ListRow(symbol: "terminal", tint: .secondary, title: a.displayName,
+                                    subtitle: "\(SessionStatus(agentStatus: a.agentStatus).text) · \(a.displayName == a.name ? a.machineId : a.herdrSession ?? a.machineId)",
+                                    trailing: "", first: i == 0)
                         }
                     }
                 }

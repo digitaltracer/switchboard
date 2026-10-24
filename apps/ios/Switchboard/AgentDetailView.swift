@@ -1,7 +1,7 @@
 import SwiftUI
 import SwitchboardKit
 
-/// A named Herdr agent Switchboard didn't start: its output, refreshed while on screen. It has
+/// A Herdr agent Switchboard didn't start: its output, refreshed while on screen. It has
 /// no permission hooks, so its dialogs are answered in Herdr. The mic talks to it.
 struct AgentDetailView: View {
     @Environment(AppModel.self) private var model
@@ -11,10 +11,11 @@ struct AgentDetailView: View {
     @State private var error: String?
     @State private var showingOutput = false
 
-    private var target: Schemas.TargetView { .agent(machine: agent.machine, name: agent.name) }
+    private var target: Schemas.TargetView { .agent(machine: agent.machine, name: agent.name, label: label) }
     private var info: Schemas.AgentView? {
         model.agents.first { $0.machineId == agent.machine && $0.name == agent.name }
     }
+    private var label: String { info?.displayName ?? agent.name }
 
     var body: some View {
         ScrollView {
@@ -47,10 +48,10 @@ struct AgentDetailView: View {
             HStack {
                 Color.clear.frame(maxWidth: .infinity, maxHeight: 1)
                 MicButton(size: 60) { voice.listen(to: target) }
-                    .accessibilityLabel("Talk to \(agent.name)")
+                    .accessibilityLabel("Talk to \(label)")
                 Button { voice.type(to: target) } label: { Image(systemName: "keyboard") }
                     .font(.system(size: 21))
-                    .accessibilityLabel("Type a message to \(agent.name)")
+                    .accessibilityLabel("Type a message to \(label)")
                     .frame(maxWidth: .infinity)
             }
             .padding(.horizontal, 8)
@@ -58,10 +59,10 @@ struct AgentDetailView: View {
             .background(.bar)
         }
         .background(Color(.systemGroupedBackground))
-        .navigationTitle(agent.name)
+        .navigationTitle(label)
         .navigationBarTitleDisplayMode(.large)
         .refreshable { await load() }
-        .sheet(isPresented: $showingOutput) { FullOutput(title: agent.name, text: output) }
+        .sheet(isPresented: $showingOutput) { FullOutput(title: label, text: output) }
         .task(id: model.wakes) {
             while !Task.isCancelled {
                 await load()

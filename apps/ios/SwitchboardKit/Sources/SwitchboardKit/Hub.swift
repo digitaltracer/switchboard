@@ -374,13 +374,21 @@ public final class Hub: Sendable {
     }
 }
 
+extension Schemas.AgentView {
+    /// Its Herdr name, or what its terminal says when it has no name and goes by its pane.
+    public var displayName: String {
+        guard let title, !title.isEmpty, name.split(separator: "/").last?.contains(":") == true else { return name }
+        return title
+    }
+}
+
 extension Schemas.TargetView {
     public static func session(_ s: Schemas.Session) -> Self {
         .init(kind: "session", sessionId: s.id, machineId: s.machineId, agent: s.agentName, label: s.label)
     }
 
-    public static func agent(machine: String, name: String) -> Self {
-        .init(kind: "agent", machineId: machine, agent: name, label: name)
+    public static func agent(machine: String, name: String, label: String? = nil) -> Self {
+        .init(kind: "agent", machineId: machine, agent: name, label: label ?? name)
     }
 
     /// What a request names this by.
