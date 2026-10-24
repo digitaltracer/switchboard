@@ -281,3 +281,15 @@ The user chose one process for a single machine.
 
 - `Op::Agents` lists every Herdr agent, not only named ones. An agent without a name goes by its pane id (`mono1/w1:p2`), and Herdr accepts that as a target for read and prompt. Each entry carries its terminal title, masked like every runner reply.
 - The app shows such an agent by its title. Routing (`use <x>`) and WhatsApp still see only named agents, and status events still cover only named agents.
+
+### As built (2026-10-24): Claude in auto mode
+
+The user chose auto mode as the default for every install. A Claude task in acceptEdits mode asked for every shell command and every MCP call: one read-only log search raised 12 approvals, each with its own push and WhatsApp message.
+- **Mode.** `claude_permission_mode` on `[machines.local]` and in `runner.toml`: `auto` (default) or `acceptEdits`. Modes that skip the hook (`bypassPermissions`, `dontAsk`) or ask about reads (`default`) are refused.
+- **Verified with Claude Code 2.1.310** in a throwaway Herdr session, with a logging hook:
+  - Shell commands, git and a read-only MCP lookup ran without the hook.
+  - Risky steps you ask for directly also ran.
+  - The same steps coming from a file in the repo were refused by Claude's own check, and the agent stopped and explained. A refusal never reaches PermissionRequest.
+  - AskUserQuestion still reaches PermissionRequest in auto mode.
+- **Deny patterns.** In auto mode a project with deny patterns gets a PreToolUse hook. It denies a match and otherwise prints nothing, leaving the decision to Claude's mode; it fails closed like the other hooks. Verified: `git push` was blocked and `git status` ran. In acceptEdits mode, every shell command still asks (`permissions.ask = ["Bash"]`).
+- **One notification at a time.** Only a session's oldest open approval queues a push and is announced to WhatsApp. When it's answered or expires, the next open one is. The app still lists every pending approval.

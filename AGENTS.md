@@ -68,7 +68,7 @@ Each test file's header says what it needs.
   - `sessions.rs` covers worktrees and the agent lifecycle.
   - `hooks.rs` is the hook endpoint.
   - `codex.rs` is the only key path.
-- **Agent profiles:** `src/agents/`. Claude Code runs with acceptEdits, and every shell command goes through the hook. Codex runs in restricted mode, version-pinned.
+- **Agent profiles:** `src/agents/`. Claude Code runs in auto mode by default; what still asks goes through the hook, and deny patterns are checked before every tool. A machine can choose acceptEdits, where every shell command asks. Codex runs in restricted mode, version-pinned.
 - **Hook helper:** `src/hook/`. It denies on any error.
 - **Pairing and signatures:** `src/auth/`. **Push:** `src/push/`. **Relay:** `src/relay/`. **WhatsApp:** `src/whatsapp/`.
 - **Config schema:** `src/config.rs`, with documented fields and validation.

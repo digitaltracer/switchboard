@@ -8,7 +8,7 @@ Your code, sessions and secrets stay on your machine. The only shared piece is a
 
 - **Start work from anywhere.** Just write a message. One that names a project ("in kraft, fix the flaky test") starts a new task: Switchboard creates a git worktree and a Herdr session, and starts Claude Code or Codex in it. `use <session or agent>: …` sends to something already running, and a message that names nothing goes to whatever you last wrote to. If it can't tell, it asks. The app and WhatsApp route messages the same way.
 - **See what's running.** Lists every agent in every Herdr session on the machine, including ones you started yourself, with status and recent output.
-- **Approve from your phone.** When an agent asks permission to run a command, you get a notification. Approve with Face ID, or deny. Anything left unanswered is denied.
+- **Approve from your phone.** Claude runs in its auto mode: routine work runs on its own, and Claude's safety check refuses risky actions and explains why. What still needs you, such as a question or a plan, reaches your phone. Approve with Face ID, or deny. Anything left unanswered is denied. A burst of requests from one session sends one notification at a time.
 - **Several ways in, one engine:**
   - the native app (iOS now, Android later)
   - WhatsApp, linked to your own number
@@ -90,6 +90,7 @@ The iOS app builds with plain `xcodebuild`. See `apps/ios/README.md`.
 ## Security model
 
 - **Approvals fail closed.** Agent permission requests come through each CLI's own hook, not the terminal screen. Unanswered, expired or disconnected requests are denied.
+- **Claude's mode.** Claude Code starts in auto mode. Set `claude_permission_mode = "acceptEdits"` under a machine's `[machines.local]` (or in `runner.toml`) to have every shell command and tool call ask you instead. A project's `deny_patterns` are checked before every tool call in either mode.
 - **App approvals are signed.** They need a signature from a device key protected by Face ID or a passcode. Each front door's right to approve can be turned off in `hub.toml`.
 - **Secrets are masked.** That covers everything that leaves the machine: approvals, terminal output, notifications and WhatsApp messages. Raw tool input is never stored.
 - **No keystrokes into agents,** except one narrow, deny-only fallback for Codex.
