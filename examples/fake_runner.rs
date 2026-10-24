@@ -67,6 +67,9 @@ impl Handler for Fake {
             Op::Prompt { .. } => Ok(json!({ "agent_status": "working" })),
             Op::Decide { .. } => Ok(json!({ "applied": true })),
             Op::Stop { .. } => Ok(json!({ "worktree_removed": false })),
+            Op::Delete { .. } => Ok(
+                json!({ "worktree_removed": false, "kept_because": "unmerged", "herdr_session_deleted": true }),
+            ),
             Op::ListSessions | Op::Agents => Ok(json!([])),
             other => Err(ProtoError::new(
                 ErrorCode::BadRequest,

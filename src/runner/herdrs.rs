@@ -215,6 +215,52 @@ impl Herdrs {
             }
         }
     }
+
+    /// Deletes a task's Herdr session: stops its server if it's still up, then `herdr session
+    /// delete`. One already gone counts as deleted.
+    pub async fn delete(&self, name: &str) -> Result<(), String> {
+        if !valid_session_name(name) {
+            return Err(format!("{name:?} is not a valid Herdr session name"));
+        }
+        let Some(m) = &self.multi else {
+            return Ok(());
+        };
+        let dir = m.config_dir.join("sessions").join(name);
+        let (bin, xdg) = match &m.starter {
+            Starter::Func(_) => {
+                let _ = std::fs::remove_dir_all(&dir);
+                return Ok(());
+            }
+            Starter::Herdr { bin, xdg, .. } => (bin, xdg),
+        };
+        // A stopped server is already down; if it isn't, delete says so below.
+        let _ = self.stop(name).await;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            if !dir.exists() {
+                return Ok(());
+            }
+            let mut cmd = tokio::process::Command::new(bin);
+            cmd.args(["session", "delete", name]);
+            clean_env(&mut cmd);
+            if let Some(x) = xdg {
+                cmd.env("XDG_CONFIG_HOME", x);
+            }
+            let out = cmd
+                .output()
+                .await
+                .map_err(|e| format!("running herdr: {e}"))?;
+            if out.status.success() {
+                return Ok(());
+            }
+            let why = String::from_utf8_lossy(&out.stderr).trim().to_owned();
+            // The server can take a moment to exit after `server stop` returns.
+            if !why.contains("running") || tokio::time::Instant::now() >= deadline {
+                return Err(why);
+            }
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        }
+    }
 }
 
 /// An agent name as the hub sees it: `<session>/<agent>` in multi mode, else plain.

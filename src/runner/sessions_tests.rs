@@ -479,6 +479,65 @@ async fn clean_and_merged_check() {
     );
 }
 
+#[tokio::test]
+async fn a_stopped_tasks_worktree_goes_only_if_registered_clean_and_merged() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    let git = |args: &[&str], cwd: &Path| {
+        let ok = std::process::Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@t", "-C"])
+            .arg(cwd)
+            .args(args)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "git {args:?}");
+    };
+    std::fs::create_dir(&repo).unwrap();
+    git(&["init", "-q", "-b", "main"], &repo);
+    git(&["commit", "-q", "--allow-empty", "-m", "init"], &repo);
+    let wt = dir.path().join("wt");
+    git(
+        &["worktree", "add", "-q", "-b", "sb/s1", wt.to_str().unwrap()],
+        &repo,
+    );
+    let stray = dir.path().join("stray");
+    std::fs::create_dir(&stray).unwrap();
+
+    let (removed, why) = remove_stopped_worktree(&repo, &stray, "sb/s1").await;
+    assert!(!removed && stray.exists(), "not a worktree: {why:?}");
+    let (removed, why) = remove_stopped_worktree(&repo, &repo, "main").await;
+    assert!(!removed && repo.exists(), "the main checkout: {why:?}");
+
+    std::fs::write(wt.join("f.txt"), "x").unwrap();
+    assert_eq!(
+        remove_stopped_worktree(&repo, &wt, "sb/s1").await,
+        (false, Some("dirty".into()))
+    );
+    git(&["add", "f.txt"], &wt);
+    git(&["commit", "-q", "-m", "work"], &wt);
+    assert_eq!(
+        remove_stopped_worktree(&repo, &wt, "sb/s1").await,
+        (false, Some("unmerged".into()))
+    );
+    git(&["merge", "-q", "sb/s1"], &repo);
+    assert_eq!(
+        remove_stopped_worktree(&repo, &wt, "sb/s1").await,
+        (true, None)
+    );
+    assert!(!wt.exists());
+    let branches = std::process::Command::new("git")
+        .args(["-C", repo.to_str().unwrap(), "branch", "--list", "sb/s1"])
+        .output()
+        .unwrap();
+    assert!(!branches.stdout.is_empty(), "the branch stays");
+    assert_eq!(
+        remove_stopped_worktree(&repo, &wt, "sb/s1").await,
+        (false, None),
+        "already gone"
+    );
+}
+
 // Each task in a Herdr session of its own.
 
 use super::super::herdrs::{Herdrs, Starter};
@@ -567,6 +626,45 @@ async fn every_new_task_starts_in_a_new_herdr_session_of_its_own() {
         Some("p-s2"),
         "it survives a runner restart"
     );
+}
+
+#[tokio::test]
+async fn delete_stops_a_running_task_then_deletes_its_own_herdr_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let screens = vec![fixture("folder-access"), fixture("ready")];
+    let (r, config_dir, started) = multi_rig(dir, screens);
+    r.sessions.start(start_req(Agent::Codex)).await.unwrap();
+    let folder = config_dir.join("sessions/p-s1");
+    assert!(folder.exists());
+    let delete = |herdr_session: Option<&str>| Op::Delete {
+        session_id: "s1".into(),
+        herdr_session: herdr_session.map(str::to_owned),
+        repo_path: Some("/srv/repo".into()),
+        worktree_path: None,
+        branch: Some("sb/s1".into()),
+    };
+
+    let v = r.sessions.handle(delete(None)).await.unwrap();
+    assert_eq!(v["herdr_session_deleted"], true);
+    assert_eq!(
+        v["worktree_removed"], false,
+        "a worktree it can't check is kept"
+    );
+    assert!(v["kept_because"].is_string());
+    assert!(!folder.exists(), "its Herdr session is gone");
+    assert!(
+        r.sessions.get("s1").is_none(),
+        "and the runner forgot the task"
+    );
+    let methods = started.lock().unwrap()[0].1.methods();
+    assert!(
+        !methods.contains(&"worktree.remove".to_owned()),
+        "{methods:?}"
+    );
+
+    // A retry after a lost answer: the task is gone here, so the hub's record says what to delete.
+    let again = r.sessions.handle(delete(Some("p-s1"))).await.unwrap();
+    assert_eq!(again["herdr_session_deleted"], true);
 }
 
 /// A Herdr session with one named agent, as a user's own session looks.

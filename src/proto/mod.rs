@@ -87,6 +87,16 @@ pub enum Op {
         session_id: String,
         remove_worktree_if_clean: bool,
     },
+    /// Stops the session if it's still running, removes its worktree if clean and merged, then
+    /// deletes its Herdr session. The hub sends what it recorded, since a stopped session is no
+    /// longer the runner's.
+    Delete {
+        session_id: String,
+        herdr_session: Option<String>,
+        repo_path: Option<String>,
+        worktree_path: Option<String>,
+        branch: Option<String>,
+    },
     /// Ask for the runner's view of its sessions, for reconciliation.
     ListSessions,
     /// Every named Herdr agent on the machine, Switchboard's or not.

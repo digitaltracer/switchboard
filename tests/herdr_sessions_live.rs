@@ -118,12 +118,19 @@ async fn each_task_gets_a_real_herdr_session_of_its_own() {
     );
     let _ = std::fs::remove_dir(path.parent().unwrap());
 
-    for name in [a.unwrap(), b.unwrap()] {
-        herdrs.stop(&name).await.unwrap();
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        herdr(xdg.path(), &["session", "delete", &name]);
-    }
+    // Delete stops a running session first; a stopped one is deleted as it is.
+    let (a, b) = (a.unwrap(), b.unwrap());
+    herdrs.delete(&a).await.unwrap();
+    herdrs.stop(&b).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    herdrs.delete(&b).await.unwrap();
+    herdrs.delete(&b).await.unwrap();
     assert!(herdrs.running().await.is_empty(), "both stopped");
+    let listed = herdr(xdg.path(), &["session", "list"]);
+    assert!(
+        !listed.contains("demo-aaaa") && !listed.contains("demo-bbbb"),
+        "both deleted: {listed}"
+    );
     println!("live herdr sessions ok");
 }
 

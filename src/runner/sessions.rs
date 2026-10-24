@@ -355,6 +355,16 @@ impl Sessions {
                 session_id,
                 remove_worktree_if_clean,
             } => self.stop(&session_id, remove_worktree_if_clean).await,
+            Op::Delete {
+                session_id,
+                herdr_session,
+                repo_path,
+                worktree_path,
+                branch,
+            } => {
+                self.delete(&session_id, herdr_session, repo_path, worktree_path, branch)
+                    .await
+            }
             Op::ListSessions => Ok(serde_json::to_value(self.owned().await).expect("serializes")),
             Op::Agents => Ok(serde_json::to_value(self.all_agents().await?).expect("serializes")),
             Op::ReadAgent {
@@ -819,6 +829,59 @@ impl Sessions {
         Ok(json!({ "worktree_removed": removed, "kept_because": kept_because, "branch": s.branch }))
     }
 
+    /// Stops the session if it's still here, removes its worktree only if clean and merged, then
+    /// deletes its Herdr session. Each step accepts having been done already, so a retry is safe.
+    async fn delete(
+        &self,
+        session_id: &str,
+        herdr_session: Option<String>,
+        repo_path: Option<String>,
+        worktree_path: Option<String>,
+        branch: Option<String>,
+    ) -> Result<Value, ProtoError> {
+        let (removed, kept_because, herdr_session) = match self.get(session_id) {
+            Some(s) => {
+                let v = self.stop(session_id, true).await?;
+                (
+                    v["worktree_removed"].as_bool().unwrap_or(false),
+                    v["kept_because"].as_str().map(str::to_owned),
+                    s.herdr_session.or(herdr_session),
+                )
+            }
+            None => {
+                let (removed, kept) = match (&repo_path, &worktree_path, &branch) {
+                    (Some(repo), Some(path), Some(branch)) => {
+                        remove_stopped_worktree(Path::new(repo), Path::new(path), branch).await
+                    }
+                    _ => (false, None),
+                };
+                (removed, kept, herdr_session)
+            }
+        };
+        let herdr_session_deleted = match &herdr_session {
+            Some(name) => {
+                self.herdrs.delete(name).await.map_err(|e| {
+                    err(
+                        ErrorCode::Herdr,
+                        format!("deleting Herdr session {name}: {e}"),
+                    )
+                })?;
+                true
+            }
+            None => false,
+        };
+        self.audit(
+            session_id,
+            "delete",
+            json!({ "worktree_removed": removed, "kept_because": kept_because, "herdr_session": herdr_session }),
+        );
+        Ok(json!({
+            "worktree_removed": removed,
+            "kept_because": kept_because,
+            "herdr_session_deleted": herdr_session_deleted,
+        }))
+    }
+
     pub async fn owned(&self) -> Vec<OwnedSession> {
         let mut snaps = HashMap::new();
         for s in self.all() {
@@ -912,6 +975,48 @@ pub async fn worktree_clean_and_merged(
         return Err("unmerged".into());
     }
     Ok(())
+}
+
+/// A stopped session's worktree, removed as Herdr removes one: only a linked worktree of `repo`,
+/// only if clean and merged, never forced. The branch stays. Already gone counts as not removed.
+async fn remove_stopped_worktree(repo: &Path, path: &Path, branch: &str) -> (bool, Option<String>) {
+    if !path.exists() {
+        return (false, None);
+    }
+    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_owned());
+    let target = canon(path);
+    if target == canon(repo) {
+        return (false, Some("it is the repository's main checkout".into()));
+    }
+    let listed = match git(repo, &["worktree", "list", "--porcelain"]).await {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).into_owned(),
+        Ok(o) => {
+            let why = String::from_utf8_lossy(&o.stderr).trim().to_owned();
+            return (false, Some(format!("git worktree list: {why}")));
+        }
+        Err(e) => return (false, Some(e)),
+    };
+    let registered = listed
+        .lines()
+        .filter_map(|l| l.strip_prefix("worktree "))
+        .any(|w| canon(Path::new(w)) == target);
+    if !registered {
+        return (
+            false,
+            Some("it is not a worktree of the project's repository".into()),
+        );
+    }
+    if let Err(why) = worktree_clean_and_merged(path, repo, branch).await {
+        return (false, Some(why));
+    }
+    match git(repo, &["worktree", "remove", &target.to_string_lossy()]).await {
+        Ok(o) if o.status.success() => (true, None),
+        Ok(o) => {
+            let why = String::from_utf8_lossy(&o.stderr).trim().to_owned();
+            (false, Some(format!("removing it failed: {why}")))
+        }
+        Err(e) => (false, Some(format!("removing it failed: {e}"))),
+    }
 }
 
 /// Files changed since `base`, committed or not, with line counts; new untracked files have none.
