@@ -168,7 +168,7 @@ struct HomeView: View {
                 }
             }
             if !model.agents.isEmpty {
-                InsetGroup(title: "Your Herdr sessions") {
+                InsetGroup(title: "Started in Herdr") {
                     ForEach(Array(model.agents.enumerated()), id: \.element) { i, a in
                         NavigationLink(value: AgentRef(machine: a.machineId, name: a.name)) {
                             ListRow(symbol: "terminal", tint: .secondary, title: a.displayName,
@@ -180,7 +180,7 @@ struct HomeView: View {
             }
             InsetGroup(title: "Browse") {
                 NavigationLink(value: Browse.allSessions) {
-                    ListRow(symbol: "tray.full", tint: .secondary, title: "All sessions", subtitle: nil, trailing: "\(model.sessions.count)", first: true)
+                    ListRow(symbol: "tray.full", tint: .secondary, title: "All sessions", subtitle: nil, trailing: "\(model.sessions.count + model.agents.count)", first: true)
                 }
                 NavigationLink(value: Browse.machines) {
                     ListRow(symbol: "desktopcomputer", tint: .accentColor, title: "Machines", subtitle: nil, trailing: "", first: false)
