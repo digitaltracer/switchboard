@@ -1560,6 +1560,7 @@ impl SessionService {
                     json!({ "approval_id": approval_id, "tool_name": approval.tool_name }),
                 )
                 .await?;
+                self.notify_next(&approval).await?;
                 let a = self
                     .deliver(&s.machine_id, session_id, approval_id, false)
                     .await?;
@@ -1576,6 +1577,7 @@ impl SessionService {
                     }),
                 )
                 .await?;
+                self.notify_next(&approval).await?;
                 let a = self
                     .deliver(&s.machine_id, session_id, approval_id, d == Decision::Allow)
                     .await?;
@@ -1587,6 +1589,31 @@ impl SessionService {
         self.finish(&op_id, OpState::Done, Some(session_id), &v)
             .await?;
         Ok(result)
+    }
+
+    /// Notifies the session's next open approval once `closed`, the one that notified, closes.
+    async fn notify_next(&self, closed: &ApprovalRecord) -> Result<(), HubError> {
+        let Some(number) = closed.number else {
+            return Ok(());
+        };
+        let next = self
+            .store
+            .notify_next_approval(&closed.session_id, number, self.now())
+            .await?;
+        if let Some(a) = next {
+            let _ = self.events.send(HubEvent::ApprovalRequested {
+                session_id: a.session_id,
+                approval: ApprovalView {
+                    number: a.number,
+                    tool_name: redact_str(&a.tool_name),
+                    tool_input: a.tool_input,
+                    id: a.id,
+                    created_at: a.created_at,
+                    deadline: a.deadline,
+                },
+            });
+        }
+        Ok(())
     }
 
     /// Hands a recorded decision to the runner and records what became of it.
@@ -1656,6 +1683,7 @@ impl SessionService {
         let expired = self.store.expire_approvals(self.now()).await?;
         for a in &expired {
             self.audit_denied("hub", a).await?;
+            self.notify_next(a).await?;
             if let Some(s) = self.store.get_session(&a.session_id).await? {
                 self.deliver_deny_later(&s.machine_id, a);
             }
@@ -2436,8 +2464,8 @@ impl SessionService {
                         number: None,
                     })
                     .await;
-                let number = match created {
-                    Ok(n) => n,
+                let created = match created {
+                    Ok(c) => c,
                     Err(e) => {
                         tracing::warn!(error = %e, approval_id, "ignoring a repeated approval request");
                         return Ok(());
@@ -2452,17 +2480,19 @@ impl SessionService {
                 )
                 .await?;
                 self.patch(&session_id, SessionPatch::default()).await?;
-                let _ = self.events.send(HubEvent::ApprovalRequested {
-                    session_id,
-                    approval: ApprovalView {
-                        id: approval_id,
-                        number: Some(number),
-                        tool_name: redact_str(&tool_name),
-                        tool_input: redact(&tool_input),
-                        created_at: now,
-                        deadline,
-                    },
-                });
+                if created.notify {
+                    let _ = self.events.send(HubEvent::ApprovalRequested {
+                        session_id,
+                        approval: ApprovalView {
+                            id: approval_id,
+                            number: Some(created.number),
+                            tool_name: redact_str(&tool_name),
+                            tool_input: redact(&tool_input),
+                            created_at: now,
+                            deadline,
+                        },
+                    });
+                }
             }
             Event::ApprovalClosed {
                 session_id,
@@ -2472,14 +2502,14 @@ impl SessionService {
                 let Some(s) = self.owned_by(machine, &session_id).await? else {
                     return Ok(());
                 };
-                if self
+                let Some(closed) = self
                     .store
                     .get_approval(&approval_id)
                     .await?
-                    .is_none_or(|a| a.session_id != s.id)
-                {
+                    .filter(|a| a.session_id == s.id)
+                else {
                     return Ok(());
-                }
+                };
                 let outcome = self
                     .store
                     .decide_approval(&approval_id, Decision::Deny, Some(&reason), self.now())
@@ -2497,6 +2527,7 @@ impl SessionService {
                     )
                     .await?;
                     self.patch(&s.id, SessionPatch::default()).await?;
+                    self.notify_next(&closed).await?;
                 }
             }
             Event::HookFailed {

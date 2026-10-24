@@ -168,6 +168,13 @@ pub enum Begin {
     Existing(Operation),
 }
 
+/// A recorded approval's short number, and whether it notifies now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NewApproval {
+    pub number: i64,
+    pub notify: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ApprovalRecord {
     pub id: String,
@@ -655,8 +662,9 @@ impl Store {
 
     // Approvals.
 
-    /// Records a new approval and its notification, and returns its short number.
-    pub async fn create_approval(&self, a: ApprovalRecord) -> Result<i64> {
+    /// Records a new approval and returns its short number. Only a session's oldest open
+    /// approval notifies, so a burst of requests sends one; the next notifies when it closes.
+    pub async fn create_approval(&self, a: ApprovalRecord) -> Result<NewApproval> {
         self.call(move |c| {
             let tx = c.transaction()?;
             let number = tx.query_row(
@@ -673,17 +681,48 @@ impl Store {
                 ],
                 |r| r.get(0),
             )?;
-            queue(
-                &tx,
-                &format!("approval:{}", a.id),
-                OutboxKind::Approval,
-                Some(&a.session_id),
-                Some(&a.id),
-                a.created_at,
-                None,
+            let notify: bool = tx.query_row(
+                "SELECT NOT EXISTS (SELECT 1 FROM approvals
+                 WHERE session_id = ?1 AND outcome IS NULL AND id != ?2)",
+                params![a.session_id, a.id],
+                |r| r.get(0),
             )?;
+            if notify {
+                queue_approval(&tx, &a.session_id, &a.id, a.created_at)?;
+            }
             tx.commit()?;
-            Ok(number)
+            Ok(NewApproval { number, notify })
+        })
+        .await
+    }
+
+    /// After `closed_number` closes: the session's oldest open approval, notified, if it came
+    /// after the closed one. An older one is still open, so it already notified.
+    pub async fn notify_next_approval(
+        &self,
+        session_id: &str,
+        closed_number: i64,
+        now: i64,
+    ) -> Result<Option<ApprovalRecord>> {
+        let session_id = session_id.to_owned();
+        self.call(move |c| {
+            let tx = c.transaction()?;
+            let next = tx
+                .query_row(
+                    "SELECT * FROM approvals WHERE session_id = ?1 AND outcome IS NULL
+                     ORDER BY number LIMIT 1",
+                    [&session_id],
+                    raw_approval,
+                )
+                .optional()?
+                .map(RawApproval::finish)
+                .transpose()?
+                .filter(|a| a.number.is_some_and(|n| n > closed_number));
+            if let Some(a) = &next {
+                queue_approval(&tx, &a.session_id, &a.id, now)?;
+            }
+            tx.commit()?;
+            Ok(next)
         })
         .await
     }
@@ -1109,6 +1148,18 @@ fn bump(c: &rusqlite::Connection) -> Result<i64> {
 
 /// Queues a notification for every active device but `except`. A session's notification
 /// follows its mutes and mute-all; a repeated key is a no-op.
+fn queue_approval(c: &rusqlite::Connection, session_id: &str, id: &str, now: i64) -> Result<()> {
+    queue(
+        c,
+        &format!("approval:{id}"),
+        OutboxKind::Approval,
+        Some(session_id),
+        Some(id),
+        now,
+        None,
+    )
+}
+
 fn queue(
     c: &rusqlite::Connection,
     dedupe_key: &str,

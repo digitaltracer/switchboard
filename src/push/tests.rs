@@ -212,7 +212,9 @@ async fn failed_sends_retry_with_backoff_then_give_up() {
     d.tick().await.unwrap();
     assert_eq!(r.state(id, &dev).await, "sent");
 
-    r.approval("s1", "a2").await;
+    // Another session: in s1, a2 would wait for a1 to close before notifying.
+    r.session("s2").await;
+    r.approval("s2", "a2").await;
     let id = r.last_outbox().await;
     for _ in 0..MAX_ATTEMPTS {
         r.fake
@@ -267,13 +269,17 @@ async fn decided_stale_revoked_and_tokenless_deliveries_are_dropped() {
         .decide_approval("decided", Decision::Deny, Some("denied"), T0)
         .await
         .unwrap();
-    r.approval("s1", "old").await;
+    // One open approval per session, so each notifies.
+    for s in ["s2", "s3", "s4"] {
+        r.session(s).await;
+    }
+    r.approval("s2", "old").await;
     let old = r.last_outbox().await;
     r.clock.advance(STALE_AFTER + Duration::from_secs(1));
-    r.approval("s1", "fresh").await;
+    r.approval("s3", "fresh").await;
     let fresh = r.last_outbox().await;
     let revoked = r.device(Some("cc33")).await;
-    r.approval("s1", "late").await;
+    r.approval("s4", "late").await;
     let late = r.last_outbox().await;
     r.devices.revoke(&revoked, "admin").await.unwrap();
 

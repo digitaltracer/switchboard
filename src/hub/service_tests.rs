@@ -722,6 +722,37 @@ async fn approve_then_replay_returns_the_recorded_outcome_without_resending() {
 }
 
 #[tokio::test]
+async fn a_burst_of_approvals_is_announced_one_at_a_time() {
+    let r = rig().await;
+    let mut events = r.svc.subscribe();
+    let (mut vps, sid) = with_approval(&r).await;
+    approval_requested(&vps, &sid, "a2", json!({"command": "ls"})).await;
+    approval_requested(&vps, &sid, "a3", json!({"command": "pwd"})).await;
+    let mut announced = || {
+        let mut ids = vec![];
+        while let Ok(e) = events.try_recv() {
+            if let HubEvent::ApprovalRequested { approval, .. } = e {
+                ids.push(approval.id);
+            }
+        }
+        ids
+    };
+    assert_eq!(announced(), ["a1"], "the rest wait while a1 is open");
+
+    let task = decide(&r, &sid, true).await;
+    let req = vps.req().await;
+    vps.ok(req.id, json!({"applied": true})).await;
+    task.await.unwrap().unwrap();
+    assert_eq!(announced(), ["a2"], "answering a1 announces the next");
+    let s = r.svc.get(&sid, None, Duration::ZERO).await.unwrap();
+    assert_eq!(
+        s.pending_approvals.len(),
+        2,
+        "every request is still listed in the app"
+    );
+}
+
+#[tokio::test]
 async fn deny_is_delivered_and_recorded() {
     let r = rig().await;
     let (mut vps, sid) = with_approval(&r).await;

@@ -321,13 +321,99 @@ async fn expire_and_deny_pending_sweep_only_undecided() {
 }
 
 #[tokio::test]
+async fn a_burst_of_approvals_notifies_once_and_the_next_when_it_closes() {
+    let store = store_with_session().await;
+    let approval_ids = |store: Store| async move {
+        let all = store.outbox_after(0, 100).await.unwrap();
+        all.into_iter()
+            .filter_map(|e| e.approval_id)
+            .collect::<Vec<_>>()
+    };
+    let mut notified = vec![];
+    for id in ["a1", "a2", "a3"] {
+        notified.push(
+            store
+                .create_approval(approval(id, 1_000))
+                .await
+                .unwrap()
+                .notify,
+        );
+    }
+    assert_eq!(
+        notified,
+        [true, false, false],
+        "only the oldest open one notifies"
+    );
+    assert_eq!(approval_ids(store.clone()).await, ["a1"]);
+
+    // Closing a newer one while the oldest is still open notifies nothing.
+    store
+        .decide_approval("a3", Decision::Deny, None, 10)
+        .await
+        .unwrap();
+    assert!(
+        store
+            .notify_next_approval("s1", 3, 10)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    // Closing the one that notified hands over to the next.
+    store
+        .decide_approval("a1", Decision::Allow, None, 20)
+        .await
+        .unwrap();
+    let next = store
+        .notify_next_approval("s1", 1, 20)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(next.id, "a2");
+    assert_eq!(approval_ids(store.clone()).await, ["a1", "a2"]);
+    store
+        .decide_approval("a2", Decision::Allow, None, 30)
+        .await
+        .unwrap();
+    assert!(
+        store
+            .notify_next_approval("s1", 2, 30)
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    // With nothing open, the next request notifies at once.
+    assert!(
+        store
+            .create_approval(approval("a4", 1_000))
+            .await
+            .unwrap()
+            .notify
+    );
+}
+
+#[tokio::test]
 async fn approval_numbers_count_up_and_are_never_reused() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("hub.db");
     let store = Store::open(&path).await.unwrap();
     store.insert_session(session("s1", 1_000)).await.unwrap();
-    assert_eq!(store.create_approval(approval("a1", 100)).await.unwrap(), 1);
-    assert_eq!(store.create_approval(approval("a2", 100)).await.unwrap(), 2);
+    assert_eq!(
+        store
+            .create_approval(approval("a1", 100))
+            .await
+            .unwrap()
+            .number,
+        1
+    );
+    assert_eq!(
+        store
+            .create_approval(approval("a2", 100))
+            .await
+            .unwrap()
+            .number,
+        2
+    );
     assert!(
         store.create_approval(approval("a2", 100)).await.is_err(),
         "same id twice"
@@ -339,7 +425,14 @@ async fn approval_numbers_count_up_and_are_never_reused() {
     drop(store);
 
     let store = Store::open(&path).await.unwrap();
-    assert_eq!(store.create_approval(approval("a3", 100)).await.unwrap(), 3);
+    assert_eq!(
+        store
+            .create_approval(approval("a3", 100))
+            .await
+            .unwrap()
+            .number,
+        3
+    );
     let one = store.get_approval_by_number(1).await.unwrap().unwrap();
     assert_eq!(
         (one.id.as_str(), one.number, one.outcome),

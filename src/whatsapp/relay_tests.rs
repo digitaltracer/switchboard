@@ -178,9 +178,9 @@ impl Rig {
             .await;
     }
 
-    /// A permission request from a session's hook, as the runner reports it.
+    /// A permission request from a session's hook, as the runner reports it. Read back from the
+    /// session, since only a session's oldest open approval is announced.
     async fn ask(&self, session_id: &str, approval_id: &str, command: &str) -> ApprovalView {
-        let mut events = self.svc.subscribe();
         self.event(Event::ApprovalRequested {
             session_id: session_id.into(),
             approval_id: approval_id.into(),
@@ -189,11 +189,15 @@ impl Rig {
             deadline_ms: 280_000,
         })
         .await;
-        loop {
-            if let Ok(HubEvent::ApprovalRequested { approval, .. }) = events.recv().await {
-                return approval;
-            }
-        }
+        let s = self
+            .svc
+            .get(session_id, None, Duration::ZERO)
+            .await
+            .unwrap();
+        s.pending_approvals
+            .into_iter()
+            .find(|a| a.id == approval_id)
+            .expect("the approval is pending")
     }
 }
 
