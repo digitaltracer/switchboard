@@ -30,6 +30,7 @@ final class AppModel {
     var current: Schemas.TargetView?
     /// Named Herdr agents Switchboard didn't start, refreshed while the list is on screen.
     private(set) var agents: [Schemas.AgentView] = []
+    private(set) var projects: [Schemas.Project] = []
     /// Bumped each time the app comes back to the foreground; screens restart their polls on it,
     /// since a long-poll begun before the phone slept may be on a dead connection.
     private(set) var wakes = 0
@@ -147,6 +148,7 @@ final class AppModel {
         hub = nil
         sessions = []
         agents = []
+        projects = []
         current = nil
         meta = nil
         connected = false
@@ -176,6 +178,23 @@ final class AppModel {
         t.sessionId ?? "agent:\(t.machineId)/\(t.agent ?? t.label)"
     }
 
+    /// Names the speech recognizer should expect: projects, sessions and agents, as written
+    /// and as spoken.
+    var vocabulary: [String] {
+        var names = ["Switchboard", "Herdr", "Claude", "Codex", "worktree"]
+        for p in projects { names += [p.id] + p.aliases }
+        for s in sessions { names += [s.label, s.branch].compactMap { $0 } }
+        for a in agents where a.displayName == a.name { names.append(a.name.split(separator: "/").last.map(String.init) ?? a.name) }
+        var seen = Set<String>()
+        var out: [String] = []
+        for name in names {
+            let spoken = name.replacing(/[-_\/]+/, with: " ")
+            for w in [name, spoken] where seen.insert(w.lowercased()).inserted { out.append(w) }
+        }
+        // Apple suggests no more than about 100 phrases.
+        return Array(out.prefix(100))
+    }
+
     func refreshAgents() async {
         guard let hub, let list = try? await hub.agents() else { return }
         agents = list
@@ -191,6 +210,7 @@ final class AppModel {
                 guard let self, let hub = self.hub else { return }
                 do {
                     if self.meta == nil { self.meta = try await hub.meta() }
+                    if self.projects.isEmpty, let p = try? await hub.projects() { self.projects = p }
                     let list = try await hub.sessions(after: revision)
                     self.sessions = list.sessions
                     revision = list.revision

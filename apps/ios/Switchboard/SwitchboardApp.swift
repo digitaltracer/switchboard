@@ -12,6 +12,7 @@ struct SwitchboardApp: App {
             RootView()
                 .environment(delegate.model)
                 .environment(delegate.voice)
+                .onChange(of: delegate.model.vocabulary, initial: true) { _, v in delegate.voice.vocabulary = v }
         }
         .onChange(of: scenePhase) { old, new in
             if new == .active, old != .active { delegate.model.becameActive() }

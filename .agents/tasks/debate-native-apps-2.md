@@ -291,3 +291,9 @@ Decided: the VPS is only a relay. Every user runs the hub and runner on their ow
   - runs a scripted voice listen (`SB_FAKE_VOICE`).
 
   `KEEP_RESULT=<path>` keeps the result bundle and its screenshots.
+
+## As built (2026-10-23): Apple's newer speech model
+
+- On iOS 26 and newer the mic uses `SpeechAnalyzer` with `SpeechTranscriber`, which handles long speech better. It still runs on the device.
+- The first listen on a phone whose model isn't installed starts the download and uses the older recognizer meanwhile. Phones without the new model, or on older iOS, keep the older recognizer.
+- Both are given the names to expect: project ids and aliases, session labels and branches, and agent names, as written and as spoken (`AppModel.vocabulary`, at most 100).
