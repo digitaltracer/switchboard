@@ -55,6 +55,7 @@ pub fn routes(state: AppState) -> Router {
         .route("/sessions/{id}/changes", get(get_changes))
         .route("/sessions/{id}/prompt", post(prompt_session))
         .route("/sessions/{id}/stop", post(stop_session))
+        .route("/sessions/{id}/delete", post(delete_session))
         .route("/sessions/{id}/mute", put(mute_session))
         .route("/operations/{request_id}", get(get_operation))
         .route("/approvals/{id}/challenge", post(approval_challenge))
@@ -800,6 +801,19 @@ pub async fn stop_session(
         .stop(&d.caller(), &id, req.remove_worktree_if_clean)
         .await?;
     Ok(Json(r.into()))
+}
+
+/// Stops the session if it's running, removes its worktree only if clean and merged, and deletes
+/// its Herdr session. It then leaves the session list.
+#[utoipa::path(post, path = "/app/v1/sessions/{id}/delete", tag = "sessions",
+    security(("device_token" = [])), params(("id" = String, Path)),
+    responses((status = 200, description = "OK", body = DeleteResponse), (status = 404, description = "Not found", body = ApiError)))]
+pub async fn delete_session(
+    State(st): State<AppState>,
+    d: DeviceAuth,
+    Path(id): Path<String>,
+) -> ApiResult<DeleteResponse> {
+    Ok(Json(st.svc.delete(&d.caller(), &id).await?.into()))
 }
 
 #[utoipa::path(put, path = "/app/v1/sessions/{id}/mute", tag = "sessions",

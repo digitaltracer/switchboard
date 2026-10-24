@@ -67,7 +67,8 @@ pub use devices::{
 };
 pub use push::{DeliveryUpdate, DueDelivery};
 
-// `exited`: the agent left its pane without a stop.
+// `exited`: the agent left its pane without a stop. `deleted`: stopped, and its Herdr session
+// deleted; kept for the audit but no longer listed.
 str_enum!(Lifecycle, "lifecycle" {
     Starting => "starting",
     Running => "running",
@@ -75,6 +76,7 @@ str_enum!(Lifecycle, "lifecycle" {
     Stopped => "stopped",
     Exited => "exited",
     Failed => "failed",
+    Deleted => "deleted",
 });
 
 str_enum!(OpState, "state" {

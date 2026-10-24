@@ -8,8 +8,8 @@ use utoipa::{IntoParams, ToSchema};
 
 use crate::hub::route::Target;
 use crate::hub::service::{
-    ApprovalView, ChangesResult, DecideResult, MachineView, ProjectView, PromptResult, SessionList,
-    SessionView, StartResult, StopResult,
+    ApprovalView, ChangesResult, DecideResult, DeleteResult, MachineView, ProjectView,
+    PromptResult, SessionList, SessionView, StartResult, StopResult,
 };
 use crate::store::{DeviceRecord, Operation};
 
@@ -236,7 +236,7 @@ pub struct Session {
     pub agent_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
-    /// `starting`, `running`, `stopping`, `stopped`, `exited` or `failed`.
+    /// `starting`, `running`, `stopping`, `stopped`, `exited`, `failed` or `deleted`.
     pub lifecycle: String,
     /// Herdr's view: `idle`, `working`, `blocked`, `done` or `unknown`.
     pub agent_status: String,
@@ -633,6 +633,30 @@ pub struct StopResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kept_because: Option<String>,
     pub already_stopped: bool,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DeleteResponse {
+    pub worktree_removed: bool,
+    /// Why the worktree was kept: uncommitted or unmerged work, or a failed removal.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    pub kept_because: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    pub branch: Option<String>,
+    pub already_deleted: bool,
+}
+
+impl From<DeleteResult> for DeleteResponse {
+    fn from(d: DeleteResult) -> Self {
+        Self {
+            worktree_removed: d.worktree_removed,
+            kept_because: d.kept_because,
+            branch: d.branch,
+            already_deleted: d.already_deleted,
+        }
+    }
 }
 
 impl From<StopResult> for StopResponse {

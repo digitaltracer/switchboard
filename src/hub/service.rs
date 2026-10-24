@@ -49,6 +49,7 @@ const KIND_START: &str = "session_start";
 const KIND_PROMPT: &str = "session_prompt";
 const KIND_DECIDE: &str = "session_decide";
 const KIND_STOP: &str = "session_stop";
+const KIND_DELETE: &str = "session_delete";
 const KIND_ANSWER: &str = "session_answer";
 
 /// Unix milliseconds; manual in tests so deadlines are exact.
@@ -399,6 +400,16 @@ pub struct StopResult {
     pub kept_because: Option<String>,
     pub branch: Option<String>,
     pub already_stopped: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeleteResult {
+    pub session_id: String,
+    pub worktree_removed: bool,
+    /// Why the worktree was kept: uncommitted or unmerged work, or a failed removal.
+    pub kept_because: Option<String>,
+    pub branch: Option<String>,
+    pub already_deleted: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -1825,6 +1836,133 @@ impl SessionService {
         Ok(result)
     }
 
+    // Delete.
+
+    /// Stops the session if it's running, removes its worktree only if clean and merged, and
+    /// deletes its Herdr session. It then drops out of the list; its record stays for the audit.
+    pub async fn delete(
+        self: &Arc<Self>,
+        caller: &Caller,
+        session_id: &str,
+    ) -> Result<DeleteResult, HubError> {
+        let s = self.session(session_id).await?;
+        match s.lifecycle {
+            Lifecycle::Deleted => {
+                return Ok(DeleteResult {
+                    session_id: s.id,
+                    worktree_removed: false,
+                    kept_because: None,
+                    branch: s.branch,
+                    already_deleted: true,
+                });
+            }
+            Lifecycle::Starting => {
+                return Err(HubError::NotRunning {
+                    id: s.id,
+                    lifecycle: s.lifecycle,
+                });
+            }
+            _ => {}
+        }
+        if self.runners.readiness(&s.machine_id) == Readiness::Offline {
+            return Err(HubError::MachineOffline(s.machine_id));
+        }
+        let op_id = match self
+            .begin(
+                None,
+                KIND_DELETE,
+                &fingerprint(&json!({})),
+                Some(session_id),
+            )
+            .await?
+        {
+            Ok(id) => id,
+            Err(v) => return from_recorded(v),
+        };
+        for a in self
+            .store
+            .deny_pending(session_id, "deleted", self.now())
+            .await?
+        {
+            self.audit_denied(&caller.actor, &a).await?;
+        }
+        if s.lifecycle == Lifecycle::Running {
+            self.patch(
+                session_id,
+                SessionPatch {
+                    lifecycle: Some(Lifecycle::Stopping),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        }
+        self.audit(
+            &caller.actor,
+            Some(session_id),
+            "delete",
+            json!({ "operation_id": op_id }),
+        )
+        .await?;
+        let repo_path = self
+            .cfg
+            .projects
+            .iter()
+            .find(|p| p.id == s.project_id)
+            .and_then(|p| p.repos.get(&s.machine_id))
+            .map(|r| r.to_string_lossy().into_owned());
+        let op = Op::Delete {
+            session_id: session_id.to_owned(),
+            herdr_session: s.herdr_session.clone(),
+            repo_path,
+            worktree_path: s.worktree_path.clone(),
+            branch: s.branch.clone(),
+        };
+        let v = match self.runners.call(&s.machine_id, op, STOP_TIMEOUT).await {
+            Ok(v) => v,
+            Err(e) => {
+                if e.code != ErrorCode::OutcomeUnknown {
+                    self.patch(
+                        session_id,
+                        SessionPatch {
+                            lifecycle: Some(s.lifecycle),
+                            error: Some(format!("delete failed: {}", e.message)),
+                            ..Default::default()
+                        },
+                    )
+                    .await?;
+                }
+                return Err(self
+                    .settle_err(&op_id, Some(session_id), &s.machine_id, e)
+                    .await);
+            }
+        };
+        self.patch(
+            session_id,
+            SessionPatch {
+                lifecycle: Some(Lifecycle::Deleted),
+                ..Default::default()
+            },
+        )
+        .await?;
+        let result = DeleteResult {
+            session_id: session_id.to_owned(),
+            worktree_removed: v
+                .get("worktree_removed")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            kept_because: v
+                .get("kept_because")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            branch: s.branch,
+            already_deleted: false,
+        };
+        let v = serde_json::to_value(&result).expect("serializes");
+        self.finish(&op_id, OpState::Done, Some(session_id), &v)
+            .await?;
+        Ok(result)
+    }
+
     // Reading sessions.
 
     async fn view(&self, s: SessionRecord) -> Result<SessionView, HubError> {
@@ -1894,10 +2032,13 @@ impl SessionService {
         }
     }
 
+    /// Every session but deleted ones, which stay readable by id.
     pub async fn list(&self) -> Result<Vec<SessionView>, HubError> {
         let mut out = Vec::new();
         for s in self.store.list_sessions().await? {
-            out.push(self.view(s).await?);
+            if s.lifecycle != Lifecycle::Deleted {
+                out.push(self.view(s).await?);
+            }
         }
         Ok(out)
     }
@@ -2271,6 +2412,16 @@ impl SessionService {
                         &s.id,
                         KIND_STOP,
                         OpState::Done,
+                        &json!({ "session_id": s.id, "reconciled": true }),
+                        now,
+                    )
+                    .await?;
+                // A delete cut short got as far as the stop; deleting again finishes it.
+                self.store
+                    .resolve_session_operations(
+                        &s.id,
+                        KIND_DELETE,
+                        OpState::OutcomeUnknown,
                         &json!({ "session_id": s.id, "reconciled": true }),
                         now,
                     )

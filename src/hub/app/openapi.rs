@@ -30,6 +30,7 @@ use super::types::*;
         super::get_changes,
         super::prompt_session,
         super::stop_session,
+        super::delete_session,
         super::mute_session,
         super::approval_challenge,
         super::decide_approval,
@@ -49,6 +50,7 @@ use super::types::*;
         ApprovalChallenge, DecisionRequest, DecisionResponse, Device, PushEnvironment,
         PushTokenRequest, TargetRef, TargetView, MessageRequest, MessageChoice, MessageResponse,
         AgentView, Agents, ChangedFile, Changes, MessagePreviewRequest, MessagePreview,
+        DeleteResponse,
     )),
     modifiers(&DeviceToken),
 )]

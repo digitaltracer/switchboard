@@ -1056,6 +1056,100 @@ async fn stop_and_exit_deny_pending_approvals() {
     );
 }
 
+#[tokio::test]
+async fn delete_denies_approvals_and_leaves_the_list_but_not_the_record() {
+    let r = rig().await;
+    let (mut vps, sid) = with_approval(&r).await;
+    let record = r.svc.store().get_session(&sid).await.unwrap().unwrap();
+    let (svc, bot, s2) = (r.svc.clone(), r.bot.clone(), sid.clone());
+    let delete = tokio::spawn(async move { svc.delete(&bot, &s2).await });
+    let req = vps.req().await;
+    let Op::Delete {
+        session_id,
+        herdr_session,
+        repo_path,
+        worktree_path,
+        branch,
+    } = req.op.clone()
+    else {
+        panic!("expected a delete, got {:?}", req.op);
+    };
+    assert_eq!(session_id, sid);
+    assert_eq!(
+        (herdr_session, worktree_path, branch),
+        (
+            record.herdr_session,
+            record.worktree_path,
+            record.branch.clone()
+        )
+    );
+    assert!(
+        repo_path.is_some(),
+        "the runner needs the repo to check the worktree"
+    );
+    let a = r.svc.store().get_approval("a1").await.unwrap().unwrap();
+    assert_eq!(
+        (a.outcome, a.reason.as_deref()),
+        (Some(Decision::Deny), Some("deleted"))
+    );
+    vps.ok(
+        req.id,
+        json!({"worktree_removed": false, "kept_because": "unmerged", "herdr_session_deleted": true}),
+    )
+    .await;
+    let out = delete.await.unwrap().unwrap();
+    assert_eq!(out.kept_because.as_deref(), Some("unmerged"));
+    assert_eq!(out.branch, record.branch);
+
+    let s = r.svc.get(&sid, None, Duration::ZERO).await.unwrap();
+    assert_eq!(s.lifecycle, Lifecycle::Deleted);
+    assert!(
+        r.svc.list().await.unwrap().iter().all(|s| s.id != sid),
+        "not listed"
+    );
+    // Again: answered from the record, with no runner call.
+    assert!(r.svc.delete(&r.bot, &sid).await.unwrap().already_deleted);
+}
+
+#[tokio::test]
+async fn a_stopped_session_can_be_deleted() {
+    let r = rig().await;
+    let (mut vps, sid) = with_approval(&r).await;
+    let (svc, bot, s2) = (r.svc.clone(), r.bot.clone(), sid.clone());
+    let stop = tokio::spawn(async move { svc.stop(&bot, &s2, false).await });
+    let req = vps.req().await;
+    vps.ok(req.id, json!({"worktree_removed": false})).await;
+    stop.await.unwrap().unwrap();
+
+    let (svc, bot, s2) = (r.svc.clone(), r.bot.clone(), sid.clone());
+    let delete = tokio::spawn(async move { svc.delete(&bot, &s2).await });
+    let req = vps.req().await;
+    assert!(matches!(req.op, Op::Delete { .. }));
+    assert_eq!(
+        r.svc
+            .get(&sid, None, Duration::ZERO)
+            .await
+            .unwrap()
+            .lifecycle,
+        Lifecycle::Stopped,
+        "a stopped session isn't marked stopping again"
+    );
+    vps.ok(
+        req.id,
+        json!({"worktree_removed": true, "herdr_session_deleted": true}),
+    )
+    .await;
+    assert!(delete.await.unwrap().unwrap().worktree_removed);
+    assert_eq!(
+        r.svc
+            .get(&sid, None, Duration::ZERO)
+            .await
+            .unwrap()
+            .lifecycle,
+        Lifecycle::Deleted
+    );
+}
+
 // Prompts and reads.
 
 #[tokio::test]
