@@ -297,3 +297,54 @@ Decided: the VPS is only a relay. Every user runs the hub and runner on their ow
 - On iOS 26 and newer the mic uses `SpeechAnalyzer` with `SpeechTranscriber`, which handles long speech better. It still runs on the device.
 - The first listen on a phone whose model isn't installed starts the download and uses the older recognizer meanwhile. Phones without the new model, or on older iOS, keep the older recognizer.
 - Both are given the names to expect: project ids and aliases, session labels and branches, and agent names, as written and as spoken (`AppModel.vocabulary`, at most 100).
+
+## As built (2026-10-24): Android core and the Keystore spike
+
+Step 8 has started in `apps/android/`: a Gradle project with a plain-Kotlin `core` module (the counterpart of SwitchboardKit) and an `app` module. Android 12 (API 31) is the minimum; the application id is `com.digitaltracer.switchboard`, as on iOS.
+
+- **Client:** generated at build time from `api/openapi.json` by openapi-generator (`kotlin`, `jvm-okhttp4`, kotlinx.serialization, coroutines), as iOS generates its own.
+  - Its validator rejects the spec's empty `license`, so validation is off (`skipValidateSpec`). The hub's drift test still guards the spec.
+  - Absent optional fields are left out rather than sent as `null` (`explicitNulls = false`), matching iOS.
+- **Relay:** an OkHttp interceptor seals each request and opens the reply. Crypto is the platform's own (ECDH, HMAC-based HKDF, ChaCha20-Poly1305), with no Tink or BouncyCastle.
+- **Tests:** `./gradlew :core:test` on the Mac.
+  - They pass the shared relay vector (same request bytes as the Swift half, opens the Rust reply) and verify the CryptoKit signature fixture.
+  - They send the request bodies in `tests/fixtures/app-v1/requests/`.
+  - They also cover the Swift unit tests, ported one for one.
+- **Approval prompt:** Android's own `BiometricPrompt` rather than AndroidX Biometric, since API 31 has "strong biometric or screen lock" bound to a key.
+- **QR:** Google's code scanner, the closest match to iOS's system scanner. Pasting the link always works. Not built yet.
+
+**Keystore spike** on a moto g57 power, Android 17 (API 37), patch 2026-08-01. It's a debug-only screen, `KeystoreSpikeActivity`.
+
+The approval key is P-256 with `setUserAuthenticationParameters(0, AUTH_BIOMETRIC_STRONG | AUTH_DEVICE_CREDENTIAL)`, not invalidated by a new enrolment, and requiring an unlocked device. Results:
+- It lives in the TEE; this phone has no StrongBox.
+- `KeyInfo` reports the auth requirement as enforced by secure hardware, with validity 0 (every use).
+- Signing without a prompt is refused by keystore2 (`KEY_USER_NOT_AUTHENTICATED`, "No operation auth token received").
+- After a fingerprint, and separately after the PIN, one signature succeeds and verifies.
+- A second signature on the same unlock is refused.
+
+This answers the open question: **Android enforces the passcode fallback at the key level**, so signed approvals can work as on iOS. The key accepts only strong biometrics or the screen lock. Whether Motorola's face unlock counts as strong wasn't tested; fingerprint and PIN both work.
+
+**Still open, before Android ships:**
+- The push-token call and the relay are APNs-only. FCM needs an additive API value and a relay sender.
+- `min_client_build` is one number for every app. Raising it for an iOS build would lock out lower-numbered Android builds. The additive fix is a platform header or a minimum per platform.
+
+## As built (2026-10-25): deleting a session
+
+Stop keeps a task's Herdr session listed and its worktree. Delete is new and goes further, decided with the owner:
+
+- **What it does.** If the session is still running, Delete stops it first. It then removes the worktree only if it's clean and merged, never forced, and keeps the branch. Last, it deletes the task's own Herdr session (`herdr session delete`).
+- **Which sessions.** Only sessions Switchboard started. Each task's Herdr session is one the runner created for it, so the owner's own sessions are never touched.
+- **Where it shows.** The hub marks the session `deleted` and leaves it out of the list. It's still readable by id, and still in the audit log.
+- **The runner.**
+  - `Op::Delete` carries the hub's record (Herdr session name, repo path, worktree path, branch), since a stopped session is no longer the runner's.
+  - **If the runner still has the session**, it runs the normal stop with `remove_worktree_if_clean`.
+  - **If it doesn't**, it checks that the path is a registered linked worktree of that repo and isn't the main checkout, runs the clean-and-merged check, then `git worktree remove` without `--force`.
+  - **Retries are safe.** Each step accepts having been done already.
+- **The API.** `POST /app/v1/sessions/{id}/delete` returns `worktree_removed`, `kept_because`, `branch` and `already_deleted`. The change is additive.
+- **The apps.** The session toolbar's stop button opens a choice: Stop or Delete while running, Delete once stopped. The result stays on the page.
+- **Herdr 0.9.1, checked in a throwaway session.**
+  - `herdr session delete` refuses a running session.
+  - On a stopped one it removes only the session folder (`session.json` and the server log). It doesn't touch worktrees, which live in `~/.herdr/worktrees/<repo>/<branch>`, or branches.
+  - `herdr worktree remove` without `--force` removes the checkout and keeps the branch.
+  - `tests/herdr_sessions_live.rs` now deletes a running and a stopped session through the runner's code.
+- **Upgrading.** A remote runner that predates `Op::Delete` can't decode it and never answers, so the delete ends after 90 s as `outcome_unknown`. Update remote runners along with the hub. WhatsApp is frozen and has no delete.
