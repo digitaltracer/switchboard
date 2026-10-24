@@ -6,3 +6,6 @@
 *.db-wal
 *.db-shm
 *.db-journal
+
+# macOS Finder metadata.
+.DS_Store
