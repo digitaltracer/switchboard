@@ -337,6 +337,9 @@ pub struct AgentInfo {
     pub interactive_ready: bool,
     #[serde(default)]
     pub launch_pending: bool,
+    /// The title the agent gives its terminal, usually what it's working on.
+    #[serde(default)]
+    pub terminal_title_stripped: Option<String>,
     #[serde(default)]
     pub state_change_seq: u64,
 }

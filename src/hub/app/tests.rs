@@ -859,6 +859,9 @@ fn agents_reply() -> Value {
     json!([
         {"name": "mono1/claude", "pane_id": "w1:p1", "kind": "claude", "agent_status": "blocked",
          "session_id": null, "herdr_session": "mono1"},
+        {"name": "mono1/w1:p2", "pane_id": "w1:p2", "kind": "claude", "agent_status": "idle",
+         "session_id": null, "herdr_session": "mono1",
+         "title": "Rotate ghp_abcdefghijklmnopqrstuvwxyz0123456789"},
         {"name": "sb-task", "pane_id": "w2:p1", "kind": "claude", "agent_status": "working",
          "session_id": "s-task", "herdr_session": "switchboard-1a2b"}
     ])
@@ -1060,7 +1063,7 @@ async fn the_app_lists_and_reads_agents_switchboard_didnt_start_masked() {
     let agents = list.body["agents"].as_array().unwrap();
     assert_eq!(
         agents.len(),
-        1,
+        2,
         "a task's own agent is a session, not listed here"
     );
     assert_eq!(
@@ -1070,6 +1073,16 @@ async fn the_app_lists_and_reads_agents_switchboard_didnt_start_masked() {
             agents[0]["agent_status"].as_str()
         ),
         (Some("mono1/claude"), Some("mono1"), Some("blocked"))
+    );
+    let unnamed = &agents[1];
+    assert_eq!(
+        unnamed["name"], "mono1/w1:p2",
+        "an unnamed agent goes by its pane"
+    );
+    let title = unnamed["title"].as_str().unwrap();
+    assert!(
+        title.starts_with("Rotate") && !title.contains("ghp_abc"),
+        "{title}"
     );
 
     const SECRET: &str = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";

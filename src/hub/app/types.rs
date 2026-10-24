@@ -586,12 +586,13 @@ pub struct MessagePreview {
     pub options: Vec<MessageChoice>,
 }
 
-/// A named Herdr agent Switchboard didn't start. It has no permission hooks, so its dialogs
+/// A Herdr agent Switchboard didn't start. It has no permission hooks, so its dialogs
 /// are answered in Herdr.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct AgentView {
     pub machine_id: String,
-    /// `<herdr session>/<agent>` when the machine runs several Herdr sessions.
+    /// `<herdr session>/<agent>` when the machine runs several Herdr sessions. An agent without
+    /// a Herdr name goes by its pane id, e.g. `mono1/w1:p2`.
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub herdr_session: Option<String>,
@@ -600,6 +601,9 @@ pub struct AgentView {
     pub kind: Option<String>,
     /// `idle`, `working`, `blocked`, `done` or `unknown`.
     pub agent_status: String,
+    /// Its terminal title, usually what it's working on. Untrusted text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]

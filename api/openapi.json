@@ -1176,7 +1176,7 @@
         "tags": [
           "agents"
         ],
-        "summary": "Named Herdr agents Switchboard didn't start, on every connected machine.",
+        "summary": "Herdr agents Switchboard didn't start, on every connected machine.",
         "operationId": "list_agents",
         "responses": {
           "200": {
@@ -1276,7 +1276,7 @@
     "schemas": {
       "AgentView": {
         "type": "object",
-        "description": "A named Herdr agent Switchboard didn't start. It has no permission hooks, so its dialogs\nare answered in Herdr.",
+        "description": "A Herdr agent Switchboard didn't start. It has no permission hooks, so its dialogs\nare answered in Herdr.",
         "required": [
           "machine_id",
           "name",
@@ -1288,7 +1288,7 @@
           },
           "name": {
             "type": "string",
-            "description": "`<herdr session>/<agent>` when the machine runs several Herdr sessions."
+            "description": "`<herdr session>/<agent>` when the machine runs several Herdr sessions. An agent without\na Herdr name goes by its pane id, e.g. `mono1/w1:p2`."
           },
           "herdr_session": {
             "type": [
@@ -1306,6 +1306,13 @@
           "agent_status": {
             "type": "string",
             "description": "`idle`, `working`, `blocked`, `done` or `unknown`."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Its terminal title, usually what it's working on. Untrusted text."
           }
         }
       },

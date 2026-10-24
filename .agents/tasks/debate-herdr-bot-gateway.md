@@ -276,3 +276,8 @@ The user chose one process for a single machine.
 - No runner can authenticate as the local machine, since it has no token.
 - With no `default_machine`, starts go to the local machine.
 - Herdr servers stay separate, detached processes, so a hub restart leaves sessions and agents running. Pending approvals end in deny, as before.
+
+### As built (2026-10-23): agents without a name
+
+- `Op::Agents` lists every Herdr agent, not only named ones. An agent without a name goes by its pane id (`mono1/w1:p2`), and Herdr accepts that as a target for read and prompt. Each entry carries its terminal title, masked like every runner reply.
+- The app shows such an agent by its title. Routing (`use <x>`) and WhatsApp still see only named agents, and status events still cover only named agents.

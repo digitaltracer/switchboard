@@ -1,5 +1,6 @@
-//! Every named Herdr agent on this machine, Switchboard's or not: list, read, prompt, and
-//! status from per-pane subscriptions plus snapshot reconciliation. New agents are picked up
+//! Every Herdr agent on this machine, Switchboard's or not: list, read, prompt, and, for named
+//! ones, status from per-pane subscriptions plus snapshot reconciliation. An agent without a
+//! name goes by its pane id. New agents are picked up
 //! without a restart; whether they notify is the bridge's decision. A stream that ends means
 //! events may be lost: resubscribe and reconcile. There is no key path here.
 
@@ -12,11 +13,11 @@ use tokio::time::Instant;
 use crate::herdr::types::{
     AgentPromptParams, AgentStatus, Event, ReadSource, SessionSnapshot, Subscription,
 };
-use crate::herdr::{Client, HerdrError, check_agent_name};
+use crate::herdr::{Client, HerdrError, check_agent_target};
 use crate::proto::conn::Backoff;
 use crate::proto::{AgentPromptOutcome, AgentSummary};
 
-/// Named agents, each with its session id when it is one of `sessions` (agent name to id).
+/// Every agent, each with its session id when it is one of `sessions` (agent name to id).
 pub async fn list(
     herdr: &Client,
     sessions: &HashMap<String, String>,
@@ -25,16 +26,17 @@ pub async fn list(
     Ok(snap
         .agents
         .into_iter()
-        .filter_map(|a| {
-            let name = a.name?;
-            Some(AgentSummary {
+        .map(|a| {
+            let name = a.name.unwrap_or_else(|| a.pane_id.clone());
+            AgentSummary {
                 session_id: sessions.get(&name).cloned(),
                 herdr_session: None,
                 agent_status: status_str(a.agent_status),
                 name,
                 pane_id: a.pane_id,
                 kind: a.agent,
-            })
+                title: a.terminal_title_stripped.filter(|t| !t.is_empty()),
+            }
         })
         .collect())
 }
@@ -46,7 +48,7 @@ pub async fn read(
     lines: u32,
     visible: bool,
 ) -> Result<String, HerdrError> {
-    check_agent_name(agent)?;
+    check_agent_target(agent)?;
     let screen = || herdr.agent_read(agent, ReadSource::Visible, None);
     if visible {
         return screen().await.map(|r| r.text);
@@ -66,7 +68,7 @@ pub async fn prompt(
     agent: &str,
     text: &str,
 ) -> Result<AgentPromptOutcome, HerdrError> {
-    check_agent_name(agent)?;
+    check_agent_target(agent)?;
     let params = AgentPromptParams {
         target: agent.to_owned(),
         text: text.to_owned(),

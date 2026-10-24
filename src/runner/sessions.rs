@@ -167,7 +167,7 @@ impl Sessions {
         }
     }
 
-    /// Named agents in every running Herdr session; agents outside tasks are `<session>/<agent>`.
+    /// Agents in every running Herdr session; agents outside tasks are `<session>/<agent>`.
     async fn all_agents(&self) -> Result<Vec<crate::proto::AgentSummary>, ProtoError> {
         let names: HashMap<String, String> = self
             .all()

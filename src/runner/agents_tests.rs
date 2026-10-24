@@ -76,6 +76,50 @@ fn every_named_agent_is_followed() {
 }
 
 #[tokio::test]
+async fn an_agent_without_a_name_is_listed_by_its_pane_with_its_title() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut unnamed = agent(None, "w1:p2", "idle");
+    unnamed["terminal_title_stripped"] = json!("Fix the flaky test");
+    let socket = fake_herdr(
+        dir.path(),
+        Arc::new(Mutex::new(vec![
+            agent(Some("sb-3f9a"), "w1:p1", "working"),
+            unnamed,
+        ])),
+    );
+    let sessions = HashMap::from([("sb-3f9a".to_string(), "s1".to_string())]);
+    let list = list(&Client::new(socket), &sessions).await.unwrap();
+    let got: Vec<_> = list
+        .iter()
+        .map(|a| {
+            (
+                a.name.as_str(),
+                a.session_id.as_deref(),
+                a.title.as_deref(),
+                a.named(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        got,
+        [
+            ("sb-3f9a", Some("s1"), None, true),
+            ("w1:p2", None, Some("Fix the flaky test"), false),
+        ]
+    );
+}
+
+#[test]
+fn an_agent_is_reached_by_name_or_pane_and_nothing_else() {
+    for ok in ["sb-3f9a", "w1:p2", "w12:p104"] {
+        assert!(check_agent_target(ok).is_ok(), "{ok}");
+    }
+    for bad in ["w1:", ":p2", "w1:p2;rm", "W1:P2", "x1:p2", "w1:p2:p3", ""] {
+        assert!(check_agent_target(bad).is_err(), "{bad}");
+    }
+}
+
+#[tokio::test]
 async fn a_new_switchboard_agent_is_picked_up_without_restart() {
     let dir = tempfile::tempdir().unwrap();
     let agents = Arc::new(Mutex::new(vec![agent(Some("reviewer"), "w1:p1", "idle")]));

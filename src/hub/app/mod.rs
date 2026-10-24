@@ -735,7 +735,7 @@ async fn follow(
 
 #[utoipa::path(get, path = "/app/v1/agents", tag = "agents", security(("device_token" = [])),
     responses((status = 200, description = "OK", body = Agents)))]
-/// Named Herdr agents Switchboard didn't start, on every connected machine.
+/// Herdr agents Switchboard didn't start, on every connected machine.
 pub async fn list_agents(State(st): State<AppState>, _d: DeviceAuth) -> ApiResult<Agents> {
     let running = st
         .svc
@@ -756,6 +756,7 @@ pub async fn list_agents(State(st): State<AppState>, _d: DeviceAuth) -> ApiResul
             herdr_session: a.herdr_session,
             kind: a.kind,
             agent_status: a.agent_status,
+            title: a.title,
         })
         .collect();
     Ok(Json(Agents { agents }))

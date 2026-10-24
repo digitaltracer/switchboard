@@ -122,9 +122,10 @@ impl Op {
     }
 }
 
-/// One named agent from `Op::Agents`.
+/// One agent from `Op::Agents`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentSummary {
+    /// Its Herdr name, or its pane id when it has none.
     pub name: String,
     pub pane_id: String,
     pub kind: Option<String>,
@@ -134,6 +135,16 @@ pub struct AgentSummary {
     /// The Herdr session it runs in, when the runner follows several.
     #[serde(default)]
     pub herdr_session: Option<String>,
+    /// Its terminal title. Untrusted text.
+    #[serde(default)]
+    pub title: Option<String>,
+}
+
+impl AgentSummary {
+    /// Whether it has a Herdr name, rather than going by its pane.
+    pub fn named(&self) -> bool {
+        self.name.rsplit('/').next() != Some(self.pane_id.as_str())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

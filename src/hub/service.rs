@@ -1285,10 +1285,12 @@ impl SessionService {
                     .collect(),
             });
         }
+        // Unnamed agents are left to the app, which reaches them by pane.
         out.extend(
             self.outside_agents(&session_agents)
                 .await
                 .into_iter()
+                .filter(|(_, a)| a.named())
                 .map(|(machine, a)| Live {
                     target: Target::Agent {
                         machine,
@@ -1303,7 +1305,7 @@ impl SessionService {
         Ok(out)
     }
 
-    /// Named agents on every connected machine that aren't one of `session_agents`, with their
+    /// Agents on every connected machine that aren't one of `session_agents`, with their
     /// machine. A machine that can't be listed is skipped.
     pub async fn outside_agents(
         &self,

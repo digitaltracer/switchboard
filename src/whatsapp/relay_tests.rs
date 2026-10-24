@@ -68,6 +68,7 @@ impl Script {
             agent_status: status.into(),
             session_id: None,
             herdr_session: None,
+            title: None,
         });
     }
 
