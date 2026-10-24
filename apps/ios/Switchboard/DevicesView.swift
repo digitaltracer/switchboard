@@ -1,11 +1,29 @@
 import SwiftUI
 import SwitchboardKit
 
-/// Paired devices. Revoking one refuses its next request; to replace a lost phone, pair the new
-/// one first, then revoke the old one here.
+/// Light, dark or the phone's own setting, kept on the phone.
+enum Appearance: String, CaseIterable, Identifiable {
+    case system, light, dark
+
+    static let key = "appearance"
+
+    var id: Self { self }
+    var label: String { rawValue.capitalized }
+    var scheme: ColorScheme? {
+        switch self {
+        case .system: nil
+        case .light: .light
+        case .dark: .dark
+        }
+    }
+}
+
+/// Paired devices, appearance and the hub. Revoking a device refuses its next request; to replace
+/// a lost phone, pair the new one first, then revoke the old one here.
 struct DevicesView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
+    @AppStorage(Appearance.key) private var appearance = Appearance.system
     @State private var devices: [Schemas.Device] = []
     @State private var error: String?
     @State private var revoking: Schemas.Device?
@@ -32,6 +50,14 @@ struct DevicesView: View {
                         }
                     }
                 }
+                Section("Appearance") {
+                    Picker("Appearance", selection: $appearance) {
+                        ForEach(Appearance.allCases) { Text($0.label).tag($0) }
+                    }
+                    .pickerStyle(.inline)
+                    .labelsHidden()
+                    .accessibilityIdentifier("appearancePicker")
+                }
                 if let p = model.pairing {
                     Section("Hub") {
                         LabeledContent(p.relay == nil ? "Address" : "Relay", value: p.hubURL.absoluteString)
@@ -40,7 +66,7 @@ struct DevicesView: View {
                     }
                 }
             }
-            .navigationTitle("Devices")
+            .navigationTitle("Settings")
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
             .task { await load() }
             .refreshable { await load() }

@@ -6,10 +6,12 @@ import UserNotifications
 struct SwitchboardApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @Environment(\.scenePhase) private var scenePhase
+    @AppStorage(Appearance.key) private var appearance = Appearance.system
 
     var body: some Scene {
         WindowGroup {
             RootView()
+                .preferredColorScheme(appearance.scheme)
                 .environment(delegate.model)
                 .environment(delegate.voice)
                 .onChange(of: delegate.model.vocabulary, initial: true) { _, v in delegate.voice.vocabulary = v }

@@ -71,7 +71,7 @@ struct HomeView: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { showingDevices = true } label: { Image(systemName: "gearshape") }
-                        .accessibilityLabel("Devices and settings")
+                        .accessibilityLabel("Settings")
                         .accessibilityIdentifier("devicesButton")
                 }
             }
