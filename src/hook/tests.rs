@@ -80,6 +80,16 @@ fn render_shapes() {
         },
     )
     .unwrap();
+    assert_eq!(
+        pre["hookSpecificOutput"]["permissionDecision"], "deny",
+        "never an allow"
+    );
+    assert_eq!(
+        render(Agent::Claude, "PreToolUse", &HookReply::Ack),
+        None,
+        "before a tool, no deny pattern means no decision"
+    );
+    let pre = render(Agent::Claude, "PreToolUse", &HookReply::deny("x")).unwrap();
     assert_eq!(pre["hookSpecificOutput"]["permissionDecision"], "deny");
 }
 

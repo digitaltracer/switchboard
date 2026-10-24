@@ -282,6 +282,10 @@ pub struct LocalRunnerConfig {
     pub state_dir: PathBuf,
     /// Claude Code's config, written to pre-trust repo roots. Defaults to `~/.claude.json`.
     pub claude_config: Option<PathBuf>,
+    /// How Claude sessions ask: `auto` (the default) lets Claude's own safety check run routine
+    /// actions, `acceptEdits` sends every shell command and tool call to you.
+    #[serde(default)]
+    pub claude_permission_mode: crate::agents::claude::PermissionMode,
     /// Overrides the Herdr server the `herdr` CLI would find from the environment.
     pub herdr_session: Option<String>,
 }
@@ -317,6 +321,10 @@ pub struct RunnerConfig {
     pub state_dir: PathBuf,
     /// Claude Code's config, written to pre-trust repo roots. Defaults to `~/.claude.json`.
     pub claude_config: Option<PathBuf>,
+    /// How Claude sessions ask: `auto` (the default) lets Claude's own safety check run routine
+    /// actions, `acceptEdits` sends every shell command and tool call to you.
+    #[serde(default)]
+    pub claude_permission_mode: crate::agents::claude::PermissionMode,
 }
 
 fn read(path: &Path) -> Result<String, ConfigError> {
@@ -751,6 +759,32 @@ mac = "/Users/me/switchboard"
             &repo.path().join("state").display().to_string(),
         );
         assert!(err(&in_repo).contains("state_dir is inside the git working tree"));
+    }
+
+    #[test]
+    fn claude_runs_in_auto_mode_unless_the_machine_says_otherwise() {
+        use crate::agents::claude::PermissionMode;
+        let local =
+            "id = \"mac\"\n[machines.local]\nstate_dir = \"/Users/me/.local/state/switchboard\"";
+        let text = hub_toml("").replace(&format!("id = \"mac\"\ntoken_hash = \"{HASH}\""), local);
+        let mode = |text: &str| {
+            HubConfig::parse(text).map(|c| c.local_machine().unwrap().1.claude_permission_mode)
+        };
+        assert_eq!(mode(&text).unwrap(), PermissionMode::Auto);
+        let set = |m: &str| {
+            text.replace(
+                "[machines.local]\n",
+                &format!("[machines.local]\nclaude_permission_mode = \"{m}\"\n"),
+            )
+        };
+        assert_eq!(
+            mode(&set("acceptEdits")).unwrap(),
+            PermissionMode::AcceptEdits
+        );
+        assert_eq!(mode(&set("auto")).unwrap(), PermissionMode::Auto);
+        for skips_the_hook in ["bypassPermissions", "dontAsk", "default"] {
+            assert!(mode(&set(skips_the_hook)).is_err(), "{skips_the_hook}");
+        }
     }
 
     #[test]

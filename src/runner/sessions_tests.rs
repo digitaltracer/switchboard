@@ -144,6 +144,7 @@ fn rig_with(dir: tempfile::TempDir, socket: &Path, codex_version_output: &str) -
     let cfg = SessionsConfig {
         state_dir: dir.path().join("state"),
         claude_config: dir.path().join("claude.json"),
+        claude_mode: Default::default(),
         exe: PathBuf::from("/opt/sb/switchboard"),
         hook_addr: "127.0.0.1:9".parse().unwrap(),
         codex_version_cmd: vec!["echo".into(), codex_version_output.into()],
@@ -327,7 +328,8 @@ async fn claude_without_live_hook_fails_hooks_untrusted_and_never_prompts() {
     let args = herdr.call("agent.start").unwrap()["params"]["args"].clone();
     assert_eq!(
         args.as_array().unwrap()[2..],
-        [json!("--permission-mode"), json!("acceptEdits")]
+        [json!("--permission-mode"), json!("auto")],
+        "auto unless the machine's config says otherwise"
     );
 }
 
@@ -390,6 +392,7 @@ async fn sessions_reload_after_restart_with_new_hook_address() {
     let cfg = SessionsConfig {
         state_dir: state.clone(),
         claude_config: r.dir.path().join("claude.json"),
+        claude_mode: Default::default(),
         exe: PathBuf::from("/opt/sb/switchboard"),
         hook_addr: "127.0.0.1:4242".parse().unwrap(),
         codex_version_cmd: vec![],
@@ -509,6 +512,7 @@ fn multi_rig(dir: tempfile::TempDir, screens: Vec<String>) -> (Rig, PathBuf, Sta
     let cfg = SessionsConfig {
         state_dir: dir.path().join("state"),
         claude_config: dir.path().join("claude.json"),
+        claude_mode: Default::default(),
         exe: PathBuf::from("/opt/sb/switchboard"),
         hook_addr: "127.0.0.1:9".parse().unwrap(),
         codex_version_cmd: vec!["echo".into(), "codex-cli 0.163.0".into()],

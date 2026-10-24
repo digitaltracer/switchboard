@@ -201,8 +201,34 @@ impl HookHub {
                 Some((Some(sid), HookReply::Ack))
             }
             "PermissionRequest" => self.permission(sid, &req.payload, reader).await,
+            "PreToolUse" => {
+                let reply = self.check_deny_patterns(&sid, &req.payload);
+                Some((Some(sid), reply.unwrap_or(HookReply::Ack)))
+            }
             _ => Some((Some(sid), HookReply::Ack)),
         }
+    }
+
+    /// A deny when the tool call matches one of the session's deny patterns, audited.
+    fn check_deny_patterns(&self, sid: &str, payload: &Value) -> Option<HookReply> {
+        let tool_name = payload
+            .get("tool_name")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let tool_input = payload.get("tool_input").unwrap_or(&Value::Null);
+        let pattern = self
+            .with(sid, |s| {
+                matching_deny_pattern(&s.deny_patterns, tool_name, tool_input)
+            })
+            .flatten()?;
+        self.emit(Event::Audit {
+            session_id: sid.to_owned(),
+            kind: "deny_pattern".into(),
+            detail: json!({ "tool_name": tool_name, "pattern": pattern }),
+        });
+        Some(HookReply::deny(format!(
+            "switchboard: blocked by deny pattern {pattern:?}"
+        )))
     }
 
     async fn permission(
@@ -211,29 +237,15 @@ impl HookHub {
         payload: &Value,
         reader: &mut BufReader<tokio::net::tcp::OwnedReadHalf>,
     ) -> Option<(Option<String>, HookReply)> {
+        if let Some(deny) = self.check_deny_patterns(&sid, payload) {
+            return Some((Some(sid), deny));
+        }
         let tool_name = payload
             .get("tool_name")
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_owned();
         let tool_input = payload.get("tool_input").cloned().unwrap_or(Value::Null);
-
-        let blocked_by = self
-            .with(&sid, |s| {
-                matching_deny_pattern(&s.deny_patterns, &tool_name, &tool_input)
-            })
-            .flatten();
-        if let Some(pattern) = blocked_by {
-            self.emit(Event::Audit {
-                session_id: sid.clone(),
-                kind: "deny_pattern".into(),
-                detail: json!({ "tool_name": tool_name, "pattern": pattern }),
-            });
-            return Some((
-                Some(sid),
-                HookReply::deny(format!("switchboard: blocked by deny pattern {pattern:?}")),
-            ));
-        }
 
         let approval_id = super::random_id();
         let (tx, rx) = oneshot::channel();

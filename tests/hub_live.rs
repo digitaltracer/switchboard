@@ -107,6 +107,8 @@ async fn runner(socket: &str, hub_addr: std::net::SocketAddr, state: &Path, clau
         SessionsConfig {
             state_dir: state.to_owned(),
             claude_config: claude_json.to_owned(),
+            // Live runs exercise the approval path, which auto mode rarely takes.
+            claude_mode: switchboard::agents::claude::PermissionMode::AcceptEdits,
             exe: PathBuf::from(env!("CARGO_BIN_EXE_switchboard")),
             hook_addr,
             codex_version_cmd: vec!["codex".into(), "--version".into()],

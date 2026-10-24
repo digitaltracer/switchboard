@@ -65,6 +65,7 @@ fn launched_before_this_field() -> bool {
 pub struct SessionsConfig {
     pub state_dir: PathBuf,
     pub claude_config: PathBuf,
+    pub claude_mode: claude::PermissionMode,
     pub exe: PathBuf,
     pub hook_addr: SocketAddr,
     /// Command printing the Codex version, normally `codex --version`.
@@ -468,8 +469,13 @@ impl Sessions {
         let args = match req.agent {
             Agent::Claude => {
                 let settings = dir.join("claude-settings.json");
-                std::fs::write(&settings, claude::settings(&hook_cmd).to_string())
-                    .map_err(|e| err(ErrorCode::Internal, format!("claude settings: {e}")))?;
+                let guard = !req.deny_patterns.is_empty();
+                let mode = self.cfg.claude_mode;
+                std::fs::write(
+                    &settings,
+                    claude::settings(&hook_cmd, mode, guard).to_string(),
+                )
+                .map_err(|e| err(ErrorCode::Internal, format!("claude settings: {e}")))?;
                 if claude::pretrust(&self.cfg.claude_config, &req.repo_path).map_err(|e| {
                     err(
                         ErrorCode::Internal,
@@ -482,7 +488,7 @@ impl Sessions {
                         json!({ "repo_root": req.repo_path }),
                     );
                 }
-                claude::launch_args(&settings)
+                claude::launch_args(&settings, mode)
             }
             Agent::Codex => codex::launch_args(&req.repo_path, &hook_cmd),
         };

@@ -104,6 +104,9 @@ pub fn render(agent: Agent, event: &str, reply: &HookReply) -> Option<Value> {
             json!({ "hookSpecificOutput": { "hookEventName": event, "decision": decision } })
         }
         HookReply::Deny { message } => deny_output(event, message),
+        // Before a tool, the runner acks what no deny pattern matches: nothing printed, so the
+        // agent's own permission mode decides.
+        HookReply::Ack if event == "PreToolUse" => return None,
         _ => deny_output(event, "switchboard: no decision"),
     })
 }

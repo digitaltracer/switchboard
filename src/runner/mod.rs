@@ -63,6 +63,7 @@ pub async fn run(config: PathBuf) -> anyhow::Result<()> {
         machine_id: cfg.machine_id.clone(),
         state_dir: cfg.state_dir.clone(),
         claude_config: cfg.claude_config.clone(),
+        claude_permission_mode: cfg.claude_permission_mode,
         herdr_session: cfg.herdr_session.clone(),
     })
     .await?;
@@ -81,6 +82,7 @@ pub struct Settings {
     pub machine_id: String,
     pub state_dir: PathBuf,
     pub claude_config: Option<PathBuf>,
+    pub claude_permission_mode: crate::agents::claude::PermissionMode,
     pub herdr_session: Option<String>,
 }
 
@@ -152,6 +154,7 @@ pub async fn start(cfg: Settings) -> anyhow::Result<Started> {
                 .claude_config
                 .clone()
                 .unwrap_or_else(|| home.join(".claude.json")),
+            claude_mode: cfg.claude_permission_mode,
             exe: std::env::current_exe().context("locating the switchboard binary")?,
             hook_addr,
             codex_version_cmd: vec!["codex".into(), "--version".into()],

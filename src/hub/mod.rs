@@ -57,6 +57,7 @@ pub async fn run(config: PathBuf, whatsapp_pair_phone: Option<String>) -> anyhow
             machine_id: id.to_owned(),
             state_dir: l.state_dir.clone(),
             claude_config: l.claude_config.clone(),
+            claude_permission_mode: l.claude_permission_mode,
             herdr_session: l.herdr_session.clone(),
         });
     let _local = match local {

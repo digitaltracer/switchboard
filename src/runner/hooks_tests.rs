@@ -168,6 +168,40 @@ async fn deny_pattern_blocks_before_any_approval() {
 }
 
 #[tokio::test]
+async fn before_a_tool_only_deny_patterns_answer() {
+    let mut r = rig(Duration::from_secs(5)).await;
+    let before = |cmd: &str| json!({"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": cmd}});
+    let reply = r
+        .ask(
+            "good-token",
+            Agent::Codex,
+            "PreToolUse",
+            before("git push origin main"),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(reply, HookReply::Deny { ref message } if message.contains("deny pattern")));
+    let Event::Audit { kind, .. } = r.next_event().await else {
+        panic!()
+    };
+    assert_eq!(kind, "deny_pattern");
+
+    let reply = r
+        .ask("good-token", Agent::Codex, "PreToolUse", before("ls"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        reply,
+        HookReply::Ack,
+        "no decision: the agent's own mode decides"
+    );
+    assert!(r.events.try_recv().is_err(), "no approval was created");
+    assert_eq!(r.hub.state("s1").unwrap().pending, 0);
+}
+
+#[tokio::test]
 async fn unanswered_approval_expires_to_deny() {
     let mut r = rig(Duration::from_millis(300)).await;
     let call = r.ask(

@@ -3,43 +3,68 @@
 use std::io;
 use std::path::Path;
 
+use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::HOOK_TIMEOUT_SECS;
 
+/// What Claude Code runs without asking. Whatever still asks goes to the hook either way.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+pub enum PermissionMode {
+    /// Claude's safety check runs routine actions and refuses risky ones itself; questions
+    /// and plans still come to you.
+    #[default]
+    #[serde(rename = "auto")]
+    Auto,
+    /// Edits run; every shell command and every other tool asks you.
+    #[serde(rename = "acceptEdits")]
+    AcceptEdits,
+}
+
+impl PermissionMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::AcceptEdits => "acceptEdits",
+        }
+    }
+}
+
 /// Settings passed with `--settings`, kept outside the worktree.
 /// `onFailure: block` turns a killed, failed or timed-out helper into a deny.
-pub fn settings(hook_command: &str) -> Value {
-    json!({
-        // acceptEdits would otherwise run touch, rm, mv and redirects without asking the hook.
-        "permissions": { "ask": ["Bash"] },
+pub fn settings(hook_command: &str, mode: PermissionMode, deny_patterns: bool) -> Value {
+    let hook = |timeout| {
+        json!([{
+            "matcher": "*",
+            "hooks": [{ "type": "command", "command": hook_command, "timeout": timeout, "onFailure": "block" }],
+        }])
+    };
+    let mut s = json!({
         "hooks": {
-            "PermissionRequest": [{
-                "matcher": "*",
-                "hooks": [{
-                    "type": "command",
-                    "command": hook_command,
-                    "timeout": HOOK_TIMEOUT_SECS,
-                    "onFailure": "block",
-                }],
-            }],
+            "PermissionRequest": hook(HOOK_TIMEOUT_SECS),
             // Proves the hook settings are loaded and the helper reaches the runner.
             "SessionStart": [{
                 "hooks": [{ "type": "command", "command": hook_command, "timeout": 30 }],
             }],
         }
-    })
+    });
+    match mode {
+        // acceptEdits would otherwise run touch, rm, mv and redirects without asking the hook.
+        PermissionMode::AcceptEdits => s["permissions"] = json!({ "ask": ["Bash"] }),
+        // Auto mode asks for little, so deny patterns are checked before every tool instead.
+        PermissionMode::Auto if deny_patterns => s["hooks"]["PreToolUse"] = hook(30),
+        PermissionMode::Auto => {}
+    }
+    s
 }
 
-/// Edits are accepted, other tools ask the hook; explicit as a user's default may be `auto`.
-pub const PERMISSION_MODE: &str = "acceptEdits";
-
-pub fn launch_args(settings_path: &Path) -> Vec<String> {
+/// Set explicitly: a user's own default mode may be anything.
+pub fn launch_args(settings_path: &Path, mode: PermissionMode) -> Vec<String> {
     vec![
         "--settings".into(),
         settings_path.to_string_lossy().into_owned(),
         "--permission-mode".into(),
-        PERMISSION_MODE.into(),
+        mode.as_str().into(),
     ]
 }
 
@@ -81,17 +106,47 @@ pub fn pretrust(claude_json: &Path, repo_root: &Path) -> io::Result<bool> {
 mod tests {
     use super::*;
 
+    const HOOK: &str = "/bin/switchboard hook --agent claude --secret-file /s";
+
     #[test]
     fn permission_hook_fails_closed() {
-        let s = settings("/bin/switchboard hook --agent claude --secret-file /s");
-        let h = &s["hooks"]["PermissionRequest"][0]["hooks"][0];
-        assert_eq!(h["onFailure"], "block");
-        assert_eq!(h["timeout"], HOOK_TIMEOUT_SECS);
-        assert_eq!(s["hooks"]["PermissionRequest"][0]["matcher"], "*");
-        assert_eq!(s["permissions"]["ask"], json!(["Bash"]));
-        assert!(s["hooks"]["SessionStart"][0]["hooks"][0]["command"].is_string());
-        let args = launch_args(Path::new("/var/sb/s1/claude-settings.json"));
-        assert_eq!(args[2..], ["--permission-mode", "acceptEdits"]);
+        for mode in [PermissionMode::Auto, PermissionMode::AcceptEdits] {
+            let s = settings(HOOK, mode, false);
+            let h = &s["hooks"]["PermissionRequest"][0]["hooks"][0];
+            assert_eq!(h["onFailure"], "block");
+            assert_eq!(h["timeout"], HOOK_TIMEOUT_SECS);
+            assert_eq!(s["hooks"]["PermissionRequest"][0]["matcher"], "*");
+            assert!(s["hooks"]["SessionStart"][0]["hooks"][0]["command"].is_string());
+            let args = launch_args(Path::new("/var/sb/s1/claude-settings.json"), mode);
+            assert_eq!(args[2..], ["--permission-mode", mode.as_str()]);
+        }
+    }
+
+    #[test]
+    fn auto_mode_asks_little_and_checks_deny_patterns_before_every_tool() {
+        let auto = settings(HOOK, PermissionMode::Auto, false);
+        assert!(
+            auto.get("permissions").is_none(),
+            "shell commands don't all ask"
+        );
+        assert!(auto["hooks"].get("PreToolUse").is_none());
+        let guarded = settings(HOOK, PermissionMode::Auto, true);
+        let pre = &guarded["hooks"]["PreToolUse"][0];
+        assert_eq!(
+            (
+                pre["matcher"].as_str(),
+                pre["hooks"][0]["onFailure"].as_str()
+            ),
+            (Some("*"), Some("block"))
+        );
+
+        let strict = settings(HOOK, PermissionMode::AcceptEdits, true);
+        assert_eq!(strict["permissions"]["ask"], json!(["Bash"]));
+        assert!(
+            strict["hooks"].get("PreToolUse").is_none(),
+            "every shell command asks already"
+        );
+        assert_eq!(PermissionMode::default(), PermissionMode::Auto);
     }
 
     #[test]

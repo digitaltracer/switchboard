@@ -236,6 +236,7 @@ impl World {
             SessionsConfig {
                 state_dir: state_dir.clone(),
                 claude_config: dir.path().join("claude.json"),
+                claude_mode: Default::default(),
                 exe: PathBuf::from("/opt/sb/switchboard"),
                 hook_addr,
                 codex_version_cmd: vec!["false".into()],
