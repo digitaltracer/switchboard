@@ -139,6 +139,18 @@ func tokenAnswers(_ op: String) -> (Int, String)? {
     #expect(!authKey.isValidSignature(sig, for: message))
 }
 
+@Test func deletingASessionPostsToItsDeleteRoute() async throws {
+    let fake = FakeHub { op, _, _ in
+        tokenAnswers(op) ?? (200, #"{"worktree_removed":false,"kept_because":"unmerged","branch":"sb/s1","already_deleted":false}"#)
+    }
+    let hub = Hub(pairing: pairing, keys: SoftwareKeys(), build: 1, transport: fake)
+    let r = try await hub.delete("s1")
+    #expect(r.keptBecause == "unmerged" && r.branch == "sb/s1" && !r.alreadyDeleted)
+    let sent = try #require(fake.requests.last)
+    #expect(sent.op == "delete_session")
+    #expect(sent.request.method == .post && sent.request.path == "/app/v1/sessions/s1/delete")
+}
+
 @Test func aLostStartIsLookedUpByItsRequestId() async throws {
     let fake = FakeHub { op, _, _ in
         if let t = tokenAnswers(op) { return t }

@@ -15,14 +15,21 @@ struct SessionDetailView: View {
     @State private var error: String?
     /// The long-poll's own trouble, cleared once it gets through again.
     @State private var pollError: String?
+    /// What a delete did, kept on screen since the session leaves the lists.
+    @State private var notice: String?
     @State private var confirmStop = false
     @State private var showingOutput = false
+
+    private var running: Bool { session?.lifecycle == "running" }
 
     var body: some View {
         ScrollViewReader { scroll in
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     if let error { Text(error).foregroundStyle(.red) }
+                    if let notice {
+                        Text(notice).font(.footnote).foregroundStyle(.secondary).accessibilityIdentifier("deleteNotice")
+                    }
                     if let pollError { Text(pollError).font(.footnote).foregroundStyle(.orange) }
                     if let s = session { content(s) } else { ProgressView().frame(maxWidth: .infinity) }
                 }
@@ -40,8 +47,15 @@ struct SessionDetailView: View {
         .task(id: model.wakes) { await follow() }
         .task(id: model.wakes) { await pollOutput() }
         .sheet(isPresented: $showingOutput) { FullOutput(title: session?.label ?? "Output", text: output) }
-        .confirmationDialog("Stop this session? The worktree and branch are kept.", isPresented: $confirmStop) {
-            Button("Stop", role: .destructive) { Task { await stop() } }
+        .confirmationDialog(
+            running
+                ? "Stop keeps the worktree and branch. Delete also deletes its Herdr session, and its worktree if it's clean and merged."
+                : "Delete this session? Its Herdr session is deleted, and its worktree if it's clean and merged. The branch is kept.",
+            isPresented: $confirmStop, titleVisibility: .visible
+        ) {
+            if running { Button("Stop", role: .destructive) { Task { await stop() } } }
+            Button("Delete", role: .destructive) { Task { await delete() } }
+                .accessibilityIdentifier("confirmDelete")
         }
     }
 
@@ -100,10 +114,11 @@ struct SessionDetailView: View {
         let running = s.lifecycle == "running"
         return HStack {
             Group {
-                Button { confirmStop = true } label: { Image(systemName: "stop.circle") }
+                Button { confirmStop = true } label: { Image(systemName: running ? "stop.circle" : "trash") }
                     .tint(.red)
-                    .disabled(!running)
-                    .accessibilityLabel("Stop session")
+                    .disabled(["starting", "deleted"].contains(s.lifecycle))
+                    .accessibilityLabel(running ? "Stop or delete session" : "Delete session")
+                    .accessibilityIdentifier("stopOrDelete")
                 Button { Task { await mute(!s.muted) } } label: { Image(systemName: s.muted ? "bell.slash" : "bell") }
                     .accessibilityLabel(s.muted ? "Turn notifications on" : "Mute notifications")
             }
@@ -190,6 +205,24 @@ struct SessionDetailView: View {
         guard let hub = model.hub else { return }
         do { _ = try await hub.stop(sessionId) } catch { self.error = error.localizedDescription }
         await refresh()
+    }
+
+    private func delete() async {
+        guard let hub = model.hub else { return }
+        do {
+            notice = Self.describe(try await hub.delete(sessionId))
+        } catch {
+            self.error = error.localizedDescription
+        }
+        await refresh()
+    }
+
+    static func describe(_ r: Schemas.DeleteResponse) -> String {
+        let branch = r.branch.map { " Branch \($0) is kept." } ?? ""
+        if r.alreadyDeleted { return "Already deleted." }
+        if r.worktreeRemoved { return "Deleted, with its worktree.\(branch)" }
+        if let why = r.keptBecause { return "Deleted. Its worktree was kept: \(why).\(branch)" }
+        return "Deleted.\(branch)"
     }
 }
 

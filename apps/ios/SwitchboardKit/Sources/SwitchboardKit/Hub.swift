@@ -298,6 +298,12 @@ public final class Hub: Sendable {
         }
     }
 
+    /// Stops the session if it's running, removes its worktree only if clean and merged, and
+    /// deletes its Herdr session. The branch is kept.
+    public func delete(_ id: String) async throws -> Schemas.DeleteResponse {
+        try await Self.unwrap { try await client.deleteSession(path: .init(id: id)).ok.body.json }
+    }
+
     public func mute(_ id: String, muted: Bool) async throws -> Schemas.MuteResponse {
         try await Self.unwrap { try await client.muteSession(path: .init(id: id), body: .json(.init(muted: muted))).ok.body.json }
     }
