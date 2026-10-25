@@ -1,20 +1,24 @@
 import SwiftUI
 import SwitchboardKit
 
-/// Every session the hub knows, running first, then the agents started in Herdr.
+/// Every session the hub knows, running first, then the agents started in Herdr; or just one
+/// machine's.
 struct AllSessionsView: View {
     @Environment(AppModel.self) private var model
+    var machine: String?
 
     var body: some View {
-        let live = model.sessions.filter { ["running", "starting"].contains($0.lifecycle) }
-        let ended = model.sessions.filter { !["running", "starting"].contains($0.lifecycle) }
+        let sessions = model.sessions.filter { machine == nil || $0.machineId == machine }
+        let agents = model.agents.filter { machine == nil || $0.machineId == machine }
+        let live = sessions.filter { ["running", "starting"].contains($0.lifecycle) }
+        let ended = sessions.filter { !["running", "starting"].contains($0.lifecycle) }
         List {
             if !live.isEmpty { Section("Running") { ForEach(live, id: \.id) { row($0) } } }
-            if !model.agents.isEmpty { Section("Started in Herdr") { ForEach(model.agents, id: \.self) { row($0) } } }
+            if !agents.isEmpty { Section("Started in Herdr") { ForEach(agents, id: \.self) { row($0) } } }
             if !ended.isEmpty { Section("Ended") { ForEach(ended, id: \.id) { row($0) } } }
-            if model.sessions.isEmpty && model.agents.isEmpty { Text("No sessions yet.").foregroundStyle(.secondary) }
+            if sessions.isEmpty && agents.isEmpty { Text("No sessions yet.").foregroundStyle(.secondary) }
         }
-        .navigationTitle("All sessions")
+        .navigationTitle(machine ?? "All sessions")
         .task { await model.refreshAgents() }
         .refreshable { await model.refreshAgents() }
     }
@@ -60,17 +64,19 @@ struct MachinesView: View {
         List {
             if let error { Text(error).foregroundStyle(.red) }
             ForEach(machines, id: \.id) { m in
-                HStack {
-                    Image(systemName: "desktopcomputer").foregroundStyle(Color.accentColor)
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 6) {
-                            Text(m.id).font(.headline)
-                            if m._default { Text("default").font(.caption).foregroundStyle(.secondary) }
+                NavigationLink(value: Browse.machine(m.id)) {
+                    HStack {
+                        Image(systemName: "desktopcomputer").foregroundStyle(Color.accentColor)
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 6) {
+                                Text(m.id).font(.headline)
+                                if m._default { Text("default").font(.caption).foregroundStyle(.secondary) }
+                            }
+                            Text(counts(m.id)).font(.subheadline).foregroundStyle(.secondary)
                         }
-                        Text(counts(m.id)).font(.subheadline).foregroundStyle(.secondary)
+                        Spacer()
+                        Text(m.status).font(.subheadline).foregroundStyle(m.status == "ready" ? Color.done : .secondary)
                     }
-                    Spacer()
-                    Text(m.status).font(.subheadline).foregroundStyle(m.status == "ready" ? Color.done : .secondary)
                 }
             }
         }

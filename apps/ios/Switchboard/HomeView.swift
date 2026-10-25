@@ -9,6 +9,7 @@ struct AgentRef: Hashable {
 
 enum Browse: Hashable {
     case allSessions, machines, projects
+    case machine(String)
 }
 
 /// Home: what needs you, what's running, then lists. The mic is the main way in; the keyboard
@@ -59,6 +60,7 @@ struct HomeView: View {
                 switch b {
                 case .allSessions: AllSessionsView()
                 case .machines: MachinesView()
+                case .machine(let id): AllSessionsView(machine: id)
                 case .projects: ProjectsView()
                 }
             }
