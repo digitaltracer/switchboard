@@ -4,7 +4,7 @@ Written 2026-10-24 for the agent starting the Android milestone. The user asked 
 
 ## The task
 
-Build Switchboard's Android app in `apps/android/`, in Kotlin with Jetpack Compose. It is step 8 of `.agents/tasks/debate-native-apps-2.md`. The goal is parity with the iOS app as it ships today (TestFlight build 3).
+Build Switchboard's Android app in `apps/android/`, in Kotlin with Jetpack Compose. It is step 8 of `.agents/tasks/debate-native-apps-2.md`. The goal is parity with the iOS app as it ships today (TestFlight build 4). Every iOS change from here on should land in Android too.
 
 ## Read first
 
@@ -32,6 +32,7 @@ Build Switchboard's Android app in `apps/android/`, in Kotlin with Jetpack Compo
 4. **Keystore spike on the real phone.** Check whether a key bound to biometric or device-credential authentication is enforced at the key level, which approval signing needs. Viewing and denying work without it. Record the findings.
 5. **Screens to parity:**
    - home ("Agents", "Started in Herdr", approvals, live tiles);
+   - Browse: all sessions (Switchboard's sessions plus the agents started in Herdr), machines and projects. Each machine opens to its own running sessions, Herdr agents and ended sessions (`AllSessionsView(machine:)` in `apps/ios/Switchboard/BrowseViews.swift`);
    - session and agent pages;
    - start and send with the hub's preview;
    - voice, using Android's on-device speech recognizer where available;
