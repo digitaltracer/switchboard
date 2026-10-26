@@ -280,7 +280,12 @@ class Hub private constructor(
     suspend fun session(id: String, after: Long? = null, waitMs: Long = 25_000): Session =
         authed { sessions.getSession(id, after, if (after == null) null else waitMs) }
 
-    suspend fun output(id: String, lines: Int = 80): Output = authed { sessions.getOutput(id, lines) }
+    /**
+     * The agent's terminal: the last [lines], or with [visible] only the screen as it is now. Only a
+     * visible read leaves the agent's terminal still on its machine.
+     */
+    suspend fun output(id: String, lines: Int = 80, visible: Boolean = false): Output =
+        authed { sessions.getOutput(id, lines, visible) }
 
     /**
      * A page of the session's conversation from its agent's own log: the latest, the part after an
@@ -331,8 +336,8 @@ class Hub private constructor(
     /** Named Herdr agents Switchboard didn't start. */
     suspend fun agents(): List<AgentView> = authed { agentsApi.listAgents().agents }
 
-    suspend fun agentOutput(machine: String, agent: String, lines: Int = 80): Output =
-        authed { agentsApi.getAgentOutput(machine, agent, lines) }
+    suspend fun agentOutput(machine: String, agent: String, lines: Int = 80, visible: Boolean = false): Output =
+        authed { agentsApi.getAgentOutput(machine, agent, lines, visible) }
 
     // Approvals.
 

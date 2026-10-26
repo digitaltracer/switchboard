@@ -105,9 +105,11 @@ fun HomeScreen(model: AppModel, voice: Voice, listen: Listen) {
         while (true) {
             model.refreshAgents()
             val hub = model.hub ?: break
+            // Each tile's line comes from the conversation; reading the terminal would scroll it on the Mac.
             for (s in runningNow.take(8).filter { it.lifecycle == "running" }) {
-                val text = runCatching { hub.output(s.id, lines = 6).text }.getOrNull() ?: continue
-                text.split("\n").lastOrNull { it.isNotBlank() }?.let { lastLines[s.id] = it }
+                val page = runCatching { hub.transcript(s.id) }.getOrNull() ?: continue
+                val last = page.items.lastOrNull { it.kind != "user" && it.text != null }?.text
+                last?.split("\n")?.firstOrNull { it.isNotBlank() }?.let { lastLines[s.id] = it }
             }
             delay(6_000)
         }
