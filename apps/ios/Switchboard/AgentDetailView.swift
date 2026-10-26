@@ -1,15 +1,18 @@
 import SwiftUI
 import SwitchboardKit
 
-/// A Herdr agent Switchboard didn't start: its output, refreshed while on screen. It has
+/// A Herdr agent Switchboard didn't start: its latest turns, refreshed while on screen. It has
 /// no permission hooks, so its dialogs are answered in Herdr. The mic talks to it.
 struct AgentDetailView: View {
     @Environment(AppModel.self) private var model
     @Environment(Voice.self) private var voice
     let agent: AgentRef
-    @State private var output = ""
-    @State private var error: String?
-    @State private var showingOutput = false
+    @State private var convo: ConversationModel
+
+    init(agent: AgentRef) {
+        self.agent = agent
+        _convo = State(initialValue: ConversationModel(.agent(machine: agent.machine, name: agent.name)))
+    }
 
     private var target: Schemas.TargetView { .agent(machine: agent.machine, name: agent.name, label: label) }
     private var info: Schemas.AgentView? {
@@ -30,14 +33,17 @@ struct AgentDetailView: View {
                 Text("Started outside Switchboard, so it has no approvals here. Answer its dialogs in Herdr.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-                if let error { Text(error).font(.footnote).foregroundStyle(.red) }
                 if let said = model.said[AppModel.saidKey(for: target)] { SaidBubble(said: said) }
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 10) {
                     Text("Latest").font(.footnote.weight(.semibold)).foregroundStyle(.secondary).textCase(.uppercase)
-                    OutputBlock(text: output)
-                        .accessibilityIdentifier("agentOutput")
-                    Button { showingOutput = true } label: {
-                        Label("Show the full output", systemImage: "chevron.right").labelStyle(TrailingIcon())
+                    if convo.unavailable != nil {
+                        OutputBlock(text: convo.terminal)
+                            .accessibilityIdentifier("agentOutput")
+                    } else {
+                        ConversationPreview(convo: convo)
+                    }
+                    NavigationLink(value: ConversationRef(source: .agent(machine: agent.machine, name: agent.name), title: label)) {
+                        Label("Open the conversation", systemImage: "chevron.right").labelStyle(TrailingIcon())
                     }
                 }
             }
@@ -61,23 +67,7 @@ struct AgentDetailView: View {
         .background(Color(.systemGroupedBackground))
         .navigationTitle(label)
         .navigationBarTitleDisplayMode(.large)
-        .refreshable { await load() }
-        .sheet(isPresented: $showingOutput) { FullOutput(title: label, text: output) }
-        .task(id: model.wakes) {
-            while !Task.isCancelled {
-                await load()
-                try? await Task.sleep(for: .seconds(3))
-            }
-        }
-    }
-
-    private func load() async {
-        guard let hub = model.hub else { return }
-        do {
-            output = try await hub.agentOutput(machine: agent.machine, agent: agent.name, lines: 300).text
-            error = nil
-        } catch {
-            if !Task.isCancelled { self.error = error.localizedDescription }
-        }
+        .refreshable { if let hub = model.hub { await convo.refresh(hub) } }
+        .task(id: model.wakes) { await convo.follow(model) }
     }
 }

@@ -269,6 +269,21 @@ public final class Hub: Sendable {
         try await Self.unwrap { try await client.getOutput(path: .init(id: id), query: .init(lines: Int32(lines))).ok.body.json }
     }
 
+    /// A page of the session's conversation from its agent's own log: the latest, the part after
+    /// an earlier page's `end`, or the part before its `start`.
+    public func transcript(_ id: String, after: Int64? = nil, before: Int64? = nil) async throws -> Schemas.Transcript {
+        try await Self.unwrap {
+            try await client.getTranscript(path: .init(id: id), query: .init(after: after, before: before)).ok.body.json
+        }
+    }
+
+    /// As `transcript`, for an agent Switchboard didn't start.
+    public func agentTranscript(machine: String, agent: String, after: Int64? = nil, before: Int64? = nil) async throws -> Schemas.Transcript {
+        try await Self.unwrap {
+            try await client.getAgentTranscript(query: .init(machineId: machine, agent: agent, after: after, before: before)).ok.body.json
+        }
+    }
+
     /// Files the session changed since it started, committed or not.
     public func changes(_ id: String) async throws -> Schemas.Changes {
         try await Self.unwrap { try await client.getChanges(path: .init(id: id)).ok.body.json }

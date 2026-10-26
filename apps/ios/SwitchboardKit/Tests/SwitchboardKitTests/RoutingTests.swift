@@ -60,3 +60,42 @@ private func session(_ id: String, project: String, lifecycle: String = "running
     """#)
     #expect(agents.agents.map(\.displayName) == ["mono1/claude", "Fix the flaky test", "mono1/w1:p3"])
 }
+
+private func page(_ json: String) throws -> Schemas.Transcript { try decode(json) }
+
+@Test func aConversationGrowsJoinsResultsAndGoesBack() throws {
+    var c = Conversation()
+    #expect(!c.isLoaded)
+    c.replace(with: try page(#"""
+    {"start":500,"end":900,"items":[
+      {"id":"u1","kind":"user","text":"fix it","done":false,"failed":false},
+      {"id":"t1","kind":"tool","text":"Ran cargo test","tool":"Bash","done":false,"failed":false}]}
+    """#))
+    #expect(c.items.map(\.id) == ["u1", "t1"] && c.hasEarlier)
+
+    // The result comes on the next page and fills in its call.
+    c.append(try page(#"""
+    {"start":900,"end":1000,"items":[
+      {"id":"t1","kind":"tool","output":"ok","done":true,"failed":false},
+      {"id":"a1","kind":"assistant","text":"Fixed.","done":false,"failed":false}]}
+    """#), askedAfter: 900)
+    #expect(c.items.map(\.id) == ["u1", "t1", "a1"])
+    #expect(c.items[1].text == "Ran cargo test" && c.items[1].output == "ok" && c.items[1].done)
+    #expect(c.end == 1000)
+
+    // An earlier page's call meets a result that arrived before it.
+    c.append(try page(#"""
+    {"start":1000,"end":1100,"items":[{"id":"t0","kind":"tool","output":"done earlier","done":true,"failed":true}]}
+    """#), askedAfter: 1000)
+    c.prepend(try page(#"""
+    {"start":0,"end":500,"items":[{"id":"t0","kind":"tool","text":"Ran make","tool":"Bash","done":false,"failed":false}]}
+    """#))
+    #expect(c.items.map(\.id) == ["t0", "u1", "t1", "a1"] && !c.hasEarlier)
+    #expect(c.items[0].output == "done earlier" && c.items[0].failed)
+
+    // A page that skipped some replaces what's shown.
+    c.append(try page(#"""
+    {"start":5000,"end":5100,"items":[{"id":"a9","kind":"assistant","text":"Later.","done":false,"failed":false}]}
+    """#), askedAfter: 1100)
+    #expect(c.items.map(\.id) == ["a9"] && c.start == 5000)
+}

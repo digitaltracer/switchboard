@@ -56,6 +56,7 @@ struct HomeView: View {
             .navigationTitle("Agents")
             .navigationDestination(for: String.self) { SessionDetailView(sessionId: $0) }
             .navigationDestination(for: AgentRef.self) { AgentDetailView(agent: $0) }
+            .navigationDestination(for: ConversationRef.self) { ConversationScreen(ref: $0) }
             .navigationDestination(for: Browse.self) { b in
                 switch b {
                 case .allSessions: AllSessionsView()

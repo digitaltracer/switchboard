@@ -1,15 +1,14 @@
 import SwiftUI
 import SwitchboardKit
 
-/// One session, read like a message: its state, what you said, what it's doing, what it wants
+/// One session, read like a message: its state, what you said, its latest turns, what it wants
 /// and what it changed. Long-polled while on screen. The mic in the toolbar talks to it.
 struct SessionDetailView: View {
     @Environment(AppModel.self) private var model
     @Environment(Voice.self) private var voice
     let sessionId: String
     @State private var session: Schemas.Session?
-    @State private var output = ""
-    @State private var outputError: String?
+    @State private var convo: ConversationModel
     @State private var changes: Schemas.Changes?
     /// From the last action the user took; polls don't clear it.
     @State private var error: String?
@@ -18,9 +17,13 @@ struct SessionDetailView: View {
     /// What a delete did, kept on screen since the session leaves the lists.
     @State private var notice: String?
     @State private var confirmStop = false
-    @State private var showingOutput = false
 
     private var running: Bool { session?.lifecycle == "running" }
+
+    init(sessionId: String) {
+        self.sessionId = sessionId
+        _convo = State(initialValue: ConversationModel(.session(sessionId)))
+    }
 
     var body: some View {
         ScrollViewReader { scroll in
@@ -45,8 +48,7 @@ struct SessionDetailView: View {
         .navigationBarTitleDisplayMode(.large)
         .refreshable { await refresh() }
         .task(id: model.wakes) { await follow() }
-        .task(id: model.wakes) { await pollOutput() }
-        .sheet(isPresented: $showingOutput) { FullOutput(title: session?.label ?? "Output", text: output) }
+        .task(id: model.wakes) { await convo.follow(model) }
         .confirmationDialog(
             running
                 ? "Stop keeps the worktree and branch. Delete also deletes its Herdr session, and its worktree if it's clean and merged."
@@ -80,15 +82,20 @@ struct SessionDetailView: View {
         ForEach(s.pendingApprovals, id: \.id) { a in
             ApprovalCard(approval: a, session: s) { await refresh() }
         }
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             Text("Latest").font(.footnote.weight(.semibold)).foregroundStyle(.secondary).textCase(.uppercase)
-            OutputBlock(text: output)
-                .accessibilityIdentifier("output")
-            if let outputError { Text(outputError).font(.footnote).foregroundStyle(.orange) }
-            Button { showingOutput = true } label: {
-                Label("Show the full output", systemImage: "chevron.right").labelStyle(TrailingIcon())
+            if convo.unavailable != nil {
+                OutputBlock(text: convo.terminal)
+                    .accessibilityIdentifier("output")
+            } else {
+                ConversationPreview(convo: convo)
+                    .accessibilityIdentifier("latest")
+            }
+            NavigationLink(value: ConversationRef(source: .session(s.id), title: s.label)) {
+                Label("Open the conversation", systemImage: "chevron.right").labelStyle(TrailingIcon())
             }
             .font(.body)
+            .accessibilityIdentifier("openConversation")
         }
         if let changes, !changes.files.isEmpty {
             ChangesGrid(changes: changes).id("changes")
@@ -143,7 +150,7 @@ struct SessionDetailView: View {
         .background(.bar)
     }
 
-    /// Long-polls until the view goes away; each change also refreshes the output and changes.
+    /// Long-polls until the view goes away; each change also refreshes the changed files.
     private func follow() async {
         pollError = nil
         var revision: Int64?
@@ -155,7 +162,7 @@ struct SessionDetailView: View {
                 session = s
                 revision = s.revision
                 pollError = nil
-                if changed { await loadOutput() }
+                if changed { await loadChanges() }
             } catch {
                 if Task.isCancelled { return }
                 pollError = error.localizedDescription
@@ -164,33 +171,19 @@ struct SessionDetailView: View {
         }
     }
 
-    /// The agent writes without changing the session's status, so the tail is read every few
-    /// seconds while it runs and the screen is open.
-    private func pollOutput() async {
-        while !Task.isCancelled {
-            try? await Task.sleep(for: .seconds(3))
-            if session?.lifecycle == "running" { await loadOutput() }
-        }
-    }
-
     private func refresh() async {
         guard let hub = model.hub else { return }
         do {
             session = try await hub.session(sessionId)
-            await loadOutput()
+            await convo.refresh(hub)
+            await loadChanges()
         } catch {
             self.error = error.localizedDescription
         }
     }
 
-    private func loadOutput() async {
+    private func loadChanges() async {
         guard let hub = model.hub else { return }
-        do {
-            output = try await hub.output(sessionId, lines: 300).text
-            outputError = nil
-        } catch {
-            if !Task.isCancelled { outputError = "Couldn't refresh the output: \(error.localizedDescription)" }
-        }
         // Older runners don't list changes; the section just stays hidden.
         if let c = try? await hub.changes(sessionId) { changes = c }
     }
@@ -223,31 +216,6 @@ struct SessionDetailView: View {
         if r.worktreeRemoved { return "Deleted, with its worktree.\(branch)" }
         if let why = r.keptBecause { return "Deleted. Its worktree was kept: \(why).\(branch)" }
         return "Deleted.\(branch)"
-    }
-}
-
-/// The whole tail of an agent's terminal, selectable.
-struct FullOutput: View {
-    @Environment(\.dismiss) private var dismiss
-    let title: String
-    let text: String
-
-    var body: some View {
-        NavigationStack {
-            ScrollView {
-                Text(text.isEmpty ? "No output yet." : text)
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(Color(white: 0.9))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(16)
-                    .textSelection(.enabled)
-            }
-            .defaultScrollAnchor(.bottom)
-            .background(Color.codeBackground)
-            .navigationTitle(title)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
-        }
     }
 }
 

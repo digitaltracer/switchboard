@@ -58,14 +58,26 @@ final class SwitchboardUITests: XCTestCase {
             let sent = app.buttons["sentCard"]
             XCTAssertTrue(sent.waitForExistence(timeout: 30), app.debugDescription)
             sent.tap()
-            let output = app.staticTexts["output"]
-            XCTAssertTrue(output.waitForExistence(timeout: 20))
+            // The latest turns come from the agent's conversation, not its terminal.
+            XCTAssertTrue(app.staticTexts["fix the flaky retry test"].waitForExistence(timeout: 20), app.debugDescription)
+            XCTAssertTrue(app.staticTexts["Edited crates/core/src/retry.rs"].exists)
             let deny = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'deny-'")).firstMatch
             XCTAssertTrue(deny.waitForExistence(timeout: 20), "the runner asks to run the tests")
             XCTAssertTrue(app.descendants(matching: .any)["crates/core/src/retry.rs"].waitForExistence(timeout: 10), "changed files")
             snapshot(app, "session")
             deny.tap()
             XCTAssertTrue(deny.waitForNonExistence(timeout: 20), "the denied approval is gone")
+
+            // The whole conversation, then the terminal a tab away.
+            app.buttons["openConversation"].tap()
+            XCTAssertTrue(app.descendants(matching: .any)["conversation"].waitForExistence(timeout: 10))
+            app.staticTexts["Edited crates/core/src/retry.rs"].tap()
+            XCTAssertTrue(app.staticTexts["+6 −2"].waitForExistence(timeout: 5), "a tool opens to its result")
+            snapshot(app, "conversation")
+            app.buttons["Terminal"].tap()
+            XCTAssertTrue(app.descendants(matching: .any)["terminal"].waitForExistence(timeout: 10))
+            snapshot(app, "terminal")
+            app.navigationBars.buttons.element(boundBy: 0).tap()
             app.navigationBars.buttons.element(boundBy: 0).tap()
             XCTAssertTrue(app.navigationBars["Agents"].waitForExistence(timeout: 10))
             snapshot(app, "home-running")

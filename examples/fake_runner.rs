@@ -59,6 +59,16 @@ impl Handler for Fake {
                 )
             }
             Op::Read { .. } => Ok(json!({ "text": OUTPUT, "truncated": false, "untrusted": true })),
+            Op::Transcript { after: Some(end), .. } => Ok(json!({ "items": [], "start": end, "end": end })),
+            Op::Transcript { .. } => Ok(json!({ "start": 0, "end": 4096, "items": [
+                { "id": "u1", "kind": "user", "text": "fix the flaky retry test", "done": false, "failed": false },
+                { "id": "a1", "kind": "assistant", "done": false, "failed": false, "text":
+                  "The retry test sleeps for a fixed **50 ms**, so it races the scheduler on a busy machine.\n\n- Pause tokio's clock\n- Advance it by hand" },
+                { "id": "t1", "kind": "tool", "tool": "Edit", "text": "Edited crates/core/src/retry.rs",
+                  "input": "{ \"file_path\": \"crates/core/src/retry.rs\" }", "output": "+6 −2", "done": true, "failed": false },
+                { "id": "t2", "kind": "tool", "tool": "Bash", "text": "Ran cargo test -p kraft-core",
+                  "input": "{ \"command\": \"cargo test -p kraft-core\" }", "done": false, "failed": false },
+            ] })),
             Op::Changes { .. } => Ok(json!({ "files": [
                 { "path": "crates/core/src/retry.rs", "added": 6, "deleted": 2 },
                 { "path": "crates/core/tests/retry.rs", "added": 14, "deleted": 0 },
