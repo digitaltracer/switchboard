@@ -116,6 +116,16 @@ pub enum Op {
     Changes {
         session_id: String,
     },
+    /// An agent's conversation from its own log, as a `TranscriptPage`. With neither offset,
+    /// the latest part; `after` continues from an earlier page's `end`, `before` goes back
+    /// from its `start`. Claude agents only. Read-only.
+    Transcript {
+        agent: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        before: Option<u64>,
+    },
 }
 
 impl Op {
@@ -128,8 +138,44 @@ impl Op {
                 | Op::Agents
                 | Op::ReadAgent { .. }
                 | Op::Changes { .. }
+                | Op::Transcript { .. }
         )
     }
+}
+
+/// Part of an agent's conversation, from byte `start` to `end` of its log. A page asked for
+/// with `after` whose `start` is later than that skipped some: replace, don't append.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TranscriptPage {
+    pub items: Vec<TranscriptItem>,
+    pub start: u64,
+    pub end: u64,
+}
+
+/// One entry of a conversation. Items with the same id replace each other: a tool call shows
+/// up first, then again with its result. Untrusted text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TranscriptItem {
+    pub id: String,
+    /// `user`, `assistant`, `tool` or `note`.
+    pub kind: String,
+    /// What was said; for a tool, a one-line summary. None on a result whose call came earlier.
+    #[serde(default)]
+    pub text: Option<String>,
+    #[serde(default)]
+    pub tool: Option<String>,
+    #[serde(default)]
+    pub input: Option<String>,
+    #[serde(default)]
+    pub output: Option<String>,
+    /// A tool's result has arrived.
+    #[serde(default)]
+    pub done: bool,
+    #[serde(default)]
+    pub failed: bool,
+    /// When it was written, RFC 3339.
+    #[serde(default)]
+    pub at: Option<String>,
 }
 
 /// One agent from `Op::Agents`.

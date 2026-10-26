@@ -15,6 +15,7 @@ use super::agents;
 use super::codex::{CodexPane, clear_startup, excerpt};
 use super::herdrs::{Herdrs, qualified, split_qualified};
 use super::hooks::{DecideError, HookHub};
+use super::transcript;
 use crate::agents::{claude, codex, hook_command};
 use crate::cli::Agent;
 use crate::herdr::types::{
@@ -66,6 +67,8 @@ pub struct SessionsConfig {
     pub state_dir: PathBuf,
     pub claude_config: PathBuf,
     pub claude_mode: claude::PermissionMode,
+    /// Where Claude Code keeps its conversation logs, normally `~/.claude/projects`.
+    pub claude_projects: PathBuf,
     pub exe: PathBuf,
     pub hook_addr: SocketAddr,
     /// Command printing the Codex version, normally `codex --version`.
@@ -397,6 +400,11 @@ impl Sessions {
                     .map_err(herdr_err)?;
                 Ok(serde_json::to_value(outcome).expect("serializes"))
             }
+            Op::Transcript {
+                agent,
+                after,
+                before,
+            } => self.transcript(&agent, after, before).await,
             Op::Changes { session_id } => {
                 let s = self.session(&session_id)?;
                 match (&s.worktree_path, &s.start_commit) {
@@ -407,6 +415,48 @@ impl Sessions {
                 }
             }
         }
+    }
+
+    /// A page of a Claude agent's conversation, found through the session id Herdr reports.
+    async fn transcript(
+        &self,
+        agent: &str,
+        after: Option<u64>,
+        before: Option<u64>,
+    ) -> Result<Value, ProtoError> {
+        let (herdr, name, _) = self.resolve_agent(agent);
+        let snap = herdr.session_snapshot().await.map_err(herdr_err)?;
+        let info = snap
+            .agents
+            .into_iter()
+            .find(|a| a.name.as_deref() == Some(name) || a.pane_id == name)
+            .ok_or_else(|| err(ErrorCode::NotFound, format!("no agent {agent:?}")))?;
+        if info.agent.as_deref() != Some("claude") {
+            return Err(err(
+                ErrorCode::BadRequest,
+                "only Claude agents have a conversation to read",
+            ));
+        }
+        let id = info.agent_session.map(|s| s.value).ok_or_else(|| {
+            err(
+                ErrorCode::NotFound,
+                "Herdr hasn't reported this agent's conversation yet",
+            )
+        })?;
+        let projects = self.cfg.claude_projects.clone();
+        let page = tokio::task::spawn_blocking(move || {
+            let path = transcript::find_log(&projects, &id)
+                .ok_or_else(|| err(ErrorCode::NotFound, "no conversation log for this agent"))?;
+            transcript::read_page(&path, after, before).map_err(|e| {
+                err(
+                    ErrorCode::Internal,
+                    format!("reading the conversation: {e}"),
+                )
+            })
+        })
+        .await
+        .map_err(|e| err(ErrorCode::Internal, e.to_string()))??;
+        Ok(serde_json::to_value(page).expect("serializes"))
     }
 
     fn session(&self, session_id: &str) -> Result<RunnerSession, ProtoError> {

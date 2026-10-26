@@ -7,9 +7,10 @@ pub mod hooks;
 pub mod link;
 pub mod local;
 pub mod sessions;
+pub mod transcript;
 pub mod watch;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::Context;
@@ -49,6 +50,14 @@ pub fn random_id() -> String {
     let mut buf = [0u8; 16];
     getrandom::fill(&mut buf).expect("OS random source");
     hex::encode(buf)
+}
+
+/// Claude Code's own folder: `CLAUDE_CONFIG_DIR`, else `~/.claude`.
+fn claude_dir(home: &Path) -> PathBuf {
+    std::env::var_os("CLAUDE_CONFIG_DIR")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".claude"))
 }
 
 /// A runner on another machine: dials the hub over WebSocket with its token.
@@ -155,6 +164,7 @@ pub async fn start(cfg: Settings) -> anyhow::Result<Started> {
                 .clone()
                 .unwrap_or_else(|| home.join(".claude.json")),
             claude_mode: cfg.claude_permission_mode,
+            claude_projects: claude_dir(&home).join("projects"),
             exe: std::env::current_exe().context("locating the switchboard binary")?,
             hook_addr,
             codex_version_cmd: vec!["codex".into(), "--version".into()],

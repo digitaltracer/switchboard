@@ -145,6 +145,7 @@ fn rig_with(dir: tempfile::TempDir, socket: &Path, codex_version_output: &str) -
         state_dir: dir.path().join("state"),
         claude_config: dir.path().join("claude.json"),
         claude_mode: Default::default(),
+        claude_projects: std::path::PathBuf::from("/nonexistent/claude/projects"),
         exe: PathBuf::from("/opt/sb/switchboard"),
         hook_addr: "127.0.0.1:9".parse().unwrap(),
         codex_version_cmd: vec!["echo".into(), codex_version_output.into()],
@@ -393,6 +394,7 @@ async fn sessions_reload_after_restart_with_new_hook_address() {
         state_dir: state.clone(),
         claude_config: r.dir.path().join("claude.json"),
         claude_mode: Default::default(),
+        claude_projects: std::path::PathBuf::from("/nonexistent/claude/projects"),
         exe: PathBuf::from("/opt/sb/switchboard"),
         hook_addr: "127.0.0.1:4242".parse().unwrap(),
         codex_version_cmd: vec![],
@@ -572,6 +574,7 @@ fn multi_rig(dir: tempfile::TempDir, screens: Vec<String>) -> (Rig, PathBuf, Sta
         state_dir: dir.path().join("state"),
         claude_config: dir.path().join("claude.json"),
         claude_mode: Default::default(),
+        claude_projects: dir.path().join("claude-projects"),
         exe: PathBuf::from("/opt/sb/switchboard"),
         hook_addr: "127.0.0.1:9".parse().unwrap(),
         codex_version_cmd: vec!["echo".into(), "codex-cli 0.163.0".into()],
@@ -668,6 +671,8 @@ async fn delete_stops_a_running_task_then_deletes_its_own_herdr_session() {
 }
 
 /// A Herdr session with one named agent, as a user's own session looks.
+const CLAUDE_SESSION: &str = "77748a76-125f-4e27-9534-dfbb00b872e9";
+
 fn named_herdr(folder: &Path, agent: &'static str, screen: &'static str) {
     std::fs::create_dir_all(folder).unwrap();
     let listener = UnixListener::bind(folder.join("herdr.sock")).unwrap();
@@ -684,6 +689,8 @@ fn named_herdr(folder: &Path, agent: &'static str, screen: &'static str) {
                     let mut a = agent_info("idle");
                     a["name"] = json!(agent);
                     a["agent"] = json!("claude");
+                    a["agent_session"] =
+                        json!({"agent": "claude", "kind": "id", "value": CLAUDE_SESSION});
                     json!({"type": "session_snapshot", "snapshot": {"version": "0.9.1", "protocol": 22,
                            "workspaces": [], "tabs": [], "panes": [], "layouts": [], "agents": [a]}})
                 }
@@ -866,4 +873,33 @@ async fn changes_lists_edits_since_the_start_commit_and_new_files() {
             .await
             .is_err()
     );
+}
+
+#[tokio::test]
+async fn an_agents_conversation_is_read_from_its_claude_log() {
+    let dir = tempfile::tempdir().unwrap();
+    let (r, config_dir, _) = multi_rig(dir, vec![]);
+    named_herdr(&config_dir.join("sessions/mono1"), "claude", "mono1 screen");
+    let ask = |after| Op::Transcript {
+        agent: "mono1/claude".into(),
+        after,
+        before: None,
+    };
+    let e = r.sessions.handle(ask(None)).await.unwrap_err();
+    assert_eq!(e.code, ErrorCode::NotFound, "no log yet: {e:?}");
+
+    let folder = r.dir.path().join("claude-projects/-Users-me-mono1");
+    std::fs::create_dir_all(&folder).unwrap();
+    let line = json!({"type": "user", "uuid": "u1", "message": {"content": "fix the flaky test"}});
+    std::fs::write(
+        folder.join(format!("{CLAUDE_SESSION}.jsonl")),
+        format!("{line}\n"),
+    )
+    .unwrap();
+    let page: crate::proto::TranscriptPage =
+        serde_json::from_value(r.sessions.handle(ask(None)).await.unwrap()).unwrap();
+    assert_eq!(page.items[0].text.as_deref(), Some("fix the flaky test"));
+    let next: crate::proto::TranscriptPage =
+        serde_json::from_value(r.sessions.handle(ask(Some(page.end))).await.unwrap()).unwrap();
+    assert!(next.items.is_empty() && next.start == page.end);
 }

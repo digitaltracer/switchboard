@@ -340,8 +340,20 @@ pub struct AgentInfo {
     /// The title the agent gives its terminal, usually what it's working on.
     #[serde(default)]
     pub terminal_title_stripped: Option<String>,
+    /// The agent's own conversation id, e.g. Claude's session id.
+    #[serde(default)]
+    pub agent_session: Option<AgentSessionRef>,
     #[serde(default)]
     pub state_change_seq: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct AgentSessionRef {
+    #[serde(default)]
+    pub agent: Option<String>,
+    #[serde(default)]
+    pub kind: Option<String>,
+    pub value: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
