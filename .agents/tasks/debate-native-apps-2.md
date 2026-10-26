@@ -352,7 +352,10 @@ Stop keeps a task's Herdr session listed and its worktree. Delete is new and goe
 ## As built (2026-10-26): the conversation view
 
 The user found the terminal tail unreadable on a phone. Claude draws for a terminal about 150 columns wide, so every line wrapped, and the tail stopped at the visible screen while the agent worked.
-- **Source.** `Op::Transcript` reads the agent's own Claude log, `~/.claude/projects/*/<session>.jsonl` (or under `CLAUDE_CONFIG_DIR`), found by the session id Herdr reports in `agent_session`. Only Claude agents have one. Codex and older runners answer `bad_request`, and the apps fall back to the terminal.
+- **Source.** `Op::Transcript` reads the agent's own log.
+  - **Claude:** `~/.claude/projects/*/<session>.jsonl` (or under `CLAUDE_CONFIG_DIR`), found by the session id Herdr reports in `agent_session`.
+  - **Codex:** `~/.codex/sessions/<date>/rollout-*.jsonl` (or under `CODEX_HOME`). Herdr reports no session id for Codex (checked with Codex 0.163 and Herdr 0.9.1), so the runner takes the newest of the last 200 logs whose first line names the agent's folder. That's the session's own worktree, so it's exact for Switchboard's sessions; for a Codex started by hand it's the newest in that folder. Messages, commands (`exec_command` scripts and shell calls) and their output are shown; reasoning and the context Codex adds for itself are left out.
+  - With no log yet, or an older hub or runner, the apps show only the agent's screen, with no tabs to switch.
 - **Paging.** `src/runner/transcript.rs` reads a 1 MB window and returns at most 300 items, with byte offsets `start` and `end`.
   - `after` continues from `end`; a page that doesn't start there skipped some, and the app replaces its list.
   - `before` goes back from `start`. A line longer than the window, such as a request copy, is skipped unread.
@@ -361,5 +364,11 @@ The user found the terminal tail unreadable on a phone. Claude draws for a termi
 - **API.** `GET /app/v1/sessions/{id}/transcript` and `GET /app/v1/agents/transcript`, additive. Masked like every runner reply, and untrusted.
 - **Apps, iOS and Android alike.**
   - A session or agent page shows its last six items, then "Open the conversation".
-  - That screen has Conversation and Terminal tabs. The terminal doesn't wrap: it scrolls sideways.
+  - That screen has Conversation and Terminal tabs.
   - Polling continues from `end` every 3 s while on screen.
+- **Reads that scrolled the Mac (fixed 2026-10-26).** Reading an idle agent's history makes Herdr scroll the agent's own interface to collect it, then scroll back. The home screen's tiles read every running session's last lines every 6 s, and the Terminal tab read 500 lines every 3 s, so terminals on the Mac kept jumping.
+  - The output endpoints take `visible=true` for the screen as it is, which Herdr reads without scrolling. The apps' terminal reads only that.
+  - The tiles take their line from the conversation.
+  - WhatsApp's `read`, which the user asks for, still reads history.
+- **Loading and empty states.** While the conversation loads, pulsing placeholder shapes; a status line only once it's loaded. The terminal says it's loading until the first read, and "The screen is blank" only after one. Errors show a line and keep retrying.
+- **The terminal, zoomable.** The screen is drawn like a photo of it: fitted to the phone's width at first, pinched to zoom up to 1.5×, double-tapped between fitted and full size. Text is laid out at full size, so it stays sharp. It uses a `UIScrollView` on iOS and a Compose canvas on Android.
