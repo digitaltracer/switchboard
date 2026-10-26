@@ -284,3 +284,92 @@ fn a_real_log_pages_back_to_its_start() {
     eprintln!("{pages} pages: {kinds:?}");
     assert!(kinds.contains_key("user") && kinds.contains_key("assistant"));
 }
+
+fn codex_line(payload: Value) -> String {
+    line(json!({"timestamp": "2026-10-26T09:00:00Z", "type": "response_item", "payload": payload}))
+}
+
+#[test]
+fn a_codex_log_reads_as_a_conversation_too() {
+    let text = [
+        line(json!({"type": "session_meta", "payload": {"id": "s", "cwd": "/r"}})),
+        codex_line(json!({"type": "message", "role": "developer", "content": [{"type": "input_text", "text": "rules"}]})),
+        codex_line(json!({"type": "message", "role": "user", "id": "m0",
+                          "content": [{"type": "input_text", "text": "<environment_context>cwd</environment_context>"}]})),
+        codex_line(json!({"type": "message", "role": "user", "id": "m1",
+                          "content": [{"type": "input_text", "text": "# AGENTS.md instructions for /r"}]})),
+        codex_line(json!({"type": "message", "role": "user", "id": "m2",
+                          "content": [{"type": "input_text", "text": "run the tests"}]})),
+        codex_line(json!({"type": "reasoning", "summary": [], "encrypted_content": "x"})),
+        codex_line(json!({"type": "custom_tool_call", "name": "exec", "call_id": "c1",
+                          "input": "text(await tools.exec_command({cmd: \"cargo test --workspace\", yield_time_ms: 1000}))"})),
+        codex_line(json!({"type": "custom_tool_call_output", "call_id": "c1",
+                          "output": [{"type": "input_text", "text": "test result: ok"}]})),
+        codex_line(json!({"type": "function_call", "name": "shell", "call_id": "c2",
+                          "arguments": "{\"command\":[\"bash\",\"-lc\",\"git status\"]}"})),
+        codex_line(json!({"type": "message", "role": "assistant", "id": "m3",
+                          "content": [{"type": "output_text", "text": "All tests pass."}]})),
+        line(json!({"type": "event_msg", "payload": {"type": "task_complete"}})),
+    ]
+    .concat();
+    let (_d, path) = log(&text);
+    let page = read_page(&path, None, None).unwrap();
+    let s = |k: &str, t: &str| (k.to_owned(), Some(t.to_owned()));
+    assert_eq!(
+        shown(&page),
+        [
+            s("user", "run the tests"),
+            s("tool", "Ran cargo test --workspace"),
+            s("tool", "Ran git status"),
+            s("assistant", "All tests pass."),
+        ]
+    );
+    let exec = &page.items[1];
+    assert_eq!(
+        (exec.done, exec.output.as_deref()),
+        (true, Some("test result: ok"))
+    );
+    assert!(!page.items[2].done, "no result yet");
+}
+
+#[test]
+fn a_codex_log_is_found_by_the_folder_it_started_in() {
+    let dir = tempfile::tempdir().unwrap();
+    let day = dir.path().join("2026/10/26");
+    std::fs::create_dir_all(&day).unwrap();
+    let work = dir.path().join("worktree");
+    std::fs::create_dir_all(&work).unwrap();
+    let meta = |cwd: &Path| line(json!({"type": "session_meta", "payload": {"cwd": cwd}}));
+    std::fs::write(day.join("rollout-a.jsonl"), meta(Path::new("/elsewhere"))).unwrap();
+    std::fs::write(day.join("rollout-b.jsonl"), meta(&work)).unwrap();
+    std::fs::write(day.join("notes.jsonl"), meta(&work)).unwrap();
+    assert_eq!(
+        find_codex_log(dir.path(), &work),
+        Some(day.join("rollout-b.jsonl"))
+    );
+    assert_eq!(find_codex_log(dir.path(), Path::new("/nowhere")), None);
+}
+
+/// Reads a real Codex log; skipped unless `SWITCHBOARD_LIVE_CODEX_LOG` names one.
+#[test]
+fn a_real_codex_log_reads() {
+    let Ok(path) = std::env::var("SWITCHBOARD_LIVE_CODEX_LOG") else {
+        return;
+    };
+    let page = read_page(Path::new(&path), None, None).unwrap();
+    let mut kinds = std::collections::BTreeMap::<String, usize>::new();
+    for i in &page.items {
+        *kinds.entry(i.kind.clone()).or_default() += 1;
+    }
+    let ran = page
+        .items
+        .iter()
+        .filter(|i| {
+            i.text
+                .as_deref()
+                .is_some_and(|t| t.starts_with("Ran ") && t != "Ran a command")
+        })
+        .count();
+    eprintln!("{kinds:?}, {ran} commands named");
+    assert!(kinds.contains_key("user") && kinds.contains_key("tool"));
+}

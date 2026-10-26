@@ -165,6 +165,10 @@ pub async fn start(cfg: Settings) -> anyhow::Result<Started> {
                 .unwrap_or_else(|| home.join(".claude.json")),
             claude_mode: cfg.claude_permission_mode,
             claude_projects: claude_dir(&home).join("projects"),
+            codex_sessions: std::env::var_os("CODEX_HOME")
+                .filter(|v| !v.is_empty())
+                .map_or_else(|| home.join(".codex"), PathBuf::from)
+                .join("sessions"),
             exe: std::env::current_exe().context("locating the switchboard binary")?,
             hook_addr,
             codex_version_cmd: vec!["codex".into(), "--version".into()],

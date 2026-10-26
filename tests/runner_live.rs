@@ -46,6 +46,7 @@ async fn live(claude_config: PathBuf) -> Option<Live> {
             // Live runs exercise the approval path, which auto mode rarely takes.
             claude_mode: switchboard::agents::claude::PermissionMode::AcceptEdits,
             claude_projects: std::path::PathBuf::from("/nonexistent/claude/projects"),
+            codex_sessions: std::path::PathBuf::from("/nonexistent/codex/sessions"),
             exe: PathBuf::from(env!("CARGO_BIN_EXE_switchboard")),
             hook_addr,
             codex_version_cmd: vec!["codex".into(), "--version".into()],

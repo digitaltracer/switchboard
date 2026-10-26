@@ -340,9 +340,11 @@ pub struct AgentInfo {
     /// The title the agent gives its terminal, usually what it's working on.
     #[serde(default)]
     pub terminal_title_stripped: Option<String>,
-    /// The agent's own conversation id, e.g. Claude's session id.
+    /// The agent's own conversation id, e.g. Claude's session id. Not reported for Codex.
     #[serde(default)]
     pub agent_session: Option<AgentSessionRef>,
+    #[serde(default)]
+    pub cwd: Option<String>,
     #[serde(default)]
     pub state_change_seq: u64,
 }

@@ -155,6 +155,7 @@ async fn whatsapp_starts_a_claude_session_and_decides_its_approvals() {
             // Live runs exercise the approval path, which auto mode rarely takes.
             claude_mode: switchboard::agents::claude::PermissionMode::AcceptEdits,
             claude_projects: std::path::PathBuf::from("/nonexistent/claude/projects"),
+            codex_sessions: std::path::PathBuf::from("/nonexistent/codex/sessions"),
             exe: PathBuf::from(env!("CARGO_BIN_EXE_switchboard")),
             hook_addr,
             codex_version_cmd: vec!["codex".into(), "--version".into()],

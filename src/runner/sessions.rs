@@ -69,6 +69,8 @@ pub struct SessionsConfig {
     pub claude_mode: claude::PermissionMode,
     /// Where Claude Code keeps its conversation logs, normally `~/.claude/projects`.
     pub claude_projects: PathBuf,
+    /// Where Codex keeps its, normally `~/.codex/sessions`.
+    pub codex_sessions: PathBuf,
     pub exe: PathBuf,
     pub hook_addr: SocketAddr,
     /// Command printing the Codex version, normally `codex --version`.
@@ -417,36 +419,51 @@ impl Sessions {
         }
     }
 
-    /// A page of a Claude agent's conversation, found through the session id Herdr reports.
+    /// A page of an agent's conversation from its own log: a Claude agent's found through the
+    /// session id Herdr reports, a Codex agent's through its folder.
     async fn transcript(
         &self,
         agent: &str,
         after: Option<u64>,
         before: Option<u64>,
     ) -> Result<Value, ProtoError> {
-        let (herdr, name, _) = self.resolve_agent(agent);
+        let (herdr, name, owned) = self.resolve_agent(agent);
         let snap = herdr.session_snapshot().await.map_err(herdr_err)?;
         let info = snap
             .agents
             .into_iter()
             .find(|a| a.name.as_deref() == Some(name) || a.pane_id == name)
             .ok_or_else(|| err(ErrorCode::NotFound, format!("no agent {agent:?}")))?;
-        if info.agent.as_deref() != Some("claude") {
-            return Err(err(
-                ErrorCode::BadRequest,
-                "only Claude agents have a conversation to read",
-            ));
-        }
-        let id = info.agent_session.map(|s| s.value).ok_or_else(|| {
+        let none = || {
             err(
                 ErrorCode::NotFound,
-                "Herdr hasn't reported this agent's conversation yet",
+                "no conversation log for this agent yet",
             )
-        })?;
-        let projects = self.cfg.claude_projects.clone();
+        };
+        let find: Box<dyn FnOnce() -> Option<PathBuf> + Send> = match info.agent.as_deref() {
+            Some("claude") => {
+                let id = info.agent_session.map(|s| s.value).ok_or_else(none)?;
+                let projects = self.cfg.claude_projects.clone();
+                Box::new(move || transcript::find_log(&projects, &id))
+            }
+            Some("codex") => {
+                // A session's own worktree, else wherever Herdr says the agent runs.
+                let cwd = owned
+                    .and_then(|s| s.worktree_path)
+                    .or(info.cwd)
+                    .ok_or_else(none)?;
+                let sessions = self.cfg.codex_sessions.clone();
+                Box::new(move || transcript::find_codex_log(&sessions, Path::new(&cwd)))
+            }
+            _ => {
+                return Err(err(
+                    ErrorCode::BadRequest,
+                    "only Claude and Codex agents have a conversation to read",
+                ));
+            }
+        };
         let page = tokio::task::spawn_blocking(move || {
-            let path = transcript::find_log(&projects, &id)
-                .ok_or_else(|| err(ErrorCode::NotFound, "no conversation log for this agent"))?;
+            let path = find().ok_or_else(none)?;
             transcript::read_page(&path, after, before).map_err(|e| {
                 err(
                     ErrorCode::Internal,

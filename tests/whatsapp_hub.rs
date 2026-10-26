@@ -270,6 +270,7 @@ impl World {
                 claude_config: dir.path().join("claude.json"),
                 claude_mode: Default::default(),
                 claude_projects: std::path::PathBuf::from("/nonexistent/claude/projects"),
+                codex_sessions: std::path::PathBuf::from("/nonexistent/codex/sessions"),
                 exe: PathBuf::from("/opt/sb/switchboard"),
                 hook_addr,
                 codex_version_cmd: vec!["false".into()],

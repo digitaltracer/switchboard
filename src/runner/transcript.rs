@@ -1,12 +1,17 @@
-//! An agent's conversation from Claude Code's own log (`~/.claude/projects/*/<session>.jsonl`),
-//! for phones: what was said and which tools ran, without the terminal's layout. Logs grow to
-//! tens of megabytes, so only a window near the asked-for offset is read.
+//! An agent's conversation from its own log, for phones: what was said and which tools ran,
+//! without the terminal's layout. Claude Code writes `~/.claude/projects/*/<session>.jsonl`,
+//! Codex `~/.codex/sessions/<date>/rollout-*.jsonl`. Logs grow to tens of megabytes, so only a
+//! window near the asked-for offset is read.
 
+use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{self, Read, Seek, SeekFrom};
+use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
+use std::time::SystemTime;
 
+use regex::Regex;
 use serde_json::Value;
 
 use crate::proto::{TranscriptItem, TranscriptPage};
@@ -32,6 +37,55 @@ pub fn find_log(projects: &Path, id: &str) -> Option<PathBuf> {
         .flatten()
         .map(|d| d.path().join(&name))
         .find(|p| p.is_file())
+}
+
+/// The most recent Codex logs looked at for an agent's folder.
+const CODEX_CANDIDATES: usize = 200;
+
+/// The newest Codex log started in `cwd`, under `sessions` (normally `~/.codex/sessions`).
+/// Herdr reports no session id for Codex, so the folder is the link; a Switchboard session's
+/// own worktree makes it exact.
+pub fn find_codex_log(sessions: &Path, cwd: &Path) -> Option<PathBuf> {
+    let mut logs = Vec::new();
+    collect_logs(sessions, 0, &mut logs);
+    logs.sort_by_key(|(_, modified)| Reverse(*modified));
+    let want = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_owned());
+    logs.into_iter()
+        .take(CODEX_CANDIDATES)
+        .map(|(p, _)| p)
+        .find(|p| codex_cwd(p).is_some_and(|c| std::fs::canonicalize(&c).unwrap_or(c) == want))
+}
+
+fn collect_logs(dir: &Path, depth: usize, out: &mut Vec<(PathBuf, SystemTime)>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let path = e.path();
+        let Ok(meta) = e.metadata() else { continue };
+        if meta.is_dir() && depth < 4 {
+            collect_logs(&path, depth + 1, out);
+        } else if path.extension().is_some_and(|x| x == "jsonl")
+            && path
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with("rollout-"))
+        {
+            out.push((path, meta.modified().unwrap_or(SystemTime::UNIX_EPOCH)));
+        }
+    }
+}
+
+/// The folder a Codex log was started in, from its first line.
+fn codex_cwd(path: &Path) -> Option<PathBuf> {
+    let mut first = String::new();
+    BufReader::new(File::open(path).ok()?)
+        .take(1 << 20)
+        .read_line(&mut first)
+        .ok()?;
+    let d: Value = serde_json::from_str(&first).ok()?;
+    d.pointer("/payload/cwd")
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
 }
 
 /// The page after `after`, before `before`, or else the latest.
@@ -131,6 +185,12 @@ fn parse<'a>(lines: impl IntoIterator<Item = (u64, &'a str)>) -> Vec<(u64, Trans
     let mut out: Vec<(u64, TranscriptItem)> = Vec::new();
     let mut calls: HashMap<String, usize> = HashMap::new();
     for (offset, line) in lines {
+        if line.contains("\"type\":\"response_item\"") {
+            if let Ok(d) = serde_json::from_str::<Value>(line) {
+                codex(&d, offset, &mut out, &mut calls);
+            }
+            continue;
+        }
         // Request copies and bookkeeping make up most of the log; skip them unparsed.
         if ![
             "\"type\":\"user\"",
@@ -289,6 +349,146 @@ fn parse<'a>(lines: impl IntoIterator<Item = (u64, &'a str)>) -> Vec<(u64, Trans
         }
     }
     out
+}
+
+/// One Codex log entry: a message, or a tool call or its result. Reasoning and the context
+/// Codex adds for itself are left out.
+fn codex(
+    d: &Value,
+    offset: u64,
+    out: &mut Vec<(u64, TranscriptItem)>,
+    calls: &mut HashMap<String, usize>,
+) {
+    let Some(p) = d.get("payload") else {
+        return;
+    };
+    let at = d
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let s = |k: &str| p.get(k).and_then(Value::as_str);
+    let id = s("id").map_or_else(|| format!("codex:{offset}"), str::to_owned);
+    let new = |id: String, kind: &str, text: Option<String>| TranscriptItem {
+        id,
+        kind: kind.into(),
+        text,
+        tool: None,
+        input: None,
+        output: None,
+        done: false,
+        failed: false,
+        at: at.clone(),
+    };
+    match s("type") {
+        Some("message") => {
+            let Some(Value::Array(blocks)) = p.get("content") else {
+                return;
+            };
+            for (i, b) in blocks.iter().enumerate() {
+                let text = b.get("text").and_then(Value::as_str).unwrap_or_default();
+                let shown = match s("role") {
+                    Some("user") if !text.trim_start().starts_with("# AGENTS.md") => said(text),
+                    Some("assistant") if !text.trim().is_empty() => {
+                        Some(("assistant", text.trim().to_owned()))
+                    }
+                    _ => None,
+                };
+                if let Some((kind, text)) = shown {
+                    let item = new(format!("{id}:{i}"), kind, Some(clip(&text, MAX_TEXT)));
+                    out.push((offset, item));
+                }
+            }
+        }
+        Some(kind @ ("custom_tool_call" | "function_call" | "local_shell_call")) => {
+            let call = s("call_id").map_or(id, str::to_owned);
+            let name = s("name").unwrap_or("shell");
+            let input = match kind {
+                "custom_tool_call" => s("input").unwrap_or_default().to_owned(),
+                "function_call" => s("arguments").unwrap_or_default().to_owned(),
+                _ => p.get("action").map(Value::to_string).unwrap_or_default(),
+            };
+            calls.insert(call.clone(), out.len());
+            let item = TranscriptItem {
+                tool: Some(name.into()),
+                input: Some(clip(&input, MAX_INPUT)),
+                ..new(call, "tool", Some(codex_summary(name, &input)))
+            };
+            out.push((offset, item));
+        }
+        Some("custom_tool_call_output" | "function_call_output") => {
+            let call = s("call_id").unwrap_or_default().to_owned();
+            let output = clip(&codex_output(p.get("output")), MAX_OUTPUT);
+            match calls.get(&call) {
+                Some(&i) => {
+                    let t = &mut out[i].1;
+                    (t.output, t.done) = (Some(output), true);
+                }
+                None => {
+                    let item = TranscriptItem {
+                        output: Some(output),
+                        done: true,
+                        ..new(call, "tool", None)
+                    };
+                    out.push((offset, item));
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The command a Codex tool call ran: inside its exec script, or a shell call's arguments.
+fn codex_summary(name: &str, input: &str) -> String {
+    static CMD: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#""?(?:cmd|command)"?\s*:\s*"((?:[^"\\]|\\.)*)""#).expect("valid")
+    });
+    let ran = |cmd: &str| {
+        let line = cmd.lines().next().unwrap_or_default();
+        format!("Ran {}", clip(line, 200))
+    };
+    if let Some(c) = CMD.captures(input) {
+        let cmd: String =
+            serde_json::from_str(&format!("\"{}\"", &c[1])).unwrap_or_else(|_| c[1].to_owned());
+        return ran(&cmd);
+    }
+    let parts = serde_json::from_str::<Value>(input).ok().and_then(|v| {
+        let a = v
+            .get("command")
+            .or_else(|| v.get("cmd"))?
+            .as_array()?
+            .clone();
+        Some(
+            a.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect::<Vec<_>>(),
+        )
+    });
+    match parts.as_deref() {
+        // `bash -lc "<script>"` shows the script.
+        Some([.., last]) => ran(last),
+        _ => match name {
+            "exec" | "shell" | "exec_command" => "Ran a command".into(),
+            n => format!("Used {n}"),
+        },
+    }
+}
+
+fn codex_output(o: Option<&Value>) -> String {
+    match o {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Array(blocks)) => blocks
+            .iter()
+            .filter_map(|b| b.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Some(Value::Object(m)) => m
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+        _ => String::new(),
+    }
 }
 
 /// What a user line shows: a prompt, a `!` command or a slash command. Other tagged lines
