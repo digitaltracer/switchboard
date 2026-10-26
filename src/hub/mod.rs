@@ -139,9 +139,10 @@ pub struct Hub {
     pub app: axum::Router,
     server: JoinHandle<std::io::Result<()>>,
     sweeper: JoinHandle<()>,
+    agent_watch: JoinHandle<()>,
 }
 
-/// Serves the runner endpoint on `listener` and starts the approval sweeper.
+/// Serves the runner endpoint on `listener` and starts the approval sweeper and agent watch.
 pub fn serve(svc: Arc<SessionService>, listener: TcpListener) -> anyhow::Result<Hub> {
     let addr = listener.local_addr()?;
     let devices = Arc::new(Devices::new(svc.store().clone(), svc.clock().clone()));
@@ -162,6 +163,7 @@ pub fn serve(svc: Arc<SessionService>, listener: TcpListener) -> anyhow::Result<
         addr,
         app: app_api,
         sweeper: svc.spawn_sweeper(),
+        agent_watch: svc.spawn_agent_watch(),
         service: svc,
         server,
     })
@@ -172,6 +174,7 @@ impl Hub {
     pub async fn shutdown(self) {
         self.service.begin_shutdown();
         self.sweeper.abort();
+        self.agent_watch.abort();
         if let Err(e) = self.server.await {
             tracing::warn!(error = %e, "hub server task");
         }

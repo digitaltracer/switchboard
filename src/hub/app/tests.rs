@@ -1066,6 +1066,36 @@ async fn use_reaches_an_agent_switchboard_didnt_start_and_it_becomes_current() {
 }
 
 #[tokio::test]
+async fn an_agent_that_leaves_its_pane_is_listed_as_ended() {
+    let mut r = rig().await;
+    let (_, token) = r.pair(&Phone::new()).await;
+    let call = r.call_later("GET", "/agents", &token, Value::Null);
+    let req = r.req().await;
+    r.ok(req.id, agents_reply()).await;
+    let first = call.await.unwrap();
+    assert_eq!(first.body["ended"], json!([]));
+
+    let call = r.call_later("GET", "/agents", &token, Value::Null);
+    let req = r.req().await;
+    let mut still = agents_reply();
+    still.as_array_mut().unwrap().remove(1);
+    r.ok(req.id, still).await;
+    let second = call.await.unwrap();
+    assert_eq!(second.body["agents"].as_array().unwrap().len(), 1);
+    let ended = second.body["ended"].as_array().unwrap();
+    assert_eq!(ended.len(), 1, "{}", second.body);
+    assert_eq!(
+        (
+            ended[0]["name"].as_str(),
+            ended[0]["herdr_session"].as_str()
+        ),
+        (Some("mono1/w1:p2"), Some("mono1"))
+    );
+    let title = ended[0]["title"].as_str().unwrap();
+    assert!(!title.contains("ghp_abc"), "kept masked: {title}");
+}
+
+#[tokio::test]
 async fn the_app_lists_and_reads_agents_switchboard_didnt_start_masked() {
     let mut r = rig().await;
     let (_, token) = r.pair(&Phone::new()).await;

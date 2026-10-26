@@ -51,7 +51,7 @@ use super::types::*;
         PromptResponse, StopRequest, StopResponse, MuteRequest, MuteResponse, DecisionKind,
         ApprovalChallenge, DecisionRequest, DecisionResponse, Device, PushEnvironment,
         PushTokenRequest, TargetRef, TargetView, MessageRequest, MessageChoice, MessageResponse,
-        AgentView, Agents, ChangedFile, Changes, MessagePreviewRequest, MessagePreview,
+        AgentView, Agents, EndedAgent, ChangedFile, Changes, MessagePreviewRequest, MessagePreview,
         DeleteResponse, Transcript, TranscriptItem,
     )),
     modifiers(&DeviceToken),

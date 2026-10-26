@@ -26,7 +26,8 @@ use crate::runner::random_id;
 use crate::runner::sessions::agent_name;
 use crate::store::{
     ApprovalProof, ApprovalRecord, Begin, DecideOutcome, Decision, Delivery, Lifecycle,
-    NewOperation, OpState, Operation, SessionPatch, SessionRecord, Store, StoreError,
+    NewOperation, OpState, Operation, SeenAgent, SeenAgentRecord, SessionPatch, SessionRecord,
+    Store, StoreError,
 };
 use crate::whatsapp::watchlist::WatchState;
 
@@ -42,6 +43,9 @@ pub const DEADLINE_MARGIN: Duration = Duration::from_secs(5);
 pub const MAX_WAIT: Duration = Duration::from_secs(25);
 pub const MAX_READ_LINES: u32 = 500;
 pub const SWEEP_INTERVAL: Duration = Duration::from_secs(1);
+const AGENT_WATCH_INTERVAL: Duration = Duration::from_secs(15);
+/// How far back the app is shown agents that ended.
+const ENDED_WINDOW_MS: i64 = 24 * 60 * 60 * 1000;
 /// Visible-screen reads in flight at once, across every caller.
 pub const MAX_SCREEN_READS: usize = 4;
 const RECHECK_RETRY: Duration = Duration::from_secs(10);
@@ -1367,7 +1371,8 @@ impl SessionService {
     }
 
     /// Agents on every connected machine that aren't one of `session_agents`, with their
-    /// machine. A machine that can't be listed is skipped.
+    /// machine. Each listing is recorded so agents that end can still be shown; a machine that
+    /// can't be listed is skipped.
     pub async fn outside_agents(
         &self,
         session_agents: &HashSet<String>,
@@ -1375,16 +1380,66 @@ impl SessionService {
         let mut out = Vec::new();
         for m in self.machines().into_iter().filter(|m| m.connected) {
             match self.agents(&m.id).await {
-                Ok(agents) => out.extend(
-                    agents
+                Ok(agents) => {
+                    let agents: Vec<_> = agents
                         .into_iter()
                         .filter(|a| a.session_id.is_none() && !session_agents.contains(&a.name))
-                        .map(|a| (m.id.clone(), a)),
-                ),
+                        .collect();
+                    let seen = agents
+                        .iter()
+                        .map(|a| SeenAgent {
+                            herdr_session: a.herdr_session.clone(),
+                            pane_id: a.pane_id.clone(),
+                            kind: a.kind.clone(),
+                            name: a.name.clone(),
+                            title: a.title.clone(),
+                        })
+                        .collect();
+                    if let Err(e) = self.store.record_agents(&m.id, seen, self.now()).await {
+                        tracing::warn!(machine = %m.id, error = %e, "recording agents");
+                    }
+                    out.extend(agents.into_iter().map(|a| (m.id.clone(), a)));
+                }
                 Err(e) => tracing::warn!(machine = %m.id, error = %e, "listing agents"),
             }
         }
         out
+    }
+
+    /// Agents Switchboard didn't start, on every connected machine.
+    pub async fn herdr_agents(&self) -> Result<Vec<(String, AgentSummary)>, HubError> {
+        let running = self
+            .list()
+            .await?
+            .into_iter()
+            .filter(|s| matches!(s.lifecycle, Lifecycle::Starting | Lifecycle::Running))
+            .filter_map(|s| s.agent_name)
+            .collect();
+        Ok(self.outside_agents(&running).await)
+    }
+
+    /// Agents Switchboard didn't start that ended in the last day, latest first.
+    pub async fn ended_agents(&self) -> Result<Vec<SeenAgentRecord>, HubError> {
+        Ok(self
+            .store
+            .ended_agents(self.now() - ENDED_WINDOW_MS)
+            .await?)
+    }
+
+    /// Lists every machine's agents now and then, so one that starts and ends while no one is
+    /// looking is still recorded.
+    pub fn spawn_agent_watch(self: &Arc<Self>) -> JoinHandle<()> {
+        let svc = self.clone();
+        tokio::spawn(async move {
+            let start = tokio::time::Instant::now() + AGENT_WATCH_INTERVAL;
+            let mut tick = tokio::time::interval_at(start, AGENT_WATCH_INTERVAL);
+            loop {
+                tick.tick().await;
+                if let Err(e) = svc.herdr_agents().await {
+                    tracing::warn!(error = %e, "watching agents");
+                }
+            }
+        })
     }
 
     /// Where a message goes. A named project starts a session there; `new <project> <prompt>`

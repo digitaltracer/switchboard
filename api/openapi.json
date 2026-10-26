@@ -1319,7 +1319,7 @@
         "tags": [
           "agents"
         ],
-        "summary": "Herdr agents Switchboard didn't start, on every connected machine.",
+        "summary": "Herdr agents Switchboard didn't start, on every connected machine, and those that ended in\nthe last day.",
         "operationId": "list_agents",
         "responses": {
           "200": {
@@ -1575,6 +1575,13 @@
             "items": {
               "$ref": "#/components/schemas/AgentView"
             }
+          },
+          "ended": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EndedAgent"
+            },
+            "description": "Agents Switchboard didn't start that ended in the last day, latest first. Older hubs\nleave it out."
           }
         }
       },
@@ -1896,6 +1903,53 @@
           },
           "push_enabled": {
             "type": "boolean"
+          }
+        }
+      },
+      "EndedAgent": {
+        "type": "object",
+        "description": "An agent that has left its pane. Sessions Switchboard started keep their own records.",
+        "required": [
+          "machine_id",
+          "name",
+          "started_at",
+          "ended_at"
+        ],
+        "properties": {
+          "machine_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "description": "Its name when it ended, as in `AgentView`."
+          },
+          "herdr_session": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Its last terminal title. Untrusted text."
+          },
+          "started_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When the hub first saw it, in milliseconds."
+          },
+          "ended_at": {
+            "type": "integer",
+            "format": "int64"
           }
         }
       },

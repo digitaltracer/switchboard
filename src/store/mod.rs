@@ -58,8 +58,11 @@ macro_rules! str_enum {
     };
 }
 
+mod agents;
 mod devices;
 mod push;
+
+pub use agents::{SeenAgent, SeenAgentRecord};
 
 pub use devices::{
     ApprovalProof, Challenge, ChallengePurpose, Claim, DeviceRecord, DeviceState, NewDevice,

@@ -23,7 +23,7 @@ use crate::auth::device::{AuthError, ClaimRequest, Devices, MESSAGE_VERSION};
 use crate::cli::Agent;
 use crate::proto::auth::bearer;
 use crate::proto::{AgentPromptOutcome, ErrorCode};
-use crate::store::{DeviceRecord, DeviceState, Lifecycle, PushEnv};
+use crate::store::{DeviceRecord, DeviceState, PushEnv};
 use types::*;
 
 pub const PREFIX: &str = "/app/v1";
@@ -757,20 +757,13 @@ async fn follow(
 
 #[utoipa::path(get, path = "/app/v1/agents", tag = "agents", security(("device_token" = [])),
     responses((status = 200, description = "OK", body = Agents)))]
-/// Herdr agents Switchboard didn't start, on every connected machine.
+/// Herdr agents Switchboard didn't start, on every connected machine, and those that ended in
+/// the last day.
 pub async fn list_agents(State(st): State<AppState>, _d: DeviceAuth) -> ApiResult<Agents> {
-    let running = st
-        .svc
-        .list()
-        .await?
-        .into_iter()
-        .filter(|s| matches!(s.lifecycle, Lifecycle::Starting | Lifecycle::Running))
-        .filter_map(|s| s.agent_name)
-        .collect();
     let agents = st
         .svc
-        .outside_agents(&running)
-        .await
+        .herdr_agents()
+        .await?
         .into_iter()
         .map(|(machine_id, a)| AgentView {
             machine_id,
@@ -781,7 +774,14 @@ pub async fn list_agents(State(st): State<AppState>, _d: DeviceAuth) -> ApiResul
             title: a.title,
         })
         .collect();
-    Ok(Json(Agents { agents }))
+    let ended = st
+        .svc
+        .ended_agents()
+        .await?
+        .into_iter()
+        .map(Into::into)
+        .collect();
+    Ok(Json(Agents { agents, ended }))
 }
 
 #[utoipa::path(get, path = "/app/v1/agents/transcript", tag = "agents",

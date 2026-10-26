@@ -465,3 +465,63 @@ async fn audit_append_and_filter() {
     assert_eq!(s1.len(), 1);
     assert_eq!(s1[0].detail, json!({"text": "hi"}));
 }
+
+fn seen(session: &str, pane: &str, kind: &str, title: Option<&str>) -> SeenAgent {
+    SeenAgent {
+        herdr_session: Some(session.into()),
+        pane_id: pane.into(),
+        kind: Some(kind.into()),
+        name: format!("{session}/{pane}"),
+        title: title.map(Into::into),
+    }
+}
+
+#[tokio::test]
+async fn agents_missing_from_a_listing_end_and_a_new_occupant_is_a_new_agent() {
+    let store = Store::open_in_memory().await.unwrap();
+    let a = seen("mono1", "w1:p1", "claude", Some("Fix the build"));
+    let b = seen("mono1", "w1:p2", "codex", None);
+    store
+        .record_agents("mac", vec![a.clone(), b.clone()], 1_000)
+        .await
+        .unwrap();
+    store
+        .record_agents("mac", vec![seen("mono1", "w1:p1", "claude", None)], 2_000)
+        .await
+        .unwrap();
+    let ended = store.ended_agents(0).await.unwrap();
+    assert_eq!(ended.len(), 1);
+    assert_eq!(
+        (ended[0].pane_id.as_str(), ended[0].ended_at),
+        ("w1:p2", Some(2_000))
+    );
+
+    // Another machine's listing leaves this one's agents alone.
+    store.record_agents("vps", vec![], 3_000).await.unwrap();
+    assert_eq!(store.ended_agents(0).await.unwrap().len(), 1);
+
+    // Claude exits and Codex starts in the same pane: one ended, one new.
+    store
+        .record_agents("mac", vec![seen("mono1", "w1:p1", "codex", None)], 4_000)
+        .await
+        .unwrap();
+    let ended = store.ended_agents(3_000).await.unwrap();
+    assert_eq!(ended.len(), 1);
+    assert_eq!(
+        (
+            ended[0].kind.as_deref(),
+            ended[0].title.as_deref(),
+            ended[0].first_seen
+        ),
+        (Some("claude"), Some("Fix the build"), 1_000),
+        "a listing without a title keeps the last one"
+    );
+
+    // Ended agents are forgotten after a week.
+    store
+        .record_agents("mac", vec![], 4_000 + 8 * 24 * 60 * 60 * 1000)
+        .await
+        .unwrap();
+    let left = store.ended_agents(0).await.unwrap();
+    assert_eq!(left.len(), 1, "only the codex agent that just ended");
+}

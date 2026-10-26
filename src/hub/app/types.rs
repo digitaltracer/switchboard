@@ -12,7 +12,7 @@ use crate::hub::service::{
     PromptResult, SessionList, SessionView, StartResult, StopResult,
 };
 use crate::proto::TranscriptPage;
-use crate::store::{DeviceRecord, Operation};
+use crate::store::{DeviceRecord, Operation, SeenAgentRecord};
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ApiError {
@@ -698,6 +698,42 @@ pub struct AgentView {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct Agents {
     pub agents: Vec<AgentView>,
+    /// Agents Switchboard didn't start that ended in the last day, latest first. Older hubs
+    /// leave it out.
+    #[schema(required = false)]
+    pub ended: Vec<EndedAgent>,
+}
+
+/// An agent that has left its pane. Sessions Switchboard started keep their own records.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct EndedAgent {
+    pub machine_id: String,
+    /// Its name when it ended, as in `AgentView`.
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub herdr_session: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// Its last terminal title. Untrusted text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// When the hub first saw it, in milliseconds.
+    pub started_at: i64,
+    pub ended_at: i64,
+}
+
+impl From<SeenAgentRecord> for EndedAgent {
+    fn from(a: SeenAgentRecord) -> Self {
+        Self {
+            machine_id: a.machine_id,
+            name: a.name,
+            herdr_session: a.herdr_session,
+            kind: a.kind,
+            title: a.title,
+            started_at: a.first_seen,
+            ended_at: a.ended_at.unwrap_or(a.last_seen),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, IntoParams)]
