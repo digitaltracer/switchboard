@@ -348,3 +348,18 @@ Stop keeps a task's Herdr session listed and its worktree. Delete is new and goe
   - `herdr worktree remove` without `--force` removes the checkout and keeps the branch.
   - `tests/herdr_sessions_live.rs` now deletes a running and a stopped session through the runner's code.
 - **Upgrading.** A remote runner that predates `Op::Delete` can't decode it and never answers, so the delete ends after 90 s as `outcome_unknown`. Update remote runners along with the hub. WhatsApp is frozen and has no delete.
+
+## As built (2026-10-26): the conversation view
+
+The user found the terminal tail unreadable on a phone. Claude draws for a terminal about 150 columns wide, so every line wrapped, and the tail stopped at the visible screen while the agent worked.
+- **Source.** `Op::Transcript` reads the agent's own Claude log, `~/.claude/projects/*/<session>.jsonl` (or under `CLAUDE_CONFIG_DIR`), found by the session id Herdr reports in `agent_session`. Only Claude agents have one. Codex and older runners answer `bad_request`, and the apps fall back to the terminal.
+- **Paging.** `src/runner/transcript.rs` reads a 1 MB window and returns at most 300 items, with byte offsets `start` and `end`.
+  - `after` continues from `end`; a page that doesn't start there skipped some, and the app replaces its list.
+  - `before` goes back from `start`. A line longer than the window, such as a request copy, is skipped unread.
+  - This conversation's own 33 MB log pages back to its start in 34 pages.
+- **Items.** Prompts, replies, and tool calls as one-line summaries, with input and result shortened. Thinking, side-chain, meta and command-output lines are left out. A result arriving on a later page than its call comes as a bare item with the call's id, and the apps join them.
+- **API.** `GET /app/v1/sessions/{id}/transcript` and `GET /app/v1/agents/transcript`, additive. Masked like every runner reply, and untrusted.
+- **Apps, iOS and Android alike.**
+  - A session or agent page shows its last six items, then "Open the conversation".
+  - That screen has Conversation and Terminal tabs. The terminal doesn't wrap: it scrolls sideways.
+  - Polling continues from `end` every 3 s while on screen.
