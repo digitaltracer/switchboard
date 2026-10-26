@@ -84,15 +84,17 @@ struct SessionDetailView: View {
         }
         VStack(alignment: .leading, spacing: 10) {
             Text("Latest").font(.footnote.weight(.semibold)).foregroundStyle(.secondary).textCase(.uppercase)
-            if convo.unavailable != nil {
-                OutputBlock(text: convo.terminal)
-                    .accessibilityIdentifier("output")
+            if let why = convo.unavailable {
+                Label("No conversation to show (\(why)).", systemImage: "info.circle")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             } else {
                 ConversationPreview(convo: convo)
                     .accessibilityIdentifier("latest")
             }
             NavigationLink(value: ConversationRef(source: .session(s.id), title: s.label)) {
-                Label("Open the conversation", systemImage: "chevron.right").labelStyle(TrailingIcon())
+                Label(convo.unavailable == nil ? "Open the conversation" : "See the agent's screen", systemImage: "chevron.right")
+                    .labelStyle(TrailingIcon())
             }
             .font(.body)
             .accessibilityIdentifier("openConversation")

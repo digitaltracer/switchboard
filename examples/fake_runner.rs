@@ -59,7 +59,10 @@ impl Handler for Fake {
                 )
             }
             Op::Read { .. } => Ok(json!({ "text": OUTPUT, "truncated": false, "untrusted": true })),
-            Op::Transcript { after: Some(end), .. } => Ok(json!({ "items": [], "start": end, "end": end })),
+            Op::ReadAgent { .. } => Ok(json!({ "text": OUTPUT, "untrusted": true })),
+            Op::Transcript {
+                after: Some(end), ..
+            } => Ok(json!({ "items": [], "start": end, "end": end })),
             Op::Transcript { .. } => Ok(json!({ "start": 0, "end": 4096, "items": [
                 { "id": "u1", "kind": "user", "text": "fix the flaky retry test", "done": false, "failed": false },
                 { "id": "a1", "kind": "assistant", "done": false, "failed": false, "text":

@@ -19,9 +19,12 @@ struct ConversationRef: Hashable {
 final class ConversationModel {
     let source: ConversationSource
     private(set) var conversation = Conversation()
-    /// Why there's no conversation, e.g. a Codex agent or an older hub; the terminal stands in.
+    /// Why there's no conversation, e.g. no log yet or an older hub; the terminal stands in.
     private(set) var unavailable: String?
     private(set) var terminal = ""
+    /// False until the screen has been read once.
+    private(set) var terminalLoaded = false
+    private(set) var terminalError: String?
     private(set) var error: String?
     private(set) var loadingEarlier = false
     /// The terminal is read only while it's on screen or standing in.
@@ -52,6 +55,9 @@ final class ConversationModel {
             }
             unavailable = nil
             error = nil
+        } catch let e as HubError where e.code == "http_404" {
+            // A hub older than this app has no conversations to give.
+            unavailable = "the hub needs updating"
         } catch let e as HubError where ["bad_request", "not_found"].contains(e.code ?? "") {
             unavailable = e.localizedDescription
         } catch {
@@ -71,12 +77,17 @@ final class ConversationModel {
     }
 
     /// Only the screen: reading further back would scroll the agent's terminal on the Mac.
-    private func loadTerminal(_ hub: Hub) async {
-        let text: String? = switch source {
-        case .session(let id): try? await hub.output(id, visible: true).text
-        case .agent(let machine, let name): try? await hub.agentOutput(machine: machine, agent: name, visible: true).text
+    func loadTerminal(_ hub: Hub) async {
+        do {
+            terminal = switch source {
+            case .session(let id): try await hub.output(id, visible: true).text
+            case .agent(let machine, let name): try await hub.agentOutput(machine: machine, agent: name, visible: true).text
+            }
+            terminalLoaded = true
+            terminalError = nil
+        } catch {
+            if !Task.isCancelled { terminalError = error.localizedDescription }
         }
-        if let text { terminal = text }
     }
 
     private func page(_ hub: Hub, after: Int64?, before: Int64?) async throws -> Schemas.Transcript {
@@ -106,30 +117,45 @@ struct ConversationScreen: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("View", selection: $tab) {
-                ForEach(Tab.allCases, id: \.self) { Text($0.rawValue) }
-            }
-            .pickerStyle(.segmented)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
-            if tab == .terminal || convo.unavailable != nil {
-                if tab == .conversation, let why = convo.unavailable {
-                    Text("No conversation to show (\(why)), so here's the terminal.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 16)
-                        .padding(.bottom, 8)
-                }
-                TerminalView(text: convo.terminal)
+            if let why = convo.unavailable {
+                // Nothing to switch between: the terminal is all there is.
+                Label("No conversation to show (\(why)), so here's the agent's screen.", systemImage: "info.circle")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                terminal
             } else {
-                feed
+                Picker("View", selection: $tab) {
+                    ForEach(Tab.allCases, id: \.self) { Text($0.rawValue) }
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                if tab == .terminal { terminal } else { feed }
             }
         }
         .background(Color(.systemGroupedBackground))
         .navigationTitle(ref.title)
         .navigationBarTitleDisplayMode(.inline)
-        .onChange(of: tab, initial: true) { _, t in convo.wantsTerminal = t == .terminal }
+        .onChange(of: tab, initial: true) { _, t in
+            convo.wantsTerminal = t == .terminal
+            // Shown at once, not at the next refresh.
+            if t == .terminal, let hub = model.hub { Task { await convo.loadTerminal(hub) } }
+        }
         .task(id: model.wakes) { await convo.follow(model) }
+    }
+
+    @ViewBuilder
+    private var terminal: some View {
+        if convo.terminalLoaded {
+            TerminalView(text: convo.terminal)
+        } else if let error = convo.terminalError {
+            Waiting(symbol: "exclamationmark.triangle", text: "Couldn't read the screen: \(error)", busy: false)
+        } else {
+            Waiting(symbol: "terminal", text: "Loading the screen…", busy: true)
+        }
     }
 
     private var feed: some View {
@@ -144,13 +170,20 @@ struct ConversationScreen: View {
                     .frame(maxWidth: .infinity)
                 }
                 if !convo.conversation.isLoaded {
-                    ProgressView().frame(maxWidth: .infinity).padding(.top, 40)
+                    if let error = convo.error {
+                        Waiting(symbol: "exclamationmark.triangle", text: "Couldn't load the conversation: \(error)", busy: false)
+                            .padding(.top, 40)
+                    } else {
+                        ConversationSkeleton()
+                    }
                 } else if convo.conversation.items.isEmpty {
-                    Text("Nothing said yet.").foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.top, 40)
+                    Waiting(symbol: "bubble.left.and.bubble.right", text: "Nothing said yet.", busy: false).padding(.top, 40)
                 }
                 ForEach(convo.conversation.items, id: \.id) { ItemRow(item: $0) }
-                if let status { StatusLine(status: status) }
-                if let error = convo.error { Text(error).font(.footnote).foregroundStyle(.orange) }
+                if convo.conversation.isLoaded {
+                    if let status { StatusLine(status: status) }
+                    if let error = convo.error { Text(error).font(.footnote).foregroundStyle(.orange) }
+                }
             }
             .padding(.horizontal, 16)
             .padding(.bottom, 24)
@@ -175,8 +208,56 @@ struct ConversationPreview: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            if !convo.conversation.isLoaded {
+                ConversationSkeleton(rows: 2)
+            } else if convo.conversation.items.isEmpty {
+                Text("Nothing said yet.").font(.subheadline).foregroundStyle(.secondary)
+            }
             ForEach(convo.conversation.items.suffix(count), id: \.id) { ItemRow(item: $0) }
         }
+    }
+}
+
+/// A message, a reply and a tool call drawn as grey shapes that pulse while the conversation loads.
+struct ConversationSkeleton: View {
+    var rows = 3
+    @State private var dim = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            ForEach(0..<rows, id: \.self) { _ in
+                RoundedRectangle(cornerRadius: 18).frame(width: 190, height: 38)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                VStack(alignment: .leading, spacing: 7) {
+                    Capsule().frame(height: 12)
+                    Capsule().frame(height: 12).padding(.trailing, 40)
+                    Capsule().frame(width: 150, height: 12)
+                }
+                RoundedRectangle(cornerRadius: 12).frame(height: 38)
+            }
+        }
+        .foregroundStyle(Color(.systemFill))
+        .opacity(dim ? 0.45 : 1)
+        .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: dim)
+        .onAppear { dim = true }
+        .accessibilityElement()
+        .accessibilityLabel("Loading the conversation")
+    }
+}
+
+/// A centred symbol and line, with a spinner while something's on its way.
+struct Waiting: View {
+    let symbol: String
+    let text: String
+    let busy: Bool
+
+    var body: some View {
+        VStack(spacing: 12) {
+            if busy { ProgressView() } else { Image(systemName: symbol).font(.title2).foregroundStyle(.secondary) }
+            Text(text).font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -296,22 +377,115 @@ struct StatusLine: View {
     }
 }
 
-/// The agent's terminal as it is: no wrapping, so wide lines scroll sideways.
+/// The agent's screen like a photo of it: fitted to the phone's width at first, pinched to zoom,
+/// double-tapped between fitted and full size. Text is laid out at full size, so it stays sharp.
 struct TerminalView: View {
     let text: String
 
     var body: some View {
-        ScrollView([.horizontal, .vertical]) {
-            Text(text.isEmpty ? "No output yet." : text)
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundStyle(Color(white: 0.9))
-                .fixedSize(horizontal: true, vertical: false)
-                .padding(12)
-                .textSelection(.enabled)
+        Group {
+            if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text("The screen is blank.").font(.subheadline).foregroundStyle(Color(white: 0.6))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ZoomableText(text: text)
+            }
         }
-        .defaultScrollAnchor(.bottomLeading)
         .background(Color.codeBackground)
         .accessibilityIdentifier("terminal")
+    }
+}
+
+private struct ZoomableText: UIViewRepresentable {
+    let text: String
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeUIView(context: Context) -> Scroll {
+        let scroll = Scroll()
+        scroll.delegate = context.coordinator
+        scroll.backgroundColor = .clear
+        scroll.maximumZoomScale = 1.5
+        scroll.contentInset = UIEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
+        let label = UILabel()
+        label.numberOfLines = 0
+        label.lineBreakMode = .byClipping
+        label.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
+        label.textColor = UIColor(white: 0.9, alpha: 1)
+        label.isAccessibilityElement = true
+        scroll.addSubview(label)
+        context.coordinator.label = label
+        let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.doubleTap(_:)))
+        tap.numberOfTapsRequired = 2
+        scroll.addGestureRecognizer(tap)
+        scroll.onLayout = { [weak coordinator = context.coordinator] in coordinator?.fit($0) }
+        return scroll
+    }
+
+    func updateUIView(_ scroll: Scroll, context: Context) {
+        context.coordinator.show(text, in: scroll)
+    }
+
+    final class Scroll: UIScrollView {
+        var onLayout: ((UIScrollView) -> Void)?
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            onLayout?(self)
+        }
+    }
+
+    final class Coordinator: NSObject, UIScrollViewDelegate {
+        var label: UILabel?
+        private var fitted = false
+        private var width: CGFloat = 0
+
+        func viewForZooming(in scrollView: UIScrollView) -> UIView? { label }
+
+        /// New text keeps the zoom; one read while at the bottom stays at the bottom.
+        func show(_ text: String, in scroll: UIScrollView) {
+            guard let label, label.text != text else { return }
+            let atBottom = !fitted || scroll.contentOffset.y >= bottom(scroll) - 24
+            let zoom = scroll.zoomScale
+            scroll.zoomScale = 1
+            label.text = text
+            label.accessibilityLabel = text
+            let size = label.sizeThatFits(CGSize(width: CGFloat.greatestFiniteMagnitude, height: .greatestFiniteMagnitude))
+            label.frame = CGRect(origin: .zero, size: size)
+            scroll.contentSize = size
+            scroll.zoomScale = zoom
+            fitted = false
+            fit(scroll)
+            if atBottom { scroll.contentOffset.y = bottom(scroll) }
+        }
+
+        /// The smallest zoom shows the whole width; the first layout starts there.
+        func fit(_ scroll: UIScrollView) {
+            guard let label, label.bounds.width > 0, scroll.bounds.width > 0 else { return }
+            let available = scroll.bounds.width - scroll.contentInset.left - scroll.contentInset.right
+            let minimum = min(1, available / label.bounds.width)
+            guard !fitted || scroll.bounds.width != width else { return }
+            let wasAtMinimum = scroll.zoomScale <= scroll.minimumZoomScale + 0.001
+            scroll.minimumZoomScale = minimum
+            if !fitted || wasAtMinimum || scroll.zoomScale < minimum { scroll.zoomScale = minimum }
+            if !fitted { scroll.contentOffset = CGPoint(x: -scroll.contentInset.left, y: bottom(scroll)) }
+            fitted = true
+            width = scroll.bounds.width
+        }
+
+        @objc func doubleTap(_ g: UITapGestureRecognizer) {
+            guard let scroll = g.view as? UIScrollView, let label else { return }
+            if scroll.zoomScale > scroll.minimumZoomScale + 0.01 {
+                scroll.setZoomScale(scroll.minimumZoomScale, animated: true)
+            } else {
+                let at = g.location(in: label)
+                let w = scroll.bounds.width, h = scroll.bounds.height
+                scroll.zoom(to: CGRect(x: at.x - w / 2, y: at.y - h / 2, width: w, height: h), animated: true)
+            }
+        }
+
+        private func bottom(_ scroll: UIScrollView) -> CGFloat {
+            max(-scroll.contentInset.top, scroll.contentSize.height - scroll.bounds.height + scroll.contentInset.bottom)
+        }
     }
 }
 

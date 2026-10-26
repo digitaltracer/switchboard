@@ -199,27 +199,6 @@ struct ApprovalCard: View {
     }
 }
 
-/// The last lines of an agent's terminal: its own words, untrusted.
-struct OutputBlock: View {
-    let text: String
-    var lines = 14
-
-    var body: some View {
-        let tail = text.split(separator: "\n", omittingEmptySubsequences: false)
-            .map { $0.trimmingCharacters(in: .whitespaces).isEmpty ? "" : String($0) }
-            .reversed().drop { $0.isEmpty }.reversed()
-            .suffix(lines)
-            .joined(separator: "\n")
-        Text(tail.isEmpty ? "No output yet." : tail)
-            .font(.system(size: 12.5, design: .monospaced))
-            .foregroundStyle(Color(white: 0.9))
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(14)
-            .background(Color.codeBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .textSelection(.enabled)
-    }
-}
-
 /// What this phone last said there, kept on the phone.
 struct SaidBubble: View {
     let said: AppModel.Said
