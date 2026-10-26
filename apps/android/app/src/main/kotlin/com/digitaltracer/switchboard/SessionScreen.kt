@@ -59,14 +59,13 @@ import androidx.compose.ui.unit.sp
 import com.digitaltracer.switchboard.api.models.DeleteResponse
 
 /**
- * One session, read like a message: its state, what you said, what it's doing, what it wants
+ * One session, read like a message: its state, what you said, its latest turns, what it wants
  * and what it changed. Long-polled while on screen.
  */
 @Composable
 fun SessionScreen(model: AppModel, voice: Voice, listen: Listen, sessionId: String) {
     var session by remember { mutableStateOf<Session?>(null) }
-    var output by remember { mutableStateOf("") }
-    var outputError by remember { mutableStateOf<String?>(null) }
+    val convo = rememberConversation(ConversationSource.Session(sessionId))
     var changes by remember { mutableStateOf<Changes?>(null) }
     // From the last action the user took; polls don't clear it.
     var error by remember { mutableStateOf<String?>(null) }
@@ -75,20 +74,11 @@ fun SessionScreen(model: AppModel, voice: Voice, listen: Listen, sessionId: Stri
     // What a delete did, kept on screen since the session leaves the lists.
     var notice by remember { mutableStateOf<String?>(null) }
     var confirmStop by remember { mutableStateOf(false) }
-    var showingOutput by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val list = rememberLazyListState()
 
-    suspend fun loadOutput() {
+    suspend fun loadChanges() {
         val hub = model.hub ?: return
-        try {
-            output = hub.output(sessionId, lines = 300).text
-            outputError = null
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            outputError = "Couldn't refresh the output: ${e.message}"
-        }
         // Older runners don't list changes; the section just stays hidden.
         runCatching { hub.changes(sessionId) }.onSuccess { changes = it }
     }
@@ -97,7 +87,8 @@ fun SessionScreen(model: AppModel, voice: Voice, listen: Listen, sessionId: Stri
         val hub = model.hub ?: return
         try {
             session = hub.session(sessionId)
-            loadOutput()
+            convo.refresh(hub)
+            loadChanges()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -118,7 +109,7 @@ fun SessionScreen(model: AppModel, voice: Voice, listen: Listen, sessionId: Stri
         }
     }
 
-    // Long-polls until the screen goes away; each change also refreshes the output and changes.
+    // Long-polls until the screen goes away; each change also refreshes the changed files.
     LaunchedEffect(sessionId, model.wakes) {
         pollError = null
         var revision: Long? = null
@@ -130,7 +121,7 @@ fun SessionScreen(model: AppModel, voice: Voice, listen: Listen, sessionId: Stri
                 session = s
                 revision = s.revision
                 pollError = null
-                if (changed) loadOutput()
+                if (changed) loadChanges()
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -139,14 +130,7 @@ fun SessionScreen(model: AppModel, voice: Voice, listen: Listen, sessionId: Stri
             }
         }
     }
-    // The agent writes without changing the session's status, so the tail is read every few
-    // seconds while it runs and the screen is open.
-    LaunchedEffect(sessionId, model.wakes) {
-        while (true) {
-            delay(3_000)
-            if (session?.lifecycle == "running") loadOutput()
-        }
-    }
+    LaunchedEffect(sessionId, model.wakes) { convo.follow(model) }
 
     val s = session
     Page(model.backLabel, model::pop, bottomBar = s?.let { current ->
@@ -215,12 +199,15 @@ fun SessionScreen(model: AppModel, voice: Voice, listen: Listen, sessionId: Stri
             model.said[s.id]?.let { item { SaidBubble(it) } }
             items(s.pendingApprovals, key = { it.id }) { a -> ApprovalCard(model, a, s, decided = { refresh() }) }
             item {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text("LATEST", style = Type.footnote, fontWeight = FontWeight.SemiBold, color = palette.secondary)
-                    OutputBlock(output)
-                    outputError?.let { Text(it, style = Type.footnote, color = palette.needs) }
-                    Row(Modifier.clickable { showingOutput = true }.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text("Show the full output", style = Type.body, color = palette.accent)
+                    if (convo.unavailable != null) OutputBlock(convo.terminal) else ConversationPreview(convo)
+                    Row(
+                        Modifier.clickable { model.path.add(Route.Conversation(ConversationSource.Session(s.id), s.label)) }
+                            .padding(vertical = 4.dp).testTag("openConversation"),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("Open the conversation", style = Type.body, color = palette.accent)
                         Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, Modifier.size(18.dp), tint = palette.accent)
                     }
                 }
@@ -230,7 +217,6 @@ fun SessionScreen(model: AppModel, voice: Voice, listen: Listen, sessionId: Stri
         }
     }
 
-    if (showingOutput) FullOutput(s?.label ?: "Output", output) { showingOutput = false }
     if (confirmStop) {
         val running = s?.lifecycle == "running"
         ActionSheet(

@@ -48,6 +48,7 @@ import com.digitaltracer.switchboard.api.models.TargetRef
 import com.digitaltracer.switchboard.api.models.TargetView
 import com.digitaltracer.switchboard.api.models.TokenChallengeRequest
 import com.digitaltracer.switchboard.api.models.TokenRequest
+import com.digitaltracer.switchboard.api.models.Transcript
 import java.io.IOException
 import java.net.URI
 import java.net.URLDecoder
@@ -280,6 +281,17 @@ class Hub private constructor(
         authed { sessions.getSession(id, after, if (after == null) null else waitMs) }
 
     suspend fun output(id: String, lines: Int = 80): Output = authed { sessions.getOutput(id, lines) }
+
+    /**
+     * A page of the session's conversation from its agent's own log: the latest, the part after an
+     * earlier page's `end`, or the part before its `start`.
+     */
+    suspend fun transcript(id: String, after: Long? = null, before: Long? = null): Transcript =
+        authed { sessions.getTranscript(id, after, before) }
+
+    /** As [transcript], for an agent Switchboard didn't start. */
+    suspend fun agentTranscript(machine: String, agent: String, after: Long? = null, before: Long? = null): Transcript =
+        authed { agentsApi.getAgentTranscript(machine, agent, after, before) }
 
     /** Files the session changed since it started, committed or not. */
     suspend fun changes(id: String): Changes = authed { sessions.getChanges(id) }

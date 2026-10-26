@@ -42,6 +42,7 @@ sealed interface Route {
     data object Machines : Route
     data object Projects : Route
     data object Settings : Route
+    data class Conversation(val source: ConversationSource, val title: String) : Route
 }
 
 /** The app's state: the pairing, the live session list and what the user is doing. */
@@ -139,6 +140,7 @@ class AppModel(context: Context, val keys: DeviceKeys) {
             Route.Machines -> "Machines"
             Route.Projects -> "Projects"
             Route.Settings -> "Settings"
+            is Route.Conversation -> under.title
         }
 
     init {

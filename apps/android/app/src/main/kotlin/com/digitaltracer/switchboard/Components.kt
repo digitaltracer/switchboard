@@ -8,18 +8,15 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.outlined.HelpOutline
@@ -56,8 +53,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import com.digitaltracer.switchboard.api.models.Approval
 import com.digitaltracer.switchboard.api.models.Changes
 import com.digitaltracer.switchboard.api.models.DecisionResponse
@@ -300,27 +295,6 @@ fun OutputBlock(text: String, lines: Int = 14, tag: String = "output") {
             Modifier.fillMaxWidth().card(16.dp, codeBackground).padding(14.dp).testTag(tag),
             color = codeText, fontFamily = FontFamily.Monospace, fontSize = 12.5.sp, lineHeight = 16.sp,
         )
-    }
-}
-
-/** The whole tail of an agent's terminal, selectable, opened from "Show the full output". */
-@Composable
-fun FullOutput(title: String, text: String, dismiss: () -> Unit) {
-    Dialog(dismiss, DialogProperties(usePlatformDefaultWidth = false)) {
-        Column(Modifier.fillMaxSize().background(codeBackground)) {
-            Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(title, Modifier.weight(1f), style = Type.headline, color = Color.White, maxLines = 1)
-                Text("Done", Modifier.clickable(onClick = dismiss), style = Type.headline, color = palette.accent)
-            }
-            val scroll = rememberScrollState()
-            LaunchedEffect(text) { scroll.scrollTo(scroll.maxValue) }
-            SelectionContainer(Modifier.verticalScroll(scroll)) {
-                Text(
-                    text.ifEmpty { "No output yet." },
-                    Modifier.padding(16.dp), color = codeText, fontFamily = FontFamily.Monospace, fontSize = 12.sp,
-                )
-            }
-        }
     }
 }
 

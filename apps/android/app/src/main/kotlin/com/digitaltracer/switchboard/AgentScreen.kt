@@ -18,45 +18,24 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.digitaltracer.switchboard.core.agentTarget
 import com.digitaltracer.switchboard.core.displayName
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.delay
 
 /**
- * A Herdr agent Switchboard didn't start: its output, refreshed while on screen. It has no
+ * A Herdr agent Switchboard didn't start: its latest turns, refreshed while on screen. It has no
  * permission hooks, so its dialogs are answered in Herdr.
  */
 @Composable
 fun AgentScreen(model: AppModel, voice: Voice, listen: Listen, machine: String, name: String) {
-    var output by remember { mutableStateOf("") }
-    var error by remember { mutableStateOf<String?>(null) }
-    var showingOutput by remember { mutableStateOf(false) }
+    val convo = rememberConversation(ConversationSource.Agent(machine, name))
     val info = model.agents.firstOrNull { it.machineId == machine && it.name == name }
     val label = info?.displayName ?: name
 
-    LaunchedEffect(machine, name, model.wakes) {
-        while (true) {
-            val hub = model.hub ?: break
-            try {
-                output = hub.agentOutput(machine, name, lines = 300).text
-                error = null
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                error = e.message
-            }
-            delay(3_000)
-        }
-    }
+    LaunchedEffect(machine, name, model.wakes) { convo.follow(model) }
 
     val target = agentTarget(machine, name, label)
     Page(model.backLabel, model::pop, bottomBar = {
@@ -83,17 +62,19 @@ fun AgentScreen(model: AppModel, voice: Voice, listen: Listen, machine: String, 
                 "Started outside Switchboard, so it has no approvals here. Answer its dialogs in Herdr.",
                 style = Type.footnote, color = palette.secondary,
             )
-            error?.let { Text(it, style = Type.footnote, color = palette.red) }
             model.said[AppModel.saidKey(agentTarget(machine, name, label))]?.let { SaidBubble(it) }
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("LATEST", style = Type.footnote, fontWeight = FontWeight.SemiBold, color = palette.secondary)
-                OutputBlock(output, tag = "agentOutput")
-                Row(Modifier.clickable { showingOutput = true }.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text("Show the full output", style = Type.body, color = palette.accent)
+                if (convo.unavailable != null) OutputBlock(convo.terminal, tag = "agentOutput") else ConversationPreview(convo)
+                Row(
+                    Modifier.clickable { model.path.add(Route.Conversation(ConversationSource.Agent(machine, name), label)) }
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("Open the conversation", style = Type.body, color = palette.accent)
                     Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, Modifier.size(18.dp), tint = palette.accent)
                 }
             }
         }
     }
-    if (showingOutput) FullOutput(label, output) { showingOutput = false }
 }
