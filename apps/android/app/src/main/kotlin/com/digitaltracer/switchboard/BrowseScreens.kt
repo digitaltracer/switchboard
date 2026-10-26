@@ -16,14 +16,17 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.Computer
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -33,18 +36,41 @@ import com.digitaltracer.switchboard.api.models.Project
 import com.digitaltracer.switchboard.api.models.Session
 import com.digitaltracer.switchboard.core.displayName
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
 
 /** An iOS grouped list: a large title, then sections of rows in rounded cards. */
 @Composable
-fun GroupedList(model: AppModel, title: String, content: androidx.compose.foundation.lazy.LazyListScope.() -> Unit) {
+@OptIn(ExperimentalMaterial3Api::class)
+fun GroupedList(
+    model: AppModel,
+    title: String,
+    onRefresh: (suspend () -> Unit)? = null,
+    content: androidx.compose.foundation.lazy.LazyListScope.() -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    var refreshing by remember { mutableStateOf(false) }
     Page(model.backLabel, model::pop) {
-        LazyColumn(
+        PullToRefreshBox(
+            refreshing,
+            {
+                onRefresh?.let { refresh ->
+                    scope.launch {
+                        refreshing = true
+                        refresh()
+                        refreshing = false
+                    }
+                }
+            },
             Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 40.dp),
-            verticalArrangement = Arrangement.spacedBy(24.dp),
         ) {
-            item { LargeTitle(title, horizontal = 0) }
-            content()
+            LazyColumn(
+                Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 40.dp),
+                verticalArrangement = Arrangement.spacedBy(24.dp),
+            ) {
+                item { LargeTitle(title, horizontal = 0) }
+                content()
+            }
         }
     }
 }
@@ -61,18 +87,23 @@ fun GroupRow(first: Boolean, onClick: (() -> Unit)? = null, content: @Composable
     }
 }
 
-/** Every session the hub knows, running first, then the agents started in Herdr. */
+/**
+ * Every session the hub knows, running first, then the agents started in Herdr; or just one
+ * machine's.
+ */
 @Composable
-fun AllSessionsScreen(model: AppModel) {
-    LaunchedEffect(Unit) { model.refreshAgents() }
-    val live = model.sessions.filter { it.live }
-    val ended = model.sessions.filter { !it.live }
-    GroupedList(model, "All sessions") {
+fun AllSessionsScreen(model: AppModel, machine: String? = null) {
+    LaunchedEffect(machine) { model.refreshAgents() }
+    val sessions = model.sessions.filter { machine == null || it.machineId == machine }
+    val agents = model.agents.filter { machine == null || it.machineId == machine }
+    val live = sessions.filter { it.live }
+    val ended = sessions.filter { !it.live }
+    GroupedList(model, machine ?: "All sessions", onRefresh = model::refreshAgents) {
         if (live.isNotEmpty()) item { InsetGroup("Running") { live.forEachIndexed { i, s -> SessionRow(model, s, i == 0) } } }
-        if (model.agents.isNotEmpty()) {
+        if (agents.isNotEmpty()) {
             item {
                 InsetGroup("Started in Herdr") {
-                    model.agents.forEachIndexed { i, a ->
+                    agents.forEachIndexed { i, a ->
                         GroupRow(i == 0, { model.path.add(Route.AgentPage(a.machineId, a.name)) }) {
                             Text(a.displayName, style = Type.headline, color = palette.label)
                             val status = SessionStatus.agent(a.agentStatus)
@@ -86,7 +117,7 @@ fun AllSessionsScreen(model: AppModel) {
             }
         }
         if (ended.isNotEmpty()) item { InsetGroup("Ended") { ended.forEachIndexed { i, s -> SessionRow(model, s, i == 0) } } }
-        if (model.sessions.isEmpty() && model.agents.isEmpty()) item { Text("No sessions yet.", style = Type.body, color = palette.secondary) }
+        if (sessions.isEmpty() && agents.isEmpty()) item { Text("No sessions yet.", style = Type.body, color = palette.secondary) }
     }
 }
 
@@ -109,7 +140,7 @@ private fun SessionRow(model: AppModel, s: Session, first: Boolean) {
 fun MachinesScreen(model: AppModel) {
     var machines by remember { mutableStateOf<List<Machine>>(emptyList()) }
     var error by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(Unit) {
+    suspend fun load() {
         try {
             machines = model.hub?.machines().orEmpty()
             error = null
@@ -120,13 +151,14 @@ fun MachinesScreen(model: AppModel) {
         }
         model.refreshAgents()
     }
-    GroupedList(model, "Machines") {
+    LaunchedEffect(Unit) { load() }
+    GroupedList(model, "Machines", onRefresh = ::load) {
         error?.let { item { Text(it, style = Type.body, color = palette.red) } }
         if (machines.isNotEmpty()) {
             item {
                 Column(Modifier.fillMaxWidth().card(12.dp, palette.card)) {
                     machines.forEachIndexed { i, m ->
-                        GroupRow(i == 0) {
+                        GroupRow(i == 0, { model.path.add(Route.MachinePage(m.id)) }) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Icon(Icons.Outlined.Computer, null, Modifier.size(22.dp), tint = palette.accent)
                                 Spacer(Modifier.width(12.dp))
@@ -163,7 +195,7 @@ private fun counts(model: AppModel, machine: String): String {
 fun ProjectsScreen(model: AppModel) {
     var projects by remember { mutableStateOf<List<Project>>(emptyList()) }
     var error by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(Unit) {
+    suspend fun load() {
         try {
             projects = model.hub?.projects().orEmpty()
             error = null
@@ -173,7 +205,8 @@ fun ProjectsScreen(model: AppModel) {
             error = e.message
         }
     }
-    GroupedList(model, "Projects") {
+    LaunchedEffect(Unit) { load() }
+    GroupedList(model, "Projects", onRefresh = ::load) {
         error?.let { item { Text(it, style = Type.body, color = palette.red) } }
         if (projects.isNotEmpty()) {
             item {

@@ -38,6 +38,7 @@ sealed interface Route {
     data class SessionPage(val id: String) : Route
     data class AgentPage(val machine: String, val name: String) : Route
     data object AllSessions : Route
+    data class MachinePage(val machine: String) : Route
     data object Machines : Route
     data object Projects : Route
     data object Settings : Route
@@ -134,6 +135,7 @@ class AppModel(context: Context, val keys: DeviceKeys) {
             is Route.SessionPage -> sessions.firstOrNull { it.id == under.id }?.label ?: "Back"
             is Route.AgentPage -> under.name
             Route.AllSessions -> "All sessions"
+            is Route.MachinePage -> under.machine
             Route.Machines -> "Machines"
             Route.Projects -> "Projects"
             Route.Settings -> "Settings"

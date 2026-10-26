@@ -74,6 +74,7 @@ fun PairedRoot(model: AppModel, voice: Voice) {
             is Route.SessionPage -> SessionScreen(model, voice, listen, route.id)
             is Route.AgentPage -> AgentScreen(model, voice, listen, route.machine, route.name)
             Route.AllSessions -> AllSessionsScreen(model)
+            is Route.MachinePage -> AllSessionsScreen(model, route.machine)
             Route.Machines -> MachinesScreen(model)
             Route.Projects -> ProjectsScreen(model)
             Route.Settings -> SettingsScreen(model)
