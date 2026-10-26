@@ -372,3 +372,13 @@ The user found the terminal tail unreadable on a phone. Claude draws for a termi
   - WhatsApp's `read`, which the user asks for, still reads history.
 - **Loading and empty states.** While the conversation loads, pulsing placeholder shapes; a status line only once it's loaded. The terminal says it's loading until the first read, and "The screen is blank" only after one. Errors show a line and keep retrying.
 - **The terminal, zoomable.** The screen is drawn like a photo of it: fitted to the phone's width at first, pinched to zoom up to 1.5×, double-tapped between fitted and full size. Text is laid out at full size, so it stays sharp. It uses a `UIScrollView` on iOS and a Compose canvas on Android.
+
+## As built (2026-10-26): sessions, then their agents
+
+The apps listed every agent as its own "session", and kept the agents Switchboard started apart from the ones started in Herdr. Now there is one tree, on iOS and Android alike: **Sessions → a Herdr session → its agents → an agent.**
+
+- **A session is a Herdr session.** Its agents are listed together whoever started them. A task started from the phone is an agent in the Herdr session made for it. Its row opens the task page, which has its approvals, branch and worktree; any other agent opens the agent page. The list always shows, even with one agent.
+- **Ended agents at the bottom.** Each session page lists running agents first, then those that ended today, on a slightly different background. A session with no agent left sinks to the bottom of the sessions list the same way.
+- **The hub remembers agents it saw.** Herdr forgets an agent once it exits, so the hub lists every machine's agents every 15 s, and whenever the app asks, into `seen_agents` (migration 7). An agent missing from a full listing has ended; a new agent in the same pane is a new record. Ended records are kept for a week. `GET /app/v1/agents` gains `ended`, the last day's, additive and optional for older hubs. Titles are stored masked, like every runner reply.
+- **Home.** "Running" tiles became "Busy now": any agent working or waiting for you, in any session. "Finished today" and "Started in Herdr" became one "Sessions" list. Machines → a machine shows that machine's sessions.
+- **Known gaps.** An agent that ended outside Switchboard has no page yet; its conversation is still in its log, so one could follow. If one Herdr session can't be listed, its agents are marked ended and come back as new records when they're seen again.
