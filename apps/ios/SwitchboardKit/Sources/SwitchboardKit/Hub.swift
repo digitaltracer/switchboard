@@ -265,8 +265,12 @@ public final class Hub: Sendable {
         }
     }
 
-    public func output(_ id: String, lines: Int = 80) async throws -> Schemas.Output {
-        try await Self.unwrap { try await client.getOutput(path: .init(id: id), query: .init(lines: Int32(lines))).ok.body.json }
+    /// The agent's terminal: the last `lines`, or with `visible` only the screen as it is now.
+    /// Only a visible read leaves the agent's terminal still on its machine.
+    public func output(_ id: String, lines: Int = 80, visible: Bool = false) async throws -> Schemas.Output {
+        try await Self.unwrap {
+            try await client.getOutput(path: .init(id: id), query: .init(lines: Int32(lines), visible: visible)).ok.body.json
+        }
     }
 
     /// A page of the session's conversation from its agent's own log: the latest, the part after
@@ -350,9 +354,9 @@ public final class Hub: Sendable {
         try await Self.unwrap { try await client.listAgents().ok.body.json.agents }
     }
 
-    public func agentOutput(machine: String, agent: String, lines: Int = 80) async throws -> Schemas.Output {
+    public func agentOutput(machine: String, agent: String, lines: Int = 80, visible: Bool = false) async throws -> Schemas.Output {
         try await Self.unwrap {
-            try await client.getAgentOutput(query: .init(machineId: machine, agent: agent, lines: Int32(lines))).ok.body.json
+            try await client.getAgentOutput(query: .init(machineId: machine, agent: agent, lines: Int32(lines), visible: visible)).ok.body.json
         }
     }
 

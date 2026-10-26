@@ -230,11 +230,13 @@ struct HomeView: View {
         }
     }
 
+    /// Each tile's line comes from the conversation; reading the terminal would scroll it on the Mac.
     private func loadLastLines() async {
         guard let hub = model.hub else { return }
         for s in running.prefix(8) where s.lifecycle == "running" {
-            guard let text = try? await hub.output(s.id, lines: 6).text else { continue }
-            lastLines[s.id] = text.split(separator: "\n").last { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.map(String.init)
+            guard let page = try? await hub.transcript(s.id) else { continue }
+            let last = page.items.last { $0.kind != "user" && $0.text != nil }?.text
+            lastLines[s.id] = last?.split(separator: "\n").first { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.map(String.init)
         }
     }
 }
