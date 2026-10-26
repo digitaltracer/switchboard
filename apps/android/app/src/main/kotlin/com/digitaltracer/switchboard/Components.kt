@@ -21,6 +21,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.outlined.HelpOutline
 import androidx.compose.material.icons.filled.Fingerprint
+import androidx.compose.material.icons.outlined.Bedtime
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.HourglassEmpty
@@ -99,6 +100,8 @@ data class SessionStatus(val text: String, val kind: Kind, val symbol: ImageVect
             "done" -> SessionStatus("Done", Kind.Done, Icons.Outlined.CheckCircle)
             else -> SessionStatus(status.capitalized(), Kind.Quiet, Icons.Outlined.RadioButtonUnchecked)
         }
+
+        val ended = SessionStatus("Ended", Kind.Quiet, Icons.Outlined.Bedtime)
     }
 }
 
@@ -146,11 +149,11 @@ fun InsetGroup(title: String, content: @Composable () -> Unit) {
 @Composable
 fun ListRow(
     symbol: ImageVector?, tint: Color, title: String, subtitle: String?, trailing: String, first: Boolean,
-    tag: String? = null, onClick: () -> Unit,
+    tag: String? = null, background: Color = Color.Transparent, onClick: () -> Unit,
 ) {
     Row(
-        Modifier.fillMaxWidth().heightIn(min = 44.dp).clickable(onClick = onClick).then(if (tag != null) Modifier.testTag(tag) else Modifier)
-            .padding(start = 16.dp),
+        Modifier.fillMaxWidth().background(background).heightIn(min = 44.dp).clickable(onClick = onClick)
+            .then(if (tag != null) Modifier.testTag(tag) else Modifier).padding(start = 16.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (symbol != null) {

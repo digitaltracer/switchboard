@@ -59,7 +59,7 @@ fun AgentScreen(model: AppModel, voice: Voice, listen: Listen, machine: String, 
                 }
             }
             Text(
-                "Started outside Switchboard, so it has no approvals here. Answer its dialogs in Herdr.",
+                "This agent asks for approval in Herdr, on its machine, not here.",
                 style = Type.footnote, color = palette.secondary,
             )
             model.said[AppModel.saidKey(agentTarget(machine, name, label))]?.let { SaidBubble(it) }

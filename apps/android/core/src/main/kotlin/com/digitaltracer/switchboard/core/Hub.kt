@@ -14,6 +14,7 @@ import com.digitaltracer.switchboard.api.infrastructure.Serializer
 import com.digitaltracer.switchboard.api.infrastructure.ServerError
 import com.digitaltracer.switchboard.api.infrastructure.ServerException
 import com.digitaltracer.switchboard.api.models.AgentView
+import com.digitaltracer.switchboard.api.models.Agents
 import com.digitaltracer.switchboard.api.models.ApiError
 import com.digitaltracer.switchboard.api.models.Changes
 import com.digitaltracer.switchboard.api.models.DecisionKind
@@ -334,7 +335,8 @@ class Hub private constructor(
         authed { messages.previewMessage(MessagePreviewRequest(text, current?.ref)) }
 
     /** Named Herdr agents Switchboard didn't start. */
-    suspend fun agents(): List<AgentView> = authed { agentsApi.listAgents().agents }
+    /** Running agents Switchboard didn't start, and those that ended in the last day. */
+    suspend fun agents(): Agents = authed { agentsApi.listAgents() }
 
     suspend fun agentOutput(machine: String, agent: String, lines: Int = 80, visible: Boolean = false): Output =
         authed { agentsApi.getAgentOutput(machine, agent, lines, visible) }

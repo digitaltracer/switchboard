@@ -1,5 +1,6 @@
 package com.digitaltracer.switchboard
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -30,11 +31,11 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.digitaltracer.switchboard.api.models.Machine
 import com.digitaltracer.switchboard.api.models.Project
-import com.digitaltracer.switchboard.api.models.Session
-import com.digitaltracer.switchboard.core.displayName
+import com.digitaltracer.switchboard.core.agentStatus
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
@@ -77,8 +78,8 @@ fun GroupedList(
 
 /** A row in a grouped list, with a separator above all but the first. */
 @Composable
-fun GroupRow(first: Boolean, onClick: (() -> Unit)? = null, content: @Composable () -> Unit) {
-    Column(Modifier.fillMaxWidth().then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier).padding(start = 16.dp)) {
+fun GroupRow(first: Boolean, onClick: (() -> Unit)? = null, background: Color = Color.Transparent, content: @Composable () -> Unit) {
+    Column(Modifier.fillMaxWidth().background(background).then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier).padding(start = 16.dp)) {
         if (!first) HorizontalDivider(thickness = 0.5.dp, color = palette.separator)
         Row(Modifier.heightIn(min = 44.dp).padding(top = 10.dp, bottom = 10.dp, end = 16.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) { content() }
@@ -87,51 +88,20 @@ fun GroupRow(first: Boolean, onClick: (() -> Unit)? = null, content: @Composable
     }
 }
 
-/**
- * Every session the hub knows, running first, then the agents started in Herdr; or just one
- * machine's.
- */
+/** Every Herdr session with its agents, running first and ended at the bottom; or just one machine's. */
 @Composable
 fun AllSessionsScreen(model: AppModel, machine: String? = null) {
     LaunchedEffect(machine) { model.refreshAgents() }
-    val sessions = model.sessions.filter { machine == null || it.machineId == machine }
-    val agents = model.agents.filter { machine == null || it.machineId == machine }
-    val live = sessions.filter { it.live }
-    val ended = sessions.filter { !it.live }
+    val groups = model.herdrSessions(machine, since = null)
     GroupedList(model, machine ?: "All sessions", onRefresh = model::refreshAgents) {
-        if (live.isNotEmpty()) item { InsetGroup("Running") { live.forEachIndexed { i, s -> SessionRow(model, s, i == 0) } } }
-        if (agents.isNotEmpty()) {
+        if (groups.isNotEmpty()) {
             item {
-                InsetGroup("Started in Herdr") {
-                    agents.forEachIndexed { i, a ->
-                        GroupRow(i == 0, { model.path.add(Route.AgentPage(a.machineId, a.name)) }) {
-                            Text(a.displayName, style = Type.headline, color = palette.label)
-                            val status = SessionStatus.agent(a.agentStatus)
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                Text(status.text, style = Type.subheadline, color = status.color)
-                                Text("· ${a.herdrSession ?: a.machineId}", style = Type.subheadline, color = palette.secondary)
-                            }
-                        }
-                    }
+                Column(Modifier.fillMaxWidth().card(12.dp, palette.card)) {
+                    groups.forEachIndexed { i, g -> SessionRow(model, g, machine == null, i == 0) }
                 }
             }
-        }
-        if (ended.isNotEmpty()) item { InsetGroup("Ended") { ended.forEachIndexed { i, s -> SessionRow(model, s, i == 0) } } }
-        if (sessions.isEmpty() && agents.isEmpty()) item { Text("No sessions yet.", style = Type.body, color = palette.secondary) }
-    }
-}
-
-@Composable
-private fun SessionRow(model: AppModel, s: Session, first: Boolean) {
-    GroupRow(first, { model.path.add(Route.SessionPage(s.id)) }) {
-        Row {
-            Text(s.label, Modifier.weight(1f), style = Type.headline, color = palette.label, maxLines = 1)
-            Text(Ago.short(s.updatedAt), style = Type.subheadline, color = palette.secondary)
-        }
-        val status = SessionStatus.of(s)
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(status.text, style = Type.subheadline, color = status.color)
-            Text("· ${s.projectId} · ${s.machineId}", style = Type.subheadline, color = palette.secondary, maxLines = 1)
+        } else {
+            item { Text("No sessions yet.", style = Type.body, color = palette.secondary) }
         }
     }
 }
@@ -179,15 +149,15 @@ fun MachinesScreen(model: AppModel) {
     }
 }
 
-/** "1 session running · 6 agents in Herdr, 5 idle" */
+/** "2 sessions · 5 agents, 1 working" */
 private fun counts(model: AppModel, machine: String): String {
-    val running = model.sessions.count { it.machineId == machine && it.lifecycle == "running" }
-    val agents = model.agents.filter { it.machineId == machine }
-    var text = "$running ${if (running == 1) "session" else "sessions"} running"
+    val live = model.herdrSessions(machine, since = null).filter { !it.isEnded }
+    val agents = live.flatMap { it.live }
+    var text = "${live.size} ${if (live.size == 1) "session" else "sessions"}"
     if (agents.isEmpty()) return text
-    text += " · ${agents.size} ${if (agents.size == 1) "agent" else "agents"} in Herdr"
-    val idle = agents.count { it.agentStatus == "idle" || it.agentStatus == "done" }
-    if (idle == agents.size) text += if (agents.size == 1) ", idle" else ", all idle" else if (idle > 0) text += ", $idle idle"
+    text += " · ${agents.size} ${if (agents.size == 1) "agent" else "agents"}"
+    val working = agents.count { it.agentStatus == "working" }
+    text += if (working > 0) ", $working working" else if (agents.size == 1) ", idle" else ", all idle"
     return text
 }
 

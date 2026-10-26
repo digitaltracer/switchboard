@@ -8,10 +8,12 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.digitaltracer.switchboard.api.models.AgentView
+import com.digitaltracer.switchboard.api.models.EndedAgent
 import com.digitaltracer.switchboard.api.models.Meta
 import com.digitaltracer.switchboard.api.models.Project
 import com.digitaltracer.switchboard.api.models.Session
 import com.digitaltracer.switchboard.api.models.TargetView
+import com.digitaltracer.switchboard.core.HerdrSession
 import com.digitaltracer.switchboard.core.DeviceKeys
 import com.digitaltracer.switchboard.core.Hub
 import com.digitaltracer.switchboard.core.HubError
@@ -37,6 +39,7 @@ import kotlinx.serialization.json.Json
 sealed interface Route {
     data class SessionPage(val id: String) : Route
     data class AgentPage(val machine: String, val name: String) : Route
+    data class HerdrSessionPage(val key: HerdrSession.Key) : Route
     data object AllSessions : Route
     data class MachinePage(val machine: String) : Route
     data object Machines : Route
@@ -82,8 +85,11 @@ class AppModel(context: Context, val keys: DeviceKeys) {
     var meta by mutableStateOf<Meta?>(null)
         private set
 
-    /** Named Herdr agents Switchboard didn't start, refreshed while the list is on screen. */
+    /** Herdr agents Switchboard didn't start, refreshed while a list is on screen. */
     var agents by mutableStateOf<List<AgentView>>(emptyList())
+        private set
+    /** Those that ended in the last day. */
+    var ended by mutableStateOf<List<EndedAgent>>(emptyList())
         private set
     var projects by mutableStateOf<List<Project>>(emptyList())
         private set
@@ -135,6 +141,7 @@ class AppModel(context: Context, val keys: DeviceKeys) {
             null -> "Agents"
             is Route.SessionPage -> sessions.firstOrNull { it.id == under.id }?.label ?: "Back"
             is Route.AgentPage -> under.name
+            is Route.HerdrSessionPage -> under.key.name
             Route.AllSessions -> "All sessions"
             is Route.MachinePage -> under.machine
             Route.Machines -> "Machines"
@@ -224,6 +231,7 @@ class AppModel(context: Context, val keys: DeviceKeys) {
         hub = null
         sessions = emptyList()
         agents = emptyList()
+        ended = emptyList()
         projects = emptyList()
         meta = null
         connected = false
@@ -267,8 +275,15 @@ class AppModel(context: Context, val keys: DeviceKeys) {
 
     suspend fun refreshAgents() {
         val hub = hub ?: return
-        runCatching { hub.agents() }.onSuccess { agents = it }
+        runCatching { hub.agents() }.onSuccess {
+            agents = it.agents
+            ended = it.ended.orEmpty()
+        }
     }
+
+    /** Every Herdr session with its agents, whoever started them. Ended agents count from [since], or all that are known when null. */
+    fun herdrSessions(machine: String? = null, since: Long?): List<HerdrSession> =
+        HerdrSession.group(sessions, agents, ended, machine, since)
 
     // The session list, long-polled: the hub answers when something newer than our revision exists.
 

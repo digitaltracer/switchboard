@@ -33,6 +33,8 @@ data class Palette(
     val working: Color,
     val done: Color,
     val bar: Color,
+    /** Behind ended sessions and agents, which sit at the bottom of their lists. */
+    val endedRow: Color,
 )
 
 private val light = Palette(
@@ -50,6 +52,7 @@ private val light = Palette(
     working = Color(0xFF0059B0),
     done = Color(0xFF1F7D33),
     bar = Color(0xF2F9F9F9),
+    endedRow = Color(0xFFF2F2F7),
 )
 
 private val dark = Palette(
@@ -66,6 +69,7 @@ private val dark = Palette(
     working = Color(0xFF0A84FF),
     done = Color(0xFF30D158),
     bar = Color(0xF21D1D1D),
+    endedRow = Color(0xFF2C2C2E),
 )
 
 val LocalPalette = staticCompositionLocalOf { light }
