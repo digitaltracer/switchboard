@@ -285,19 +285,6 @@ private fun describe(r: DecisionResponse): String = when {
     else -> "Denied."
 }
 
-/** The last lines of an agent's terminal: its own words, untrusted. */
-@Composable
-fun OutputBlock(text: String, lines: Int = 14, tag: String = "output") {
-    val tail = text.split("\n").map { if (it.isBlank()) "" else it }.dropLastWhile { it.isEmpty() }.takeLast(lines).joinToString("\n")
-    SelectionContainer {
-        Text(
-            tail.ifEmpty { "No output yet." },
-            Modifier.fillMaxWidth().card(16.dp, codeBackground).padding(14.dp).testTag(tag),
-            color = codeText, fontFamily = FontFamily.Monospace, fontSize = 12.5.sp, lineHeight = 16.sp,
-        )
-    }
-}
-
 /** What this phone last said there, kept on the phone. */
 @Composable
 fun SaidBubble(said: AppModel.Said) {

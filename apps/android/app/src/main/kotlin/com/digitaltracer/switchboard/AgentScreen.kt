@@ -65,13 +65,18 @@ fun AgentScreen(model: AppModel, voice: Voice, listen: Listen, machine: String, 
             model.said[AppModel.saidKey(agentTarget(machine, name, label))]?.let { SaidBubble(it) }
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("LATEST", style = Type.footnote, fontWeight = FontWeight.SemiBold, color = palette.secondary)
-                if (convo.unavailable != null) OutputBlock(convo.terminal, tag = "agentOutput") else ConversationPreview(convo)
+                val why = convo.unavailable
+                    if (why != null) {
+                        Text("No conversation to show ($why).", style = Type.footnote, color = palette.secondary)
+                    } else {
+                        ConversationPreview(convo)
+                    }
                 Row(
                     Modifier.clickable { model.path.add(Route.Conversation(ConversationSource.Agent(machine, name), label)) }
                         .padding(vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text("Open the conversation", style = Type.body, color = palette.accent)
+                    Text(if (convo.unavailable == null) "Open the conversation" else "See the agent's screen", style = Type.body, color = palette.accent)
                     Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, Modifier.size(18.dp), tint = palette.accent)
                 }
             }
