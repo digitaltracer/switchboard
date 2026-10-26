@@ -553,6 +553,15 @@
               "format": "int32",
               "minimum": 0
             }
+          },
+          {
+            "name": "visible",
+            "in": "query",
+            "description": "Only the screen as it is now. Reading further back makes Herdr scroll an idle agent's\nterminal on its machine, so a view that refreshes should ask for this.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
@@ -1363,6 +1372,15 @@
               "type": "integer",
               "format": "int32",
               "minimum": 0
+            }
+          },
+          {
+            "name": "visible",
+            "in": "query",
+            "description": "Only the screen as it is now. Reading further back makes Herdr scroll an idle agent's\nterminal on its machine, so a view that refreshes should ask for this.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
             }
           }
         ],

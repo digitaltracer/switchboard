@@ -393,6 +393,10 @@ impl From<Operation> for OperationStatus {
 pub struct OutputQuery {
     /// Lines of output; defaults to 80, capped at 500.
     pub lines: Option<u32>,
+    /// Only the screen as it is now. Reading further back makes Herdr scroll an idle agent's
+    /// terminal on its machine, so a view that refreshes should ask for this.
+    #[serde(default)]
+    pub visible: bool,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -703,6 +707,10 @@ pub struct AgentOutputQuery {
     pub agent: String,
     /// Lines of output; defaults to 80, capped at 500.
     pub lines: Option<u32>,
+    /// Only the screen as it is now. Reading further back makes Herdr scroll an idle agent's
+    /// terminal on its machine, so a view that refreshes should ask for this.
+    #[serde(default)]
+    pub visible: bool,
 }
 
 #[derive(Debug, Default, Deserialize, ToSchema)]

@@ -131,11 +131,12 @@ class ConversationModel(val source: ConversationSource) {
         }
     }
 
+    /** Only the screen: reading further back would scroll the agent's terminal on the Mac. */
     private suspend fun loadTerminal(hub: Hub) {
         runCatching {
             when (val s = source) {
-                is ConversationSource.Session -> hub.output(s.id, lines = 500).text
-                is ConversationSource.Agent -> hub.agentOutput(s.machine, s.name, lines = 500).text
+                is ConversationSource.Session -> hub.output(s.id, visible = true).text
+                is ConversationSource.Agent -> hub.agentOutput(s.machine, s.name, visible = true).text
             }
         }.onSuccess { terminal = it }
     }

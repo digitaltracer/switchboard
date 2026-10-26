@@ -70,10 +70,11 @@ final class ConversationModel {
         }
     }
 
+    /// Only the screen: reading further back would scroll the agent's terminal on the Mac.
     private func loadTerminal(_ hub: Hub) async {
         let text: String? = switch source {
-        case .session(let id): try? await hub.output(id, lines: 500).text
-        case .agent(let machine, let name): try? await hub.agentOutput(machine: machine, agent: name, lines: 500).text
+        case .session(let id): try? await hub.output(id, visible: true).text
+        case .agent(let machine, let name): try? await hub.agentOutput(machine: machine, agent: name, visible: true).text
         }
         if let text { terminal = text }
     }

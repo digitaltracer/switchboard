@@ -1276,3 +1276,42 @@ async fn a_conversation_comes_from_the_runner_a_page_at_a_time_masked() {
     let got = call.await.unwrap();
     assert_eq!(got.status, StatusCode::BAD_REQUEST, "{}", got.body);
 }
+
+#[tokio::test]
+async fn a_visible_read_takes_only_the_screen_so_nothing_scrolls() {
+    let mut r = rig().await;
+    let (_, token) = r.pair(&Phone::new()).await;
+    let sid = r.start(&token, "v1").await;
+    let call = r.call_later(
+        "GET",
+        &format!("/sessions/{sid}/output?visible=true"),
+        &token,
+        Value::Null,
+    );
+    let req = r.req().await;
+    assert_eq!(
+        req.op,
+        Op::ReadAgent {
+            agent: crate::runner::sessions::agent_name(&sid),
+            lines: 0,
+            visible: true
+        }
+    );
+    r.ok(req.id, json!({"text": "the screen"})).await;
+    assert_eq!(call.await.unwrap().body["text"], "the screen");
+
+    let call = r.call_later(
+        "GET",
+        "/agents/output?machine_id=mac&agent=mono1/claude&visible=true",
+        &token,
+        Value::Null,
+    );
+    let req = r.req().await;
+    assert!(
+        matches!(req.op, Op::ReadAgent { visible: true, .. }),
+        "{:?}",
+        req.op
+    );
+    r.ok(req.id, json!({"text": "its screen"})).await;
+    assert_eq!(call.await.unwrap().body["text"], "its screen");
+}

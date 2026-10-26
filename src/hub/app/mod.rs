@@ -425,10 +425,13 @@ pub async fn get_output(
     Path(id): Path<String>,
     Query(q): Query<OutputQuery>,
 ) -> ApiResult<Output> {
-    let r = st
-        .svc
-        .read(&id, q.lines.unwrap_or(DEFAULT_OUTPUT_LINES))
-        .await?;
+    let r = if q.visible {
+        st.svc.read_screen(&id).await?
+    } else {
+        st.svc
+            .read(&id, q.lines.unwrap_or(DEFAULT_OUTPUT_LINES))
+            .await?
+    };
     Ok(Json(Output {
         text: r.text,
         truncated: r.truncated,
@@ -813,7 +816,7 @@ pub async fn get_agent_output(
             &q.machine_id,
             &q.agent,
             q.lines.unwrap_or(DEFAULT_OUTPUT_LINES),
-            false,
+            q.visible,
         )
         .await?;
     Ok(Json(Output {
