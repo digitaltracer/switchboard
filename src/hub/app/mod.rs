@@ -53,6 +53,7 @@ pub fn routes(state: AppState) -> Router {
         .route("/sessions/{id}", get(get_session))
         .route("/sessions/{id}/output", get(get_output))
         .route("/sessions/{id}/changes", get(get_changes))
+        .route("/sessions/{id}/transcript", get(get_transcript))
         .route("/sessions/{id}/prompt", post(prompt_session))
         .route("/sessions/{id}/stop", post(stop_session))
         .route("/sessions/{id}/delete", post(delete_session))
@@ -68,6 +69,7 @@ pub fn routes(state: AppState) -> Router {
         .route("/messages/preview", post(preview_message))
         .route("/agents", get(list_agents))
         .route("/agents/output", get(get_agent_output))
+        .route("/agents/transcript", get(get_agent_transcript))
         .route("/meta", get(get_meta));
     Router::new().nest(PREFIX, api).with_state(state)
 }
@@ -446,6 +448,22 @@ pub async fn get_changes(
     Ok(Json(st.svc.changes(&id).await?.into()))
 }
 
+#[utoipa::path(get, path = "/app/v1/sessions/{id}/transcript", tag = "sessions",
+    security(("device_token" = [])), params(("id" = String, Path), TranscriptQuery),
+    responses((status = 200, description = "OK", body = Transcript), (status = 400, description = "Not a Claude agent", body = ApiError),
+              (status = 404, description = "Not found", body = ApiError), (status = 503, description = "Machine offline", body = ApiError)))]
+/// The session's conversation from its agent's own log, a page at a time. Read-only.
+pub async fn get_transcript(
+    State(st): State<AppState>,
+    _d: DeviceAuth,
+    Path(id): Path<String>,
+    Query(q): Query<TranscriptQuery>,
+) -> ApiResult<Transcript> {
+    Ok(Json(
+        st.svc.transcript(&id, q.after, q.before).await?.into(),
+    ))
+}
+
 #[utoipa::path(post, path = "/app/v1/sessions/{id}/prompt", tag = "sessions",
     security(("device_token" = [])), params(("id" = String, Path)), request_body = PromptRequest,
     responses((status = 200, description = "OK", body = PromptResponse), (status = 409, description = "Conflict", body = ApiError)))]
@@ -761,6 +779,23 @@ pub async fn list_agents(State(st): State<AppState>, _d: DeviceAuth) -> ApiResul
         })
         .collect();
     Ok(Json(Agents { agents }))
+}
+
+#[utoipa::path(get, path = "/app/v1/agents/transcript", tag = "agents",
+    security(("device_token" = [])), params(AgentTranscriptQuery),
+    responses((status = 200, description = "OK", body = Transcript), (status = 400, description = "Not a Claude agent", body = ApiError),
+              (status = 404, description = "Not found", body = ApiError), (status = 503, description = "Machine offline", body = ApiError)))]
+/// The conversation of an agent Switchboard didn't start, from its own log. Read-only.
+pub async fn get_agent_transcript(
+    State(st): State<AppState>,
+    _d: DeviceAuth,
+    Query(q): Query<AgentTranscriptQuery>,
+) -> ApiResult<Transcript> {
+    let page = st
+        .svc
+        .agent_transcript(&q.machine_id, &q.agent, q.after, q.before)
+        .await?;
+    Ok(Json(page.into()))
 }
 
 #[utoipa::path(get, path = "/app/v1/agents/output", tag = "agents",

@@ -11,6 +11,7 @@ use crate::hub::service::{
     ApprovalView, ChangesResult, DecideResult, DeleteResult, MachineView, ProjectView,
     PromptResult, SessionList, SessionView, StartResult, StopResult,
 };
+use crate::proto::TranscriptPage;
 use crate::store::{DeviceRecord, Operation};
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -413,6 +414,90 @@ pub struct ChangedFile {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(nullable = false)]
     pub deleted: Option<u64>,
+}
+
+/// Part of an agent's conversation, read from its own log; Claude agents only. Untrusted text,
+/// masked.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct Transcript {
+    /// Oldest first. An item whose id was seen before replaces it: a tool call comes again
+    /// with its result.
+    pub items: Vec<TranscriptItem>,
+    /// Pass as `before` for the page before this one; 0 means it's the first.
+    pub start: u64,
+    /// Pass as `after` for what comes next. A page asked for with `after` that doesn't start
+    /// there skipped some: replace what's shown instead of appending.
+    pub end: u64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TranscriptItem {
+    pub id: String,
+    /// `user`, `assistant`, `tool` or `note`.
+    pub kind: String,
+    /// What was said, in Markdown; for a tool, a one-line summary. Absent on a tool result
+    /// whose call is on an earlier page.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// The tool's name, e.g. `Bash` or `mcp__server__tool`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
+    /// The tool's input as JSON, shortened.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input: Option<String>,
+    /// The tool's result, shortened.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+    /// The tool's result has arrived.
+    pub done: bool,
+    pub failed: bool,
+    /// When it was written, RFC 3339.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub at: Option<String>,
+}
+
+impl From<TranscriptPage> for Transcript {
+    fn from(p: TranscriptPage) -> Self {
+        Self {
+            items: p
+                .items
+                .into_iter()
+                .map(|i| TranscriptItem {
+                    id: i.id,
+                    kind: i.kind,
+                    text: i.text,
+                    tool: i.tool,
+                    input: i.input,
+                    output: i.output,
+                    done: i.done,
+                    failed: i.failed,
+                    at: i.at,
+                })
+                .collect(),
+            start: p.start,
+            end: p.end,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct TranscriptQuery {
+    /// Continue from an earlier page's `end`.
+    pub after: Option<u64>,
+    /// Go back from an earlier page's `start`.
+    pub before: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct AgentTranscriptQuery {
+    pub machine_id: String,
+    pub agent: String,
+    /// Continue from an earlier page's `end`.
+    pub after: Option<u64>,
+    /// Go back from an earlier page's `start`.
+    pub before: Option<u64>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]

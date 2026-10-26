@@ -10,7 +10,9 @@ use crate::auth::device::{approval_message, token_message};
 use crate::config::HubConfig;
 use crate::hub::service::Clock;
 use crate::proto::auth::hash_token;
-use crate::proto::{Event, Frame, Hello, Op, Outcome, PROTOCOL_VERSION, Resp};
+use crate::proto::{
+    ErrorCode, Event, Frame, Hello, Op, Outcome, PROTOCOL_VERSION, ProtoError, Resp,
+};
 use crate::store::Store;
 
 const SPEC: &str = "api/openapi.json";
@@ -259,6 +261,19 @@ impl Rig {
                 Frame::Resp(Resp {
                     id,
                     outcome: Outcome::Ok(v),
+                }),
+            )
+            .await;
+    }
+
+    async fn err(&self, id: u64, code: ErrorCode, message: &str) {
+        self.svc
+            .runner_frame(
+                "mac",
+                self.generation,
+                Frame::Resp(Resp {
+                    id,
+                    outcome: Outcome::Err(ProtoError::new(code, message)),
                 }),
             )
             .await;
@@ -1193,4 +1208,71 @@ async fn changes_come_from_the_runner_with_paths_masked() {
         "{}",
         got.body
     );
+}
+
+#[tokio::test]
+async fn a_conversation_comes_from_the_runner_a_page_at_a_time_masked() {
+    const SECRET: &str = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+    let mut r = rig().await;
+    let (_, token) = r.pair(&Phone::new()).await;
+    let sid = r.start(&token, "t1").await;
+    let call = r.call_later(
+        "GET",
+        &format!("/sessions/{sid}/transcript?before=4096"),
+        &token,
+        Value::Null,
+    );
+    let req = r.req().await;
+    assert_eq!(
+        req.op,
+        Op::Transcript {
+            agent: crate::runner::sessions::agent_name(&sid),
+            after: None,
+            before: Some(4096)
+        },
+        "the session's own agent"
+    );
+    r.ok(
+        req.id,
+        json!({"items": [
+            {"id": "u1:0", "kind": "user", "text": "fix the flaky test", "done": false, "failed": false},
+            {"id": "t1", "kind": "tool", "text": format!("Ran export GITHUB_TOKEN={SECRET}"), "tool": "Bash",
+             "input": "{}", "output": "ok", "done": true, "failed": false, "at": "2026-10-26T09:00:00Z"}
+        ], "start": 1024, "end": 4096}),
+    )
+    .await;
+    let got = call.await.unwrap();
+    assert_eq!(got.status, StatusCode::OK, "{}", got.body);
+    assert_eq!(
+        (got.body["start"].as_u64(), got.body["end"].as_u64()),
+        (Some(1024), Some(4096))
+    );
+    assert_eq!(got.body["items"][0]["text"], "fix the flaky test");
+    assert!(got.body["items"][0].get("tool").is_none());
+    assert_eq!(got.body["items"][1]["done"], true);
+    assert!(!got.body.to_string().contains(SECRET), "{}", got.body);
+
+    let call = r.call_later(
+        "GET",
+        "/agents/transcript?machine_id=mac&agent=mono1/w1:p2&after=10",
+        &token,
+        Value::Null,
+    );
+    let req = r.req().await;
+    assert_eq!(
+        req.op,
+        Op::Transcript {
+            agent: "mono1/w1:p2".into(),
+            after: Some(10),
+            before: None
+        }
+    );
+    r.err(
+        req.id,
+        ErrorCode::BadRequest,
+        "only Claude agents have a conversation to read",
+    )
+    .await;
+    let got = call.await.unwrap();
+    assert_eq!(got.status, StatusCode::BAD_REQUEST, "{}", got.body);
 }

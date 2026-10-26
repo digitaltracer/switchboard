@@ -19,6 +19,7 @@ use crate::cli::Agent;
 use crate::config::{HubConfig, ProjectConfig};
 use crate::proto::{
     AgentPromptOutcome, AgentSummary, ErrorCode, Event, Frame, Hello, Op, OwnedSession, ProtoError,
+    TranscriptPage,
 };
 use crate::redact::{redact, redact_as, redact_str};
 use crate::runner::random_id;
@@ -1094,6 +1095,55 @@ impl SessionService {
             f.path = redact_str(&f.path);
         }
         Ok(r)
+    }
+
+    /// A page of the session's conversation, from its agent's own log. Untrusted text, masked.
+    pub async fn transcript(
+        &self,
+        session_id: &str,
+        after: Option<u64>,
+        before: Option<u64>,
+    ) -> Result<TranscriptPage, HubError> {
+        let s = self.session(session_id).await?;
+        let agent = s
+            .agent_name
+            .ok_or_else(|| HubError::BadRequest("this session has no agent name".into()))?;
+        self.transcript_of(&s.machine_id, &agent, after, before)
+            .await
+    }
+
+    /// As `transcript`, for an agent Switchboard didn't start.
+    pub async fn agent_transcript(
+        &self,
+        machine: &str,
+        agent: &str,
+        after: Option<u64>,
+        before: Option<u64>,
+    ) -> Result<TranscriptPage, HubError> {
+        self.known_machine(machine)?;
+        self.transcript_of(machine, agent, after, before).await
+    }
+
+    async fn transcript_of(
+        &self,
+        machine: &str,
+        agent: &str,
+        after: Option<u64>,
+        before: Option<u64>,
+    ) -> Result<TranscriptPage, HubError> {
+        let op = Op::Transcript {
+            agent: agent.to_owned(),
+            after,
+            before,
+        };
+        let v = self
+            .runners
+            .call(machine, op, CALL_TIMEOUT)
+            .await
+            .map_err(|e| runner_error(machine, e))?;
+        let page: TranscriptPage = serde_json::from_value(v)
+            .map_err(|e| HubError::BadRequest(format!("runner transcript: {e}")))?;
+        Ok(redact_as(page))
     }
 
     /// The session agent's visible screen, which shows any dialog. Untrusted text.

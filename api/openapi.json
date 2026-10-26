@@ -650,6 +650,94 @@
         ]
       }
     },
+    "/app/v1/sessions/{id}/transcript": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "The session's conversation from its agent's own log, a page at a time. Read-only.",
+        "operationId": "get_transcript",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "description": "Continue from an earlier page's `end`.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "Go back from an earlier page's `start`.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Transcript"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Not a Claude agent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Machine offline",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
     "/app/v1/sessions/{id}/prompt": {
       "post": {
         "tags": [
@@ -1285,6 +1373,102 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Output"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Machine offline",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
+    "/app/v1/agents/transcript": {
+      "get": {
+        "tags": [
+          "agents"
+        ],
+        "summary": "The conversation of an agent Switchboard didn't start, from its own log. Read-only.",
+        "operationId": "get_agent_transcript",
+        "parameters": [
+          {
+            "name": "machine_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "agent",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "description": "Continue from an earlier page's `end`.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "Go back from an earlier page's `start`.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Transcript"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Not a Claude agent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             }
@@ -2516,6 +2700,96 @@
           "expires_at": {
             "type": "integer",
             "format": "int64"
+          }
+        }
+      },
+      "Transcript": {
+        "type": "object",
+        "description": "Part of an agent's conversation, read from its own log; Claude agents only. Untrusted text,\nmasked.",
+        "required": [
+          "items",
+          "start",
+          "end"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TranscriptItem"
+            },
+            "description": "Oldest first. An item whose id was seen before replaces it: a tool call comes again\nwith its result."
+          },
+          "start": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Pass as `before` for the page before this one; 0 means it's the first.",
+            "minimum": 0
+          },
+          "end": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Pass as `after` for what comes next. A page asked for with `after` that doesn't start\nthere skipped some: replace what's shown instead of appending.",
+            "minimum": 0
+          }
+        }
+      },
+      "TranscriptItem": {
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "done",
+          "failed"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "description": "`user`, `assistant`, `tool` or `note`."
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What was said, in Markdown; for a tool, a one-line summary. Absent on a tool result\nwhose call is on an earlier page."
+          },
+          "tool": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The tool's name, e.g. `Bash` or `mcp__server__tool`."
+          },
+          "input": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The tool's input as JSON, shortened."
+          },
+          "output": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The tool's result, shortened."
+          },
+          "done": {
+            "type": "boolean",
+            "description": "The tool's result has arrived."
+          },
+          "failed": {
+            "type": "boolean"
+          },
+          "at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When it was written, RFC 3339."
           }
         }
       }
