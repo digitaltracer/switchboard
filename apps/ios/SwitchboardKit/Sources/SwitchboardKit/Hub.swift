@@ -350,8 +350,9 @@ public final class Hub: Sendable {
     }
 
     /// Named Herdr agents Switchboard didn't start.
-    public func agents() async throws -> [Schemas.AgentView] {
-        try await Self.unwrap { try await client.listAgents().ok.body.json.agents }
+    /// Running agents Switchboard didn't start, and those that ended in the last day.
+    public func agents() async throws -> Schemas.Agents {
+        try await Self.unwrap { try await client.listAgents().ok.body.json }
     }
 
     public func agentOutput(machine: String, agent: String, lines: Int = 80, visible: Bool = false) async throws -> Schemas.Output {

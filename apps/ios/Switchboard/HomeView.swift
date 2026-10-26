@@ -20,16 +20,16 @@ struct HomeView: View {
     @State private var path = NavigationPath()
     @State private var starting = false
     @State private var showingDevices = false
-    /// The last line each running session printed, by session id.
+    /// The last line each busy agent said, by `Tile.id`.
     @State private var lastLines: [String: String] = [:]
 
     private var waiting: [Schemas.Session] { model.sessions.filter { !$0.pendingApprovals.isEmpty } }
-    private var running: [Schemas.Session] {
-        model.sessions.filter { ["running", "starting"].contains($0.lifecycle) && $0.pendingApprovals.isEmpty }
-    }
-    private var finished: [Schemas.Session] {
-        let since = Int64(Date().addingTimeInterval(-86_400).timeIntervalSince1970 * 1000)
-        return model.sessions.filter { !["running", "starting"].contains($0.lifecycle) && $0.updatedAt > since }
+    private var groups: [HerdrSession] { model.herdrSessions(since: HerdrSession.startOfToday()) }
+    /// Agents working or waiting for you, in any session.
+    private var busy: [Tile] {
+        groups.flatMap { g in
+            g.live.filter { $0.needsYou || $0.agentStatus == "working" }.map { Tile(agent: $0, session: g.key.name) }
+        }
     }
 
     var body: some View {
@@ -44,8 +44,8 @@ struct HomeView: View {
                             ApprovalCard(approval: a, session: s, open: { path.append(s.id) }) {}
                         }
                     }
-                    if !running.isEmpty { runningTiles }
-                    if model.sessions.isEmpty && model.agents.isEmpty { empty }
+                    if !busy.isEmpty { busyTiles }
+                    if groups.isEmpty { empty }
                     lists
                 }
                 .padding(.horizontal, 16)
@@ -56,6 +56,7 @@ struct HomeView: View {
             .navigationTitle("Agents")
             .navigationDestination(for: String.self) { SessionDetailView(sessionId: $0) }
             .navigationDestination(for: AgentRef.self) { AgentDetailView(agent: $0) }
+            .navigationDestination(for: HerdrSession.Key.self) { HerdrSessionView(key: $0) }
             .navigationDestination(for: ConversationRef.self) { ConversationScreen(ref: $0) }
             .navigationDestination(for: Browse.self) { b in
                 switch b {
@@ -118,8 +119,10 @@ struct HomeView: View {
         HStack(spacing: 7) {
             if model.connected {
                 Circle().fill(.green).frame(width: 8, height: 8)
+                let live = groups.filter { !$0.isEnded }.count
+                let working = busy.filter { $0.agent.agentStatus == "working" }.count
                 let parts = [waiting.isEmpty ? nil : "\(waiting.count) need\(waiting.count == 1 ? "s" : "") you",
-                             "\(running.count) running"].compactMap { $0 }
+                             "\(live) \(live == 1 ? "session" : "sessions")", "\(working) working"].compactMap { $0 }
                 Text(parts.joined(separator: " · "))
             } else {
                 Image(systemName: "wifi.exclamationmark").foregroundStyle(.orange)
@@ -131,14 +134,16 @@ struct HomeView: View {
         .padding(.top, -8)
     }
 
-    private var runningTiles: some View {
+    private var busyTiles: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Running").font(.title3.bold())
+            Text("Busy now").font(.title3.bold())
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 12) {
-                    ForEach(running, id: \.id) { s in
-                        NavigationLink(value: s.id) { RunningTile(session: s, lastLine: lastLines[s.id]) }
-                            .buttonStyle(.plain)
+                    ForEach(busy) { t in
+                        if let to = t.agent.destination {
+                            NavigationLink(value: to) { BusyTile(tile: t, lastLine: lastLines[t.id]) }
+                                .buttonStyle(.plain)
+                        }
                     }
                 }
                 .padding(.horizontal, 16)
@@ -160,30 +165,18 @@ struct HomeView: View {
 
     private var lists: some View {
         VStack(alignment: .leading, spacing: 24) {
-            if !finished.isEmpty {
-                InsetGroup(title: "Finished today") {
-                    ForEach(Array(finished.enumerated()), id: \.element.id) { i, s in
-                        NavigationLink(value: s.id) {
-                            ListRow(symbol: SessionStatus(s).symbol, tint: SessionStatus(s).color, title: s.label,
-                                    subtitle: "\(SessionStatus(s).text) · \(s.projectId)", trailing: Ago.short(s.updatedAt), first: i == 0)
-                        }
-                    }
-                }
-            }
-            if !model.agents.isEmpty {
-                InsetGroup(title: "Started in Herdr") {
-                    ForEach(Array(model.agents.enumerated()), id: \.element) { i, a in
-                        NavigationLink(value: AgentRef(machine: a.machineId, name: a.name)) {
-                            ListRow(symbol: "terminal", tint: .secondary, title: a.displayName,
-                                    subtitle: "\(SessionStatus(agentStatus: a.agentStatus).text) · \(a.displayName == a.name ? a.machineId : a.herdrSession ?? a.machineId)",
-                                    trailing: "", first: i == 0)
-                        }
+            if !groups.isEmpty {
+                InsetGroup(title: "Sessions") {
+                    let machines = Set(groups.map(\.key.machine)).count
+                    ForEach(Array(groups.enumerated()), id: \.element.key) { i, g in
+                        SessionRow(session: g, showMachine: machines > 1, first: i == 0)
                     }
                 }
             }
             InsetGroup(title: "Browse") {
                 NavigationLink(value: Browse.allSessions) {
-                    ListRow(symbol: "tray.full", tint: .secondary, title: "All sessions", subtitle: nil, trailing: "\(model.sessions.count + model.agents.count)", first: true)
+                    ListRow(symbol: "tray.full", tint: .secondary, title: "All sessions", subtitle: nil,
+                            trailing: "\(model.herdrSessions(since: nil).count)", first: true)
                 }
                 NavigationLink(value: Browse.machines) {
                     ListRow(symbol: "desktopcomputer", tint: .accentColor, title: "Machines", subtitle: nil, trailing: "", first: false)
@@ -233,10 +226,16 @@ struct HomeView: View {
     /// Each tile's line comes from the conversation; reading the terminal would scroll it on the Mac.
     private func loadLastLines() async {
         guard let hub = model.hub else { return }
-        for s in running.prefix(8) where s.lifecycle == "running" {
-            guard let page = try? await hub.transcript(s.id) else { continue }
+        for t in busy.prefix(8) {
+            let page: Schemas.Transcript?
+            switch t.agent {
+            case .task(let s): page = try? await hub.transcript(s.id)
+            case .live(let a): page = try? await hub.agentTranscript(machine: a.machineId, agent: a.name)
+            case .ended: page = nil
+            }
+            guard let page else { continue }
             let last = page.items.last { $0.kind != "user" && $0.text != nil }?.text
-            lastLines[s.id] = last?.split(separator: "\n").first { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.map(String.init)
+            lastLines[t.id] = last?.split(separator: "\n").first { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.map(String.init)
         }
     }
 }
@@ -263,21 +262,34 @@ struct MicButton: View {
     }
 }
 
-private struct RunningTile: View {
-    let session: Schemas.Session
+/// An agent working or waiting for you, and the session it's in.
+private struct Tile: Identifiable {
+    let agent: HerdrSession.Agent
+    let session: String
+    var id: String {
+        switch agent {
+        case .task(let s): s.id
+        case .live(let a): "\(a.machineId)/\(a.name)"
+        case .ended(let e): "\(e.machineId)/\(e.name)/\(e.endedAt)"
+        }
+    }
+}
+
+private struct BusyTile: View {
+    let tile: Tile
     let lastLine: String?
 
     var body: some View {
-        let status = SessionStatus(session)
+        let status = tile.agent.status
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
                 Circle().fill(status.color).frame(width: 7, height: 7)
-                Text("\(status.text) · \(Ago.short(session.updatedAt))")
+                Text(status.text)
             }
             .font(.caption.weight(.semibold))
             .foregroundStyle(status.color)
-            Text(session.label).font(.subheadline.weight(.semibold)).lineLimit(1)
-            Text([session.projectId, session.machineId].joined(separator: " · "))
+            Text(tile.agent.shortName).font(.subheadline.weight(.semibold)).lineLimit(1)
+            Text([tile.session, tile.agent.machineId].joined(separator: " · "))
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -334,7 +346,8 @@ struct InsetGroup<Content: View>: View {
                 .textCase(.uppercase)
                 .padding(.horizontal, 16)
             VStack(spacing: 0) { content }
-                .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .background(Color(.secondarySystemGroupedBackground))
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
     }
 }

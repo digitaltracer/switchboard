@@ -36,6 +36,8 @@ struct SessionStatus {
         }
     }
 
+    static let ended = SessionStatus("Ended", .secondary, "moon.zzz")
+
     init(agentStatus: String) {
         switch agentStatus {
         case "working": self.init("Working", .working, "waveform.path.ecg")

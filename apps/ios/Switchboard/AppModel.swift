@@ -28,8 +28,10 @@ final class AppModel {
     var openSessionId: String?
     /// Where text in the message box that names no project goes.
     var current: Schemas.TargetView?
-    /// Named Herdr agents Switchboard didn't start, refreshed while the list is on screen.
+    /// Herdr agents Switchboard didn't start, refreshed while a list is on screen.
     private(set) var agents: [Schemas.AgentView] = []
+    /// Those that ended in the last day.
+    private(set) var ended: [Schemas.EndedAgent] = []
     private(set) var projects: [Schemas.Project] = []
     /// Bumped each time the app comes back to the foreground; screens restart their polls on it,
     /// since a long-poll begun before the phone slept may be on a dead connection.
@@ -148,6 +150,7 @@ final class AppModel {
         hub = nil
         sessions = []
         agents = []
+        ended = []
         projects = []
         current = nil
         meta = nil
@@ -197,7 +200,14 @@ final class AppModel {
 
     func refreshAgents() async {
         guard let hub, let list = try? await hub.agents() else { return }
-        agents = list
+        agents = list.agents
+        ended = list.ended ?? []
+    }
+
+    /// Every Herdr session with its agents, whoever started them. Ended agents count from `since`,
+    /// or all that are known when it is nil.
+    func herdrSessions(machine: String? = nil, since: Int64?) -> [HerdrSession] {
+        HerdrSession.group(sessions: sessions, agents: agents, ended: ended, machine: machine, since: since)
     }
 
     // The session list, long-polled: the hub answers when something newer than our revision exists.

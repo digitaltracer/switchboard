@@ -101,6 +101,16 @@ final class SwitchboardUITests: XCTestCase {
         app.buttons["Done"].tap()
         XCTAssertTrue(app.navigationBars["Agents"].waitForExistence(timeout: 5))
 
+        // A Herdr session lists its agents, whoever started them.
+        let crm = app.buttons["session-crm"]
+        XCTAssertTrue(crm.waitForExistence(timeout: 15), app.debugDescription)
+        snapshot(app, "home")
+        crm.tap()
+        XCTAssertTrue(app.staticTexts["orchestrator"].waitForExistence(timeout: 10), app.debugDescription)
+        XCTAssertTrue(app.staticTexts["Review the import"].exists)
+        snapshot(app, "session")
+        app.navigationBars.buttons.firstMatch.tap()
+
         if env["SB_EXPECT_PUSH"] != nil {
             // The script pairs a second device; the hub pushes "New device paired" through simctl.
             // The banner may have come and gone, so look in Notification Center.

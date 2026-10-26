@@ -30,7 +30,7 @@ struct AgentDetailView: View {
                         .foregroundStyle(.secondary)
                 }
                 .padding(.top, -6)
-                Text("Started outside Switchboard, so it has no approvals here. Answer its dialogs in Herdr.")
+                Text("This agent asks for approval in Herdr, on its machine, not here.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 if let said = model.said[AppModel.saidKey(for: target)] { SaidBubble(said: said) }

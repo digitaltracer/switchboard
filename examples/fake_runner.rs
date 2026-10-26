@@ -83,7 +83,13 @@ impl Handler for Fake {
             Op::Delete { .. } => Ok(
                 json!({ "worktree_removed": false, "kept_because": "unmerged", "herdr_session_deleted": true }),
             ),
-            Op::ListSessions | Op::Agents => Ok(json!([])),
+            Op::ListSessions => Ok(json!([])),
+            Op::Agents => Ok(json!([
+                {"name": "crm/orchestrator", "pane_id": "w1:p1", "kind": "claude",
+                 "agent_status": "working", "session_id": null, "herdr_session": "crm"},
+                {"name": "crm/w1:p2", "pane_id": "w1:p2", "kind": "codex", "agent_status": "idle",
+                 "session_id": null, "herdr_session": "crm", "title": "Review the import"}
+            ])),
             other => Err(ProtoError::new(
                 ErrorCode::BadRequest,
                 format!("the fake runner doesn't do {other:?}"),

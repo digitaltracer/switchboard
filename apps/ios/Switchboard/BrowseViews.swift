@@ -1,57 +1,31 @@
 import SwiftUI
 import SwitchboardKit
 
-/// Every session the hub knows, running first, then the agents started in Herdr; or just one
+/// Every Herdr session with its agents, running first and ended at the bottom; or just one
 /// machine's.
 struct AllSessionsView: View {
     @Environment(AppModel.self) private var model
     var machine: String?
 
     var body: some View {
-        let sessions = model.sessions.filter { machine == nil || $0.machineId == machine }
-        let agents = model.agents.filter { machine == nil || $0.machineId == machine }
-        let live = sessions.filter { ["running", "starting"].contains($0.lifecycle) }
-        let ended = sessions.filter { !["running", "starting"].contains($0.lifecycle) }
+        let groups = model.herdrSessions(machine: machine, since: nil)
         List {
-            if !live.isEmpty { Section("Running") { ForEach(live, id: \.id) { row($0) } } }
-            if !agents.isEmpty { Section("Started in Herdr") { ForEach(agents, id: \.self) { row($0) } } }
-            if !ended.isEmpty { Section("Ended") { ForEach(ended, id: \.id) { row($0) } } }
-            if sessions.isEmpty && agents.isEmpty { Text("No sessions yet.").foregroundStyle(.secondary) }
+            ForEach(groups) { g in
+                NavigationLink(value: g.key) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(g.key.name).font(.headline).foregroundStyle(g.isEnded ? .secondary : .primary)
+                        Text(machine == nil ? "\(g.summary) · \(g.key.machine)" : g.summary)
+                            .font(.subheadline)
+                            .foregroundStyle(g.isEnded ? .secondary : g.status.color)
+                    }
+                }
+                .listRowBackground(g.isEnded ? Color.endedRow : nil)
+            }
+            if groups.isEmpty { Text("No sessions yet.").foregroundStyle(.secondary) }
         }
         .navigationTitle(machine ?? "All sessions")
         .task { await model.refreshAgents() }
         .refreshable { await model.refreshAgents() }
-    }
-
-    private func row(_ a: Schemas.AgentView) -> some View {
-        NavigationLink(value: AgentRef(machine: a.machineId, name: a.name)) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(a.displayName).font(.headline)
-                HStack(spacing: 6) {
-                    let status = SessionStatus(agentStatus: a.agentStatus)
-                    Text(status.text).foregroundStyle(status.color)
-                    Text("· \(a.herdrSession ?? a.machineId)").foregroundStyle(.secondary)
-                }
-                .font(.subheadline)
-            }
-        }
-    }
-
-    private func row(_ s: Schemas.Session) -> some View {
-        NavigationLink(value: s.id) {
-            VStack(alignment: .leading, spacing: 2) {
-                HStack {
-                    Text(s.label).font(.headline)
-                    Spacer()
-                    Text(Ago.short(s.updatedAt)).font(.subheadline).foregroundStyle(.secondary)
-                }
-                HStack(spacing: 6) {
-                    Text(SessionStatus(s).text).foregroundStyle(SessionStatus(s).color)
-                    Text("· \(s.projectId) · \(s.machineId)").foregroundStyle(.secondary)
-                }
-                .font(.subheadline)
-            }
-        }
     }
 }
 
@@ -91,15 +65,15 @@ struct MachinesView: View {
         await model.refreshAgents()
     }
 
-    /// "1 session running · 6 agents in Herdr, 5 idle"
+    /// "2 sessions · 5 agents, 1 working"
     private func counts(_ machine: String) -> String {
-        let running = model.sessions.filter { $0.machineId == machine && $0.lifecycle == "running" }.count
-        let agents = model.agents.filter { $0.machineId == machine }
-        var text = "\(running) \(running == 1 ? "session" : "sessions") running"
+        let live = model.herdrSessions(machine: machine, since: nil).filter { !$0.isEnded }
+        let agents = live.flatMap(\.live)
+        var text = "\(live.count) \(live.count == 1 ? "session" : "sessions")"
         guard !agents.isEmpty else { return text }
-        text += " · \(agents.count) \(agents.count == 1 ? "agent" : "agents") in Herdr"
-        let idle = agents.filter { ["idle", "done"].contains($0.agentStatus) }.count
-        if idle == agents.count { text += agents.count == 1 ? ", idle" : ", all idle" } else if idle > 0 { text += ", \(idle) idle" }
+        text += " · \(agents.count) \(agents.count == 1 ? "agent" : "agents")"
+        let working = agents.filter { $0.agentStatus == "working" }.count
+        text += working > 0 ? ", \(working) working" : (agents.count == 1 ? ", idle" : ", all idle")
         return text
     }
 }
