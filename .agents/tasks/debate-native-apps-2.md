@@ -392,3 +392,43 @@ Found on the first real Android phone, and the same on iOS.
 - **Names.** An agent without a Herdr name went by its terminal title, which is Claude's own title for the conversation ("Session approval"), not a name. It now goes by its kind and pane, `claude · w2:p1`. The title shows under it and on its page, as what it's working on.
 - **A coloured terminal.** `/output` and `/agents/output` take `ansi=true` with `visible=true`, and return `ansi`: the screen with Herdr's colour codes, so the apps draw it as the Mac does, with your messages on Claude's shaded band. It's additive; older hubs and runners leave it out.
   - **Masking.** The hub keeps `ansi` only when it holds nothing but colour codes and, without them, matches the masked text line for line. A secret split by colour codes is masked in the text but not in the coloured copy, so the colours are dropped for that screen.
+
+## As built (2026-10-29): the E design and the `/` picker
+
+Chosen from the design canvas's options A to E, on iOS and Android alike.
+
+- **Agent and task pages.** A summary card in place of "Latest": the agent's latest reply, its time, and tags for what its work since your last message came to. Below it, two rows: **Conversation** and **Screen**. No suggested quick answers yet; the log holds none.
+- **The conversation.** Your messages stay blue bubbles. A reply carries the agent's name and time. The steps between two messages fold into one line, "Worked 6m", with tags:
+  - files edited, with lines added and removed;
+  - tests passed or failed;
+  - a pull request;
+  - "Pushed";
+  - steps that failed;
+  - otherwise a count.
+  
+  Tapping the line shows the steps, each opening to its input and result as before. The tabs are **Conversation | Screen**, with a message bar under both.
+- **Line counts.** `TranscriptItem` gains optional `added` and `removed`. They're counted from an edit's whole input, before it's shortened: Claude's `Edit`, `MultiEdit` and `Write`, and Codex's `apply_patch`, whose summary now names the files it touches.
+- **The `/` picker.** In the review sheet, a draft starting with `/` or `$` (Codex skills) lists what the agent can run. Names starting with the typed text come first, then names containing it, then descriptions. Picking one puts it in the message. It's sent as ordinary text, as if typed in the terminal.
+  - **Sources:** `src/runner/skills.rs` reads, for Claude Code:
+    - your `skills/*/SKILL.md` and `commands/**/*.md`;
+    - the same two folders under the agent's repo's `.claude/`;
+    - installed plugins' skills and commands, as `/plugin:name`;
+    - `/clear` and `/compact`.
+    
+    For Codex: `skills/*/SKILL.md` as `$name`, `prompts/*.md` as `/prompts:name`, and `/new` and `/compact`.
+  - **Limits:** only names and one-line descriptions leave the machine, masked. A skill with `user-invocable: false` is left out, and the repo's version of a name wins over yours. Built-ins that open a menu in the terminal (`/model`, `/resume`) aren't listed.
+  - **API:** `GET /app/v1/sessions/{id}/skills` and `GET /app/v1/agents/skills`, additive.
+
+## As built (2026-10-29): long replies and the relay stall
+
+- **Reading type.** Agents' replies are mostly long reports, which the 17-point body made into walls. Both apps now share one spec for replies:
+  - 15 on 22 in a slightly softer colour than labels;
+  - headings at 16, smaller headings as grey capitals;
+  - nested lists with hanging indents and dimmer sub-items;
+  - inline code at 13 on a tint, bold in full white.
+  
+  A reply with more work after it in the same turn is a note on the way, at 14 in grey; the turn's last reply is the answer. The "Worked" line is plain grey text, not a card. The summary card fades a long reply out after about 286 points, with **Read all**. Agent and session pages title at 24 on Android. The Markdown blocks (`Markdown.blocks`) and the progress rule live in SwitchboardKit and the Android core, with tests.
+- **The relay stall.** A phone's HTTP/2 connection to the relay can die without closing. Every request on it then hung until the 50 s timeout, and OkHttp resent the same sealed bytes on a new connection. The hub refused them as replays ("the request was already seen"), so the app showed an error before recovering.
+  - **The fix, on Android:** the relay client pings every 10 s, turns OkHttp's retry off, and retries a request that failed on its connection once, sealed afresh.
+  - **iOS** uses URLSession, which doesn't resend POSTs.
+- **Connecting.** Before its first answer the home screen says "Connecting…", not "Can't reach the hub".
