@@ -124,9 +124,11 @@ struct HomeView: View {
                 let parts = [waiting.isEmpty ? nil : "\(waiting.count) need\(waiting.count == 1 ? "s" : "") you",
                              "\(live) \(live == 1 ? "session" : "sessions")", "\(working) working"].compactMap { $0 }
                 Text(parts.joined(separator: " · "))
-            } else {
+            } else if model.unreachable {
                 Image(systemName: "wifi.exclamationmark").foregroundStyle(.orange)
                 Text("Can't reach the hub; retrying.")
+            } else {
+                Text("Connecting…")
             }
         }
         .font(.subheadline)

@@ -82,6 +82,9 @@ class AppModel(context: Context, val keys: DeviceKeys) {
         private set
     var connected by mutableStateOf(false)
         private set
+    /** A request has failed since the last answer; until then, not yet connected is "connecting". */
+    var unreachable by mutableStateOf(false)
+        private set
     var meta by mutableStateOf<Meta?>(null)
         private set
 
@@ -235,6 +238,7 @@ class AppModel(context: Context, val keys: DeviceKeys) {
         projects = emptyList()
         meta = null
         connected = false
+        unreachable = false
         current = null
         lastSent = null
         path.clear()
@@ -300,10 +304,12 @@ class AppModel(context: Context, val keys: DeviceKeys) {
                     sessions = list.sessions
                     revision = list.revision
                     connected = true
+                    unreachable = false
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
                     connected = false
+                    unreachable = true
                     if (handleRevoked(e)) return@launch
                     delay(3_000)
                 }

@@ -21,6 +21,8 @@ final class AppModel {
     private(set) var hub: Hub?
     private(set) var sessions: [Schemas.Session] = []
     private(set) var connected = false
+    /// A request has failed since the last answer; until then, not yet connected is "connecting".
+    private(set) var unreachable = false
     private(set) var meta: Schemas.Meta?
     var pairingError: String?
     var banner: String?
@@ -155,6 +157,7 @@ final class AppModel {
         current = nil
         meta = nil
         connected = false
+        unreachable = false
         sentPushToken = nil
         phase = .unpaired
     }
@@ -225,11 +228,13 @@ final class AppModel {
                     self.sessions = list.sessions
                     revision = list.revision
                     self.connected = true
+                    self.unreachable = false
                     if let token = self.pendingPushToken, token != self.sentPushToken {
                         await self.sendPushToken(token)
                     }
                 } catch {
                     self.connected = false
+                    self.unreachable = true
                     if self.handleRevoked(error) { return }
                     try? await Task.sleep(for: .seconds(3))
                 }

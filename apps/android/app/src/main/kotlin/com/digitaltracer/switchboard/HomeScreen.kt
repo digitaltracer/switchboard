@@ -146,7 +146,7 @@ fun HomeScreen(model: AppModel, voice: Voice, listen: Listen) {
                 item {
                     Column {
                         LargeTitle("Agents", horizontal = 0)
-                        Summary(model.connected, waiting.size, groups.count { !it.isEnded }, busy.count { it.agent.agentStatus == "working" })
+                        Summary(model.connected, model.unreachable, waiting.size, groups.count { !it.isEnded }, busy.count { it.agent.agentStatus == "working" })
                     }
                 }
                 model.lastSent?.takeIf { System.currentTimeMillis() - it.at < 600_000 }?.let { sent ->
@@ -248,7 +248,7 @@ private fun SentCard(sent: AppModel.Sent, open: (TargetView) -> Unit) {
 }
 
 @Composable
-private fun Summary(connected: Boolean, waiting: Int, sessions: Int, working: Int) {
+private fun Summary(connected: Boolean, unreachable: Boolean, waiting: Int, sessions: Int, working: Int) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
         if (connected) {
             Dot(palette.done)
@@ -257,9 +257,11 @@ private fun Summary(connected: Boolean, waiting: Int, sessions: Int, working: In
                 "$sessions ${if (sessions == 1) "session" else "sessions"}", "$working working",
             )
             Text(parts.joinToString(" · "), style = Type.subheadline, color = palette.secondary)
-        } else {
+        } else if (unreachable) {
             Icon(Icons.Outlined.WifiOff, null, Modifier.size(16.dp), tint = palette.needs)
             Text("Can't reach the hub; retrying.", style = Type.subheadline, color = palette.secondary)
+        } else {
+            Text("Connecting…", style = Type.subheadline, color = palette.secondary)
         }
     }
 }
