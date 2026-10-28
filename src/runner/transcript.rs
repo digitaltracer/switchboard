@@ -238,6 +238,8 @@ fn parse<'a>(lines: impl IntoIterator<Item = (u64, &'a str)>) -> Vec<(u64, Trans
             done: false,
             failed: false,
             at: at.clone(),
+            added: None,
+            removed: None,
         };
         let content = d.pointer("/message/content");
         match d.get("type").and_then(Value::as_str) {
@@ -342,11 +344,14 @@ fn parse<'a>(lines: impl IntoIterator<Item = (u64, &'a str)>) -> Vec<(u64, Trans
                                 .to_owned();
                             let name = b.get("name").and_then(Value::as_str).unwrap_or("tool");
                             let input = b.get("input").cloned().unwrap_or(Value::Null);
+                            let (added, removed) = edit_lines(name, &input).unzip();
                             calls.insert(call.clone(), out.len());
                             out.push((
                                 offset,
                                 TranscriptItem {
                                     tool: Some(name.into()),
+                                    added,
+                                    removed,
                                     input: Some(clip(
                                         &serde_json::to_string_pretty(&input).unwrap_or_default(),
                                         MAX_INPUT,
@@ -392,6 +397,8 @@ fn codex(
         done: false,
         failed: false,
         at: at.clone(),
+        added: None,
+        removed: None,
     };
     match s("type") {
         Some("message") => {
@@ -422,10 +429,17 @@ fn codex(
                 _ => p.get("action").map(Value::to_string).unwrap_or_default(),
             };
             calls.insert(call.clone(), out.len());
+            let (summary, lines) = match name {
+                "apply_patch" => patch_summary(&input),
+                _ => (codex_summary(name, &input), None),
+            };
+            let (added, removed) = lines.unzip();
             let item = TranscriptItem {
                 tool: Some(name.into()),
                 input: Some(clip(&input, MAX_INPUT)),
-                ..new(call, "tool", Some(codex_summary(name, &input)))
+                added,
+                removed,
+                ..new(call, "tool", Some(summary))
             };
             out.push((offset, item));
         }
@@ -547,6 +561,50 @@ fn result_text(content: Option<&Value>) -> String {
             .join("\n"),
         _ => String::new(),
     }
+}
+
+/// Lines a Claude edit adds and removes, from its whole input before it's shortened.
+fn edit_lines(name: &str, input: &Value) -> Option<(u32, u32)> {
+    let lines = |k: &str, v: &Value| {
+        v.get(k)
+            .and_then(Value::as_str)
+            .map_or(0, |t| t.lines().count() as u32)
+    };
+    match name {
+        "Edit" => Some((lines("new_string", input), lines("old_string", input))),
+        "MultiEdit" => input.get("edits")?.as_array().map(|edits| {
+            edits.iter().fold((0, 0), |(a, r), e| {
+                (a + lines("new_string", e), r + lines("old_string", e))
+            })
+        }),
+        "Write" => Some((lines("content", input), 0)),
+        _ => None,
+    }
+}
+
+/// A Codex patch: the files it touches and the lines it adds and removes.
+fn patch_summary(patch: &str) -> (String, Option<(u32, u32)>) {
+    let mut files = Vec::new();
+    let (mut added, mut removed) = (0, 0);
+    for line in patch.lines() {
+        if let Some(rest) = line.strip_prefix("*** ") {
+            for verb in ["Update File: ", "Add File: ", "Delete File: "] {
+                if let Some(f) = rest.strip_prefix(verb) {
+                    files.push(f.trim().to_owned());
+                }
+            }
+        } else if line.starts_with('+') {
+            added += 1;
+        } else if line.starts_with('-') {
+            removed += 1;
+        }
+    }
+    let summary = match files.as_slice() {
+        [] => "Edited files".to_owned(),
+        [one] => format!("Edited {one}"),
+        [first, rest @ ..] => format!("Edited {first} and {} more", rest.len()),
+    };
+    (summary, Some((added, removed)))
 }
 
 /// One line saying what a tool call did, like Claude's own transcript.

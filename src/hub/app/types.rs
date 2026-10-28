@@ -465,6 +465,11 @@ pub struct TranscriptItem {
     /// When it was written, RFC 3339.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub at: Option<String>,
+    /// Lines an edit adds and removes, when its input says. Older hubs leave them out.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub added: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub removed: Option<u32>,
 }
 
 impl From<TranscriptPage> for Transcript {
@@ -483,6 +488,8 @@ impl From<TranscriptPage> for Transcript {
                     done: i.done,
                     failed: i.failed,
                     at: i.at,
+                    added: i.added,
+                    removed: i.removed,
                 })
                 .collect(),
             start: p.start,
@@ -509,6 +516,43 @@ pub struct AgentTranscriptQuery {
     pub after: Option<u64>,
     /// Go back from an earlier page's `start`.
     pub before: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct AgentQuery {
+    pub machine_id: String,
+    pub agent: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct Skills {
+    pub skills: Vec<Skill>,
+}
+
+/// A skill or command, as typed: `/name`, or `$name` for a Codex skill.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct Skill {
+    pub name: String,
+    /// One line. Untrusted text.
+    pub description: String,
+    /// `repo`, `user`, `plugin` or `builtin`.
+    pub source: String,
+}
+
+impl From<Vec<crate::proto::SkillInfo>> for Skills {
+    fn from(list: Vec<crate::proto::SkillInfo>) -> Self {
+        Self {
+            skills: list
+                .into_iter()
+                .map(|s| Skill {
+                    name: s.name,
+                    description: s.description,
+                    source: s.source,
+                })
+                .collect(),
+        }
+    }
 }
 
 #[derive(Debug, Serialize, ToSchema)]

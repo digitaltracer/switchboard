@@ -29,6 +29,7 @@ use super::types::*;
         super::get_output,
         super::get_changes,
         super::get_transcript,
+        super::get_skills,
         super::prompt_session,
         super::stop_session,
         super::delete_session,
@@ -43,6 +44,7 @@ use super::types::*;
         super::list_agents,
         super::get_agent_output,
         super::get_agent_transcript,
+        super::get_agent_skills,
     ),
     components(schemas(
         ApiError, ErrorBody, Meta, PairRequest, PairResponse, PairStatus, TokenChallengeRequest,
@@ -52,7 +54,7 @@ use super::types::*;
         ApprovalChallenge, DecisionRequest, DecisionResponse, Device, PushEnvironment,
         PushTokenRequest, TargetRef, TargetView, MessageRequest, MessageChoice, MessageResponse,
         AgentView, Agents, EndedAgent, ChangedFile, Changes, MessagePreviewRequest, MessagePreview,
-        DeleteResponse, Transcript, TranscriptItem,
+        DeleteResponse, Transcript, TranscriptItem, Skills, Skill,
     )),
     modifiers(&DeviceToken),
 )]

@@ -92,6 +92,11 @@ impl Handler for Fake {
                 json!({ "worktree_removed": false, "kept_because": "unmerged", "herdr_session_deleted": true }),
             ),
             Op::ListSessions => Ok(json!([])),
+            Op::Skills { .. } => Ok(json!({"skills": [
+                {"name": "/commit", "description": "Create well-formatted commits", "source": "user"},
+                {"name": "/council", "description": "Several agents review a plan", "source": "user"},
+                {"name": "/compact", "description": "Summarise the conversation to free up context", "source": "builtin"}
+            ]})),
             Op::Agents => Ok(json!([
                 {"name": "crm/orchestrator", "pane_id": "w1:p1", "kind": "claude",
                  "agent_status": "working", "session_id": null, "herdr_session": "crm"},

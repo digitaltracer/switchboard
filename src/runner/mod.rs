@@ -7,6 +7,7 @@ pub mod hooks;
 pub mod link;
 pub mod local;
 pub mod sessions;
+pub mod skills;
 pub mod transcript;
 pub mod watch;
 

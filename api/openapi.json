@@ -756,6 +756,62 @@
         ]
       }
     },
+    "/app/v1/sessions/{id}/skills": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "The skills and commands the session's agent can run, for a `/` picker. Names and one-line\ndescriptions only, masked.",
+        "operationId": "get_skills",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Skills"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Machine offline",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
     "/app/v1/sessions/{id}/prompt": {
       "post": {
         "tags": [
@@ -1505,6 +1561,70 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Machine offline",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
+    "/app/v1/agents/skills": {
+      "get": {
+        "tags": [
+          "agents"
+        ],
+        "summary": "As the session's, for an agent Switchboard didn't start.",
+        "operationId": "get_agent_skills",
+        "parameters": [
+          {
+            "name": "machine_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "agent",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Skills"
                 }
               }
             }
@@ -2578,6 +2698,42 @@
           }
         }
       },
+      "Skill": {
+        "type": "object",
+        "description": "A skill or command, as typed: `/name`, or `$name` for a Codex skill.",
+        "required": [
+          "name",
+          "description",
+          "source"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string",
+            "description": "One line. Untrusted text."
+          },
+          "source": {
+            "type": "string",
+            "description": "`repo`, `user`, `plugin` or `builtin`."
+          }
+        }
+      },
+      "Skills": {
+        "type": "object",
+        "required": [
+          "skills"
+        ],
+        "properties": {
+          "skills": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Skill"
+            }
+          }
+        }
+      },
       "StartRequest": {
         "type": "object",
         "required": [
@@ -2887,6 +3043,23 @@
               "null"
             ],
             "description": "When it was written, RFC 3339."
+          },
+          "added": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Lines an edit adds and removes, when its input says. Older hubs leave them out.",
+            "minimum": 0
+          },
+          "removed": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
           }
         }
       }

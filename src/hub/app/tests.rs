@@ -1066,6 +1066,43 @@ async fn use_reaches_an_agent_switchboard_didnt_start_and_it_becomes_current() {
 }
 
 #[tokio::test]
+async fn an_agents_skills_come_from_its_runner_masked() {
+    let mut r = rig().await;
+    let (_, token) = r.pair(&Phone::new()).await;
+    let call = r.call_later(
+        "GET",
+        "/agents/skills?machine_id=mac&agent=mono1/claude",
+        &token,
+        Value::Null,
+    );
+    let req = r.req().await;
+    assert_eq!(
+        req.op,
+        Op::Skills {
+            agent: "mono1/claude".into()
+        }
+    );
+    r.ok(
+        req.id,
+        json!({"skills": [
+            {"name": "/commit", "description": "Atomic commits", "source": "user"},
+            {"name": "/deploy", "description": "Uses ghp_abcdefghijklmnopqrstuvwxyz0123456789", "source": "repo"}
+        ]}),
+    )
+    .await;
+    let reply = call.await.unwrap();
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    let skills = reply.body["skills"].as_array().unwrap();
+    assert_eq!(skills[0]["name"], "/commit");
+    assert!(
+        !skills[1]["description"]
+            .as_str()
+            .unwrap()
+            .contains("ghp_abc")
+    );
+}
+
+#[tokio::test]
 async fn an_agent_that_leaves_its_pane_is_listed_as_ended() {
     let mut r = rig().await;
     let (_, token) = r.pair(&Phone::new()).await;

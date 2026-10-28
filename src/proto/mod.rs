@@ -129,6 +129,10 @@ pub enum Op {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         before: Option<u64>,
     },
+    /// The skills and commands an agent can run, as `SkillInfo`s. Read-only.
+    Skills {
+        agent: String,
+    },
 }
 
 impl Op {
@@ -142,6 +146,7 @@ impl Op {
                 | Op::ReadAgent { .. }
                 | Op::Changes { .. }
                 | Op::Transcript { .. }
+                | Op::Skills { .. }
         )
     }
 }
@@ -179,6 +184,20 @@ pub struct TranscriptItem {
     /// When it was written, RFC 3339.
     #[serde(default)]
     pub at: Option<String>,
+    /// Lines an edit adds and removes, for edits whose input says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub added: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub removed: Option<u32>,
+}
+
+/// One skill or command, as typed: `/name`, or `$name` for a Codex skill.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillInfo {
+    pub name: String,
+    pub description: String,
+    /// `repo`, `user`, `plugin` or `builtin`.
+    pub source: String,
 }
 
 /// One agent from `Op::Agents`.

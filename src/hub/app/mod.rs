@@ -54,6 +54,7 @@ pub fn routes(state: AppState) -> Router {
         .route("/sessions/{id}/output", get(get_output))
         .route("/sessions/{id}/changes", get(get_changes))
         .route("/sessions/{id}/transcript", get(get_transcript))
+        .route("/sessions/{id}/skills", get(get_skills))
         .route("/sessions/{id}/prompt", post(prompt_session))
         .route("/sessions/{id}/stop", post(stop_session))
         .route("/sessions/{id}/delete", post(delete_session))
@@ -70,6 +71,7 @@ pub fn routes(state: AppState) -> Router {
         .route("/agents", get(list_agents))
         .route("/agents/output", get(get_agent_output))
         .route("/agents/transcript", get(get_agent_transcript))
+        .route("/agents/skills", get(get_agent_skills))
         .route("/meta", get(get_meta));
     Router::new().nest(PREFIX, api).with_state(state)
 }
@@ -465,6 +467,35 @@ pub async fn get_transcript(
 ) -> ApiResult<Transcript> {
     Ok(Json(
         st.svc.transcript(&id, q.after, q.before).await?.into(),
+    ))
+}
+
+#[utoipa::path(get, path = "/app/v1/sessions/{id}/skills", tag = "sessions",
+    security(("device_token" = [])), params(("id" = String, Path)),
+    responses((status = 200, description = "OK", body = Skills), (status = 404, description = "Not found", body = ApiError),
+              (status = 503, description = "Machine offline", body = ApiError)))]
+/// The skills and commands the session's agent can run, for a `/` picker. Names and one-line
+/// descriptions only, masked.
+pub async fn get_skills(
+    State(st): State<AppState>,
+    _d: DeviceAuth,
+    Path(id): Path<String>,
+) -> ApiResult<Skills> {
+    Ok(Json(st.svc.session_skills(&id).await?.into()))
+}
+
+#[utoipa::path(get, path = "/app/v1/agents/skills", tag = "agents",
+    security(("device_token" = [])), params(AgentQuery),
+    responses((status = 200, description = "OK", body = Skills), (status = 404, description = "Not found", body = ApiError),
+              (status = 503, description = "Machine offline", body = ApiError)))]
+/// As the session's, for an agent Switchboard didn't start.
+pub async fn get_agent_skills(
+    State(st): State<AppState>,
+    _d: DeviceAuth,
+    Query(q): Query<AgentQuery>,
+) -> ApiResult<Skills> {
+    Ok(Json(
+        st.svc.agent_skills(&q.machine_id, &q.agent).await?.into(),
     ))
 }
 

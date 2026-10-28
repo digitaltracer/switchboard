@@ -405,3 +405,38 @@ fn the_claude_running_in_the_pane_names_its_own_session() {
         None
     );
 }
+
+#[test]
+fn edits_say_how_many_lines_they_add_and_remove() {
+    let text = [
+        assistant("a1", json!([{"type": "tool_use", "id": "e1", "name": "Edit",
+            "input": {"file_path": "/r/a.py", "old_string": "x = 1\ny = 2", "new_string": "x = 1\ny = 3\nz = 4"}}])),
+        assistant("a2", json!([{"type": "tool_use", "id": "e2", "name": "MultiEdit",
+            "input": {"file_path": "/r/b.py", "edits": [
+                {"old_string": "a", "new_string": "b\nc"}, {"old_string": "d\ne", "new_string": ""}]}}])),
+        assistant("a3", json!([{"type": "tool_use", "id": "e3", "name": "Write",
+            "input": {"file_path": "/r/c.py", "content": "one\ntwo\nthree\n"}}])),
+        assistant("a4", json!([{"type": "tool_use", "id": "e4", "name": "Bash", "input": {"command": "ls"}}])),
+    ]
+    .concat();
+    let (_d, path) = log(&text);
+    let page = read_page(&path, None, None).unwrap();
+    let counts: Vec<_> = page.items.iter().map(|i| (i.added, i.removed)).collect();
+    assert_eq!(
+        counts,
+        vec![
+            (Some(3), Some(2)),
+            (Some(2), Some(3)),
+            (Some(3), Some(0)),
+            (None, None)
+        ]
+    );
+}
+
+#[test]
+fn a_codex_patch_names_its_files_and_counts_its_lines() {
+    let patch = "*** Begin Patch\n*** Update File: src/a.rs\n@@\n-old\n+new\n+more\n*** Add File: src/b.rs\n+hello\n*** End Patch";
+    let (summary, lines) = patch_summary(patch);
+    assert_eq!(summary, "Edited src/a.rs and 1 more");
+    assert_eq!(lines, Some((3, 1)));
+}

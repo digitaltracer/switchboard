@@ -19,7 +19,7 @@ use crate::cli::Agent;
 use crate::config::{HubConfig, ProjectConfig};
 use crate::proto::{
     AgentPromptOutcome, AgentSummary, ErrorCode, Event, Frame, Hello, Op, OwnedSession, ProtoError,
-    TranscriptPage,
+    SkillInfo, TranscriptPage,
 };
 use crate::redact::{redact, redact_as, redact_str};
 use crate::runner::random_id;
@@ -1153,6 +1153,38 @@ impl SessionService {
             .ok_or_else(|| HubError::BadRequest("this session has no agent name".into()))?;
         self.transcript_of(&s.machine_id, &agent, after, before)
             .await
+    }
+
+    /// The skills and commands the session's agent can run.
+    pub async fn session_skills(&self, session_id: &str) -> Result<Vec<SkillInfo>, HubError> {
+        let s = self.session(session_id).await?;
+        let agent = s
+            .agent_name
+            .ok_or_else(|| HubError::BadRequest("this session has no agent name".into()))?;
+        self.skills_of(&s.machine_id, &agent).await
+    }
+
+    /// The skills and commands an agent Switchboard didn't start can run.
+    pub async fn agent_skills(
+        &self,
+        machine: &str,
+        agent: &str,
+    ) -> Result<Vec<SkillInfo>, HubError> {
+        self.known_machine(machine)?;
+        self.skills_of(machine, agent).await
+    }
+
+    async fn skills_of(&self, machine: &str, agent: &str) -> Result<Vec<SkillInfo>, HubError> {
+        let op = Op::Skills {
+            agent: agent.to_owned(),
+        };
+        let v = self
+            .runners
+            .call(machine, op, CALL_TIMEOUT)
+            .await
+            .map_err(|e| runner_error(machine, e))?;
+        serde_json::from_value(v.get("skills").cloned().unwrap_or_default())
+            .map_err(|e| HubError::BadRequest(format!("runner skills: {e}")))
     }
 
     /// As `transcript`, for an agent Switchboard didn't start.

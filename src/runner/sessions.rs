@@ -15,7 +15,7 @@ use super::agents;
 use super::codex::{CodexPane, clear_startup, excerpt};
 use super::herdrs::{Herdrs, qualified, split_qualified};
 use super::hooks::{DecideError, HookHub};
-use super::transcript;
+use super::{skills, transcript};
 use crate::agents::{claude, codex, hook_command};
 use crate::cli::Agent;
 use crate::herdr::types::{
@@ -415,6 +415,7 @@ impl Sessions {
                 after,
                 before,
             } => self.transcript(&agent, after, before).await,
+            Op::Skills { agent } => self.skills(&agent).await,
             Op::Changes { session_id } => {
                 let s = self.session(&session_id)?;
                 match (&s.worktree_path, &s.start_commit) {
@@ -492,6 +493,32 @@ impl Sessions {
         .await
         .map_err(|e| err(ErrorCode::Internal, e.to_string()))??;
         Ok(serde_json::to_value(page).expect("serializes"))
+    }
+
+    /// The skills and commands an agent can run, from its machine's and its repo's folders.
+    async fn skills(&self, agent: &str) -> Result<Value, ProtoError> {
+        let (herdr, name, owned) = self.resolve_agent(agent);
+        let snap = herdr.session_snapshot().await.map_err(herdr_err)?;
+        let info = snap
+            .agents
+            .into_iter()
+            .find(|a| a.name.as_deref() == Some(name) || a.pane_id == name)
+            .ok_or_else(|| err(ErrorCode::NotFound, format!("no agent {agent:?}")))?;
+        let cwd = owned.and_then(|s| s.worktree_path).or(info.cwd);
+        let kind = info.agent.unwrap_or_default();
+        let claude_dir = self.cfg.claude_projects.parent().map(Path::to_owned);
+        let codex_home = self.cfg.codex_sessions.parent().map(Path::to_owned);
+        let list = tokio::task::spawn_blocking(move || match kind.as_str() {
+            "claude" => claude_dir.map_or_else(Vec::new, |dir| {
+                let repo = cwd.as_deref().map(|c| repo_root(Path::new(c)));
+                skills::claude(&dir, repo.as_deref())
+            }),
+            "codex" => codex_home.map_or_else(Vec::new, |home| skills::codex(&home)),
+            _ => Vec::new(),
+        })
+        .await
+        .map_err(|e| err(ErrorCode::Internal, e.to_string()))?;
+        Ok(json!({ "skills": list }))
     }
 
     fn session(&self, session_id: &str) -> Result<RunnerSession, ProtoError> {
@@ -1150,6 +1177,14 @@ async fn git(dir: &Path, args: &[&str]) -> Result<std::process::Output, String> 
         .output()
         .await
         .map_err(|e| format!("git: {e}"))
+}
+
+/// The git checkout `dir` is in, else `dir` itself.
+fn repo_root(dir: &Path) -> PathBuf {
+    dir.ancestors()
+        .find(|d| d.join(".git").exists())
+        .unwrap_or(dir)
+        .to_owned()
 }
 
 #[cfg(test)]
