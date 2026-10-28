@@ -80,7 +80,7 @@ fun PairedRoot(model: AppModel, voice: Voice) {
             Route.Machines -> MachinesScreen(model)
             Route.Projects -> ProjectsScreen(model)
             Route.Settings -> SettingsScreen(model)
-            is Route.Conversation -> ConversationScreen(model, route.source, route.title)
+            is Route.Conversation -> ConversationScreen(model, voice, listen, route.source, route.title, route.screen)
         }
         VoiceOverlay(voice)
     }

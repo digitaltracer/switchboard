@@ -35,6 +35,12 @@ data class Palette(
     val bar: Color,
     /** Behind ended sessions and agents, which sit at the bottom of their lists. */
     val endedRow: Color,
+    /** An agent's reply: a touch softer than labels, for long reading. */
+    val body: Color,
+    /** Nested list items and other text one step back from [body]. */
+    val bodyDim: Color,
+    /** Behind inline code. */
+    val codeFill: Color,
 )
 
 private val light = Palette(
@@ -53,6 +59,9 @@ private val light = Palette(
     done = Color(0xFF1F7D33),
     bar = Color(0xF2F9F9F9),
     endedRow = Color(0xFFF2F2F7),
+    body = Color(0xFF1F1F22),
+    bodyDim = Color(0xFF48484A),
+    codeFill = Color(0xFFE3E3E8),
 )
 
 private val dark = Palette(
@@ -70,6 +79,9 @@ private val dark = Palette(
     done = Color(0xFF30D158),
     bar = Color(0xF21D1D1D),
     endedRow = Color(0xFF2C2C2E),
+    body = Color(0xFFE5E5EA),
+    bodyDim = Color(0xFFC7C7CC),
+    codeFill = Color(0xFF333336),
 )
 
 val LocalPalette = staticCompositionLocalOf { light }
@@ -88,6 +100,7 @@ object Type {
         TextStyle(fontFamily = Inter, fontSize = size.sp, lineHeight = line.sp, fontWeight = weight)
 
     val largeTitle = style(34, 41, FontWeight.Bold)
+    val pageTitle = style(24, 30, FontWeight.Bold)
     val title3 = style(20, 25, FontWeight.Bold)
     val headline = style(17, 22, FontWeight.SemiBold)
     val body = style(17, 22)
@@ -95,6 +108,15 @@ object Type {
     val subheadline = style(15, 20)
     val footnote = style(13, 18)
     val caption = style(12, 16)
+
+    // Long agent text: smaller than iOS's body so a phone line holds ~55 characters, with room between lines.
+    val reply = style(15, 22)
+    val replyHeading = style(16, 21, FontWeight.SemiBold)
+    /** A smaller heading in a reply, in capitals. */
+    val replySection = style(13, 18, FontWeight.SemiBold).copy(letterSpacing = 0.4.sp)
+    /** What the agent said on the way to its answer. */
+    val progress = style(14, 20)
+    val message = style(15, 21)
 }
 
 private fun Typography.withFamily(f: FontFamily) = Typography(

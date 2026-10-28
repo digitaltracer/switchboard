@@ -75,6 +75,12 @@ fun LargeTitle(text: String, horizontal: Int = 16) {
     Text(text, Modifier.padding(start = horizontal.dp, end = horizontal.dp, bottom = 8.dp), style = Type.largeTitle, color = palette.label, maxLines = 2)
 }
 
+/** A session's or agent's name: long names like `db-pool/fix-db-call--r1` fit a phone's width. */
+@Composable
+fun PageTitle(text: String) {
+    Text(text, Modifier.padding(bottom = 4.dp), style = Type.pageTitle, color = palette.label, maxLines = 2)
+}
+
 /** A toolbar icon in the accent colour. */
 @Composable
 fun BarIcon(icon: ImageVector, label: String, tag: String? = null, enabled: Boolean = true, tint: androidx.compose.ui.graphics.Color? = null, onClick: () -> Unit) {

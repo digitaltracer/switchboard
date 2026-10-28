@@ -36,7 +36,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.digitaltracer.switchboard.api.models.Changes
 import com.digitaltracer.switchboard.api.models.Session
@@ -173,7 +172,7 @@ fun SessionScreen(model: AppModel, voice: Voice, listen: Listen, sessionId: Stri
         ) {
             item {
                 Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    LargeTitle(s.label, horizontal = 0)
+                    PageTitle(s.label)
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         StatusPill(SessionStatus.of(s))
                         Text(
@@ -199,22 +198,9 @@ fun SessionScreen(model: AppModel, voice: Voice, listen: Listen, sessionId: Stri
             model.said[s.id]?.let { item { SaidBubble(it) } }
             items(s.pendingApprovals, key = { it.id }) { a -> ApprovalCard(model, a, s, decided = { refresh() }) }
             item {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("LATEST", style = Type.footnote, fontWeight = FontWeight.SemiBold, color = palette.secondary)
-                    val why = convo.unavailable
-                    if (why != null) {
-                        Text("No conversation to show ($why).", style = Type.footnote, color = palette.secondary)
-                    } else {
-                        ConversationPreview(convo)
-                    }
-                    Row(
-                        Modifier.clickable { model.path.add(Route.Conversation(ConversationSource.Session(s.id), s.label)) }
-                            .padding(vertical = 4.dp).testTag("openConversation"),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(if (convo.unavailable == null) "Open the conversation" else "See the agent's screen", style = Type.body, color = palette.accent)
-                        Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, Modifier.size(18.dp), tint = palette.accent)
-                    }
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    SummaryCard(convo) { model.path.add(Route.Conversation(ConversationSource.Session(s.id), s.label)) }
+                    ConversationLinks(model, ConversationSource.Session(s.id), s.label, hasConversation = convo.unavailable == null)
                 }
             }
             changes?.takeIf { it.files.isNotEmpty() }?.let { item { ChangesGrid(it) } }

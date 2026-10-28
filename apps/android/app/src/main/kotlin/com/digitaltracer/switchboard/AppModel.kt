@@ -45,7 +45,8 @@ sealed interface Route {
     data object Machines : Route
     data object Projects : Route
     data object Settings : Route
-    data class Conversation(val source: ConversationSource, val title: String) : Route
+    /** [screen]: opens on the agent's screen instead of the conversation. */
+    data class Conversation(val source: ConversationSource, val title: String, val screen: Boolean = false) : Route
 }
 
 /** The app's state: the pairing, the live session list and what the user is doing. */

@@ -58,6 +58,10 @@ import com.digitaltracer.switchboard.core.RouteOptions
 import com.digitaltracer.switchboard.core.StartFlow
 import com.digitaltracer.switchboard.core.StartState
 import com.digitaltracer.switchboard.core.sessionTarget
+import com.digitaltracer.switchboard.api.models.Skill
+import com.digitaltracer.switchboard.api.models.TargetView
+import com.digitaltracer.switchboard.core.SkillSearch
+import androidx.compose.ui.text.font.FontFamily
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
@@ -207,6 +211,9 @@ fun SendSheet(model: AppModel, voice: Voice, listen: Listen) {
                         inner()
                     },
                 )
+                if (SkillSearch.isTyping(voice.text) && current != null) {
+                    SkillList(model, current, voice.text) { voice.text = "$it " }
+                }
                 if (routes.options.isNotEmpty()) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(
@@ -279,4 +286,63 @@ private fun RouteRow(option: RouteOption, selected: Boolean, first: Boolean, pic
             Icon(Icons.Filled.Check, null, Modifier.size(20.dp), tint = palette.accent.copy(alpha = if (selected) 1f else 0f))
         }
     }
+}
+
+/** The agent's skills matching what's typed after `/`; picking one puts it in the message. */
+@Composable
+private fun SkillList(model: AppModel, target: TargetView, typed: String, pick: (String) -> Unit) {
+    val key = AppModel.saidKey(target)
+    var skills by remember(key) { mutableStateOf<List<Skill>?>(null) }
+    var error by remember(key) { mutableStateOf<String?>(null) }
+    LaunchedEffect(key) {
+        val hub = model.hub ?: return@LaunchedEffect
+        try {
+            val id = target.sessionId
+            val agent = target.agent
+            skills = when {
+                id != null -> hub.skills(id)
+                agent != null -> hub.agentSkills(target.machineId, agent)
+                else -> emptyList()
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            error = e.message
+        }
+    }
+    Column(Modifier.fillMaxWidth().card(14.dp, palette.card)) {
+        val all = skills
+        when {
+            all != null -> {
+                val shown = SkillSearch.filter(all, typed).take(30)
+                if (shown.isEmpty()) Text("No skill matches $typed.", Modifier.padding(14.dp), style = Type.footnote, color = palette.secondary)
+                shown.forEachIndexed { i, skill ->
+                    Column(Modifier.fillMaxWidth().clickable { pick(skill.name) }.testTag("skill-${skill.name}")) {
+                        if (i > 0) HorizontalDivider(Modifier.padding(start = 14.dp), thickness = 0.5.dp, color = palette.separator)
+                        Column(Modifier.heightIn(min = 44.dp).padding(horizontal = 14.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text(skill.name, style = Type.callout, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.SemiBold, color = palette.label)
+                                sourceLabel(skill.source)?.let { Text(it, style = Type.caption, fontWeight = FontWeight.SemiBold, color = palette.secondary) }
+                            }
+                            if (skill.description.isNotEmpty()) {
+                                Text(skill.description, style = Type.footnote, color = palette.secondary, maxLines = 2)
+                            }
+                        }
+                    }
+                }
+            }
+            error != null -> Text("Couldn't list its skills: $error", Modifier.padding(14.dp), style = Type.footnote, color = palette.secondary)
+            else -> Row(Modifier.padding(14.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                Text("Listing its skills…", style = Type.footnote, color = palette.secondary)
+            }
+        }
+    }
+}
+
+private fun sourceLabel(source: String): String? = when (source) {
+    "repo" -> "THIS REPO"
+    "plugin" -> "PLUGIN"
+    "builtin" -> "BUILT IN"
+    else -> null
 }

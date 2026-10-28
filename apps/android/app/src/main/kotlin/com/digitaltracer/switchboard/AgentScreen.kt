@@ -1,6 +1,5 @@
 package com.digitaltracer.switchboard
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -8,13 +7,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.Keyboard
-import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -52,35 +48,20 @@ fun AgentScreen(model: AppModel, voice: Voice, listen: Listen, machine: String, 
             verticalArrangement = Arrangement.spacedBy(18.dp),
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                LargeTitle(label, horizontal = 0)
+                PageTitle(label)
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     info?.let { StatusPill(SessionStatus.agent(it.agentStatus)) }
                     Text(listOfNotNull(info?.kind?.capitalized(), machine).joinToString(" · "), style = Type.subheadline, color = palette.secondary)
                 }
             }
-            info?.title?.takeIf { it.isNotEmpty() }?.let { Text(it, style = Type.headline, color = palette.label) }
+            info?.title?.takeIf { it.isNotEmpty() }?.let { Text(it, style = Type.subheadline, fontWeight = FontWeight.SemiBold, color = palette.label) }
+            model.said[AppModel.saidKey(agentTarget(machine, name, label))]?.let { SaidBubble(it) }
+            SummaryCard(convo) { model.path.add(Route.Conversation(ConversationSource.Agent(machine, name), label)) }
+            ConversationLinks(model, ConversationSource.Agent(machine, name), label, hasConversation = convo.unavailable == null)
             Text(
                 "This agent asks for approval in Herdr, on its machine, not here.",
-                style = Type.footnote, color = palette.secondary,
+                Modifier.padding(horizontal = 4.dp), style = Type.footnote, color = palette.secondary,
             )
-            model.said[AppModel.saidKey(agentTarget(machine, name, label))]?.let { SaidBubble(it) }
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("LATEST", style = Type.footnote, fontWeight = FontWeight.SemiBold, color = palette.secondary)
-                val why = convo.unavailable
-                    if (why != null) {
-                        Text("No conversation to show ($why).", style = Type.footnote, color = palette.secondary)
-                    } else {
-                        ConversationPreview(convo)
-                    }
-                Row(
-                    Modifier.clickable { model.path.add(Route.Conversation(ConversationSource.Agent(machine, name), label)) }
-                        .padding(vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(if (convo.unavailable == null) "Open the conversation" else "See the agent's screen", style = Type.body, color = palette.accent)
-                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, Modifier.size(18.dp), tint = palette.accent)
-                }
-            }
         }
     }
 }

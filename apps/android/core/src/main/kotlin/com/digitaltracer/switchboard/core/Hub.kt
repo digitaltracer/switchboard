@@ -40,6 +40,7 @@ import com.digitaltracer.switchboard.api.models.PromptResponse
 import com.digitaltracer.switchboard.api.models.PushEnvironment
 import com.digitaltracer.switchboard.api.models.PushTokenRequest
 import com.digitaltracer.switchboard.api.models.Session
+import com.digitaltracer.switchboard.api.models.Skill
 import com.digitaltracer.switchboard.api.models.Sessions
 import com.digitaltracer.switchboard.api.models.StartRequest
 import com.digitaltracer.switchboard.api.models.StartResponse
@@ -295,6 +296,12 @@ class Hub private constructor(
      */
     suspend fun transcript(id: String, after: Long? = null, before: Long? = null): Transcript =
         authed { sessions.getTranscript(id, after, before) }
+
+    /** The skills and commands a session's agent can run, for the `/` picker. */
+    suspend fun skills(id: String): List<Skill> = authed { sessions.getSkills(id).skills }
+
+    suspend fun agentSkills(machine: String, agent: String): List<Skill> =
+        authed { agentsApi.getAgentSkills(machine, agent).skills }
 
     /** As [transcript], for an agent Switchboard didn't start. */
     suspend fun agentTranscript(machine: String, agent: String, after: Long? = null, before: Long? = null): Transcript =
