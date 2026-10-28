@@ -52,13 +52,13 @@ private func session(_ id: String, project: String, lifecycle: String = "running
     #expect(c.files.map(\.added) == [3, nil])
 }
 
-@Test func anAgentWithoutANameShowsWhatItsTerminalSays() throws {
+@Test func anAgentWithoutANameGoesByItsKindAndPane() throws {
     let agents: Schemas.Agents = try decode(#"""
     {"agents":[{"machine_id":"mac","name":"mono1/claude","agent_status":"idle","title":"Ignored"},
-               {"machine_id":"mac","name":"mono1/w1:p2","agent_status":"idle","title":"Fix the flaky test"},
+               {"machine_id":"mac","name":"mono1/w1:p2","kind":"claude","agent_status":"idle","title":"Session approval"},
                {"machine_id":"mac","name":"mono1/w1:p3","agent_status":"idle"}]}
     """#)
-    #expect(agents.agents.map(\.displayName) == ["mono1/claude", "Fix the flaky test", "mono1/w1:p3"])
+    #expect(agents.agents.map(\.displayName) == ["mono1/claude", "claude · w1:p2", "agent · w1:p3"])
 }
 
 private func page(_ json: String) throws -> Schemas.Transcript { try decode(json) }

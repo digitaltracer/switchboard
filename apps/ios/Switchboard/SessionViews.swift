@@ -38,16 +38,16 @@ extension HerdrSession.Agent {
 
     var isEnded: Bool { agentStatus == "ended" }
 
-    /// "Working · Claude", "Needs you · fix-flaky", or "Ended 2h ago".
+    /// "Working · Session approval", "Needs you · Claude · fix-flaky", or "Ended 2h ago · …".
     var subtitle: String {
         switch self {
         case .task(let s):
             let when = isEnded ? "Ended \(Ago.short(s.updatedAt)) ago" : status.text
             return [when, s.agent.capitalized, s.branch].compactMap { $0 }.joined(separator: " · ")
         case .live(let a):
-            return [status.text, a.kind?.capitalized].compactMap { $0 }.joined(separator: " · ")
+            return [status.text, a.title ?? a.kind?.capitalized].compactMap { $0 }.joined(separator: " · ")
         case .ended(let e):
-            return ["Ended \(Ago.short(e.endedAt)) ago", e.kind?.capitalized].compactMap { $0 }.joined(separator: " · ")
+            return ["Ended \(Ago.short(e.endedAt)) ago", e.title ?? e.kind?.capitalized].compactMap { $0 }.joined(separator: " · ")
         }
     }
 

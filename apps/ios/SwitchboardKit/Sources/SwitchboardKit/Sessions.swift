@@ -83,13 +83,22 @@ extension HerdrSession.Agent {
         }
     }
 
-    /// Its name within its session: the Herdr name without the session, or what its terminal
-    /// says when it has none.
+    /// Its name within its session: the Herdr name without the session, or its kind and pane when
+    /// it has none, e.g. `claude · w2:p1`.
     public var shortName: String {
         switch self {
         case .task(let s): s.label
-        case .live(let a): Self.short(a.name, title: a.title)
-        case .ended(let e): Self.short(e.name, title: e.title)
+        case .live(let a): Self.short(a.name, kind: a.kind)
+        case .ended(let e): Self.short(e.name, kind: e.kind)
+        }
+    }
+
+    /// What its terminal says it's working on.
+    public var title: String? {
+        switch self {
+        case .task: nil
+        case .live(let a): a.title
+        case .ended(let e): e.title
         }
     }
 
@@ -118,9 +127,8 @@ extension HerdrSession.Agent {
         }
     }
 
-    static func short(_ name: String, title: String?) -> String {
+    static func short(_ name: String, kind: String?) -> String {
         let last = name.split(separator: "/").last.map(String.init) ?? name
-        guard last.contains(":"), let title, !title.isEmpty else { return last }
-        return title
+        return last.contains(":") ? "\(kind ?? "agent") · \(last)" : last
     }
 }

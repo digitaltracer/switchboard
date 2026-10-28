@@ -22,6 +22,8 @@ final class ConversationModel {
     /// Why there's no conversation, e.g. no log yet or an older hub; the terminal stands in.
     private(set) var unavailable: String?
     private(set) var terminal = ""
+    /// The same screen with its colours, when the hub sends them.
+    private(set) var terminalAnsi: String?
     /// False until the screen has been read once.
     private(set) var terminalLoaded = false
     private(set) var terminalError: String?
@@ -79,10 +81,12 @@ final class ConversationModel {
     /// Only the screen: reading further back would scroll the agent's terminal on the Mac.
     func loadTerminal(_ hub: Hub) async {
         do {
-            terminal = switch source {
-            case .session(let id): try await hub.output(id, visible: true).text
-            case .agent(let machine, let name): try await hub.agentOutput(machine: machine, agent: name, visible: true).text
+            let out = switch source {
+            case .session(let id): try await hub.output(id, visible: true, ansi: true)
+            case .agent(let machine, let name): try await hub.agentOutput(machine: machine, agent: name, visible: true, ansi: true)
             }
+            terminal = out.text
+            terminalAnsi = out.ansi
             terminalLoaded = true
             terminalError = nil
         } catch {
@@ -150,7 +154,7 @@ struct ConversationScreen: View {
     @ViewBuilder
     private var terminal: some View {
         if convo.terminalLoaded {
-            TerminalView(text: convo.terminal)
+            TerminalView(text: convo.terminal, ansi: convo.terminalAnsi)
         } else if let error = convo.terminalError {
             Waiting(symbol: "exclamationmark.triangle", text: "Couldn't read the screen: \(error)", busy: false)
         } else {
@@ -381,6 +385,7 @@ struct StatusLine: View {
 /// double-tapped between fitted and full size. Text is laid out at full size, so it stays sharp.
 struct TerminalView: View {
     let text: String
+    var ansi: String?
 
     var body: some View {
         Group {
@@ -388,7 +393,7 @@ struct TerminalView: View {
                 Text("The screen is blank.").font(.subheadline).foregroundStyle(Color(white: 0.6))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ZoomableText(text: text)
+                ZoomableText(text: text, ansi: ansi)
             }
         }
         .background(Color.codeBackground)
@@ -398,6 +403,7 @@ struct TerminalView: View {
 
 private struct ZoomableText: UIViewRepresentable {
     let text: String
+    let ansi: String?
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -423,7 +429,7 @@ private struct ZoomableText: UIViewRepresentable {
     }
 
     func updateUIView(_ scroll: Scroll, context: Context) {
-        context.coordinator.show(text, in: scroll)
+        context.coordinator.show(text, ansi: ansi, in: scroll)
     }
 
     final class Scroll: UIScrollView {
@@ -436,18 +442,20 @@ private struct ZoomableText: UIViewRepresentable {
 
     final class Coordinator: NSObject, UIScrollViewDelegate {
         var label: UILabel?
+        private var shown: (String, String?)?
         private var fitted = false
         private var width: CGFloat = 0
 
         func viewForZooming(in scrollView: UIScrollView) -> UIView? { label }
 
         /// New text keeps the zoom; one read while at the bottom stays at the bottom.
-        func show(_ text: String, in scroll: UIScrollView) {
-            guard let label, label.text != text else { return }
+        func show(_ text: String, ansi: String?, in scroll: UIScrollView) {
+            guard let label, shown.map({ $0 != (text, ansi) }) ?? true else { return }
+            shown = (text, ansi)
             let atBottom = !fitted || scroll.contentOffset.y >= bottom(scroll) - 24
             let zoom = scroll.zoomScale
             scroll.zoomScale = 1
-            label.text = text
+            if let ansi { label.attributedText = Self.coloured(ansi, font: label.font) } else { label.text = text }
             label.accessibilityLabel = text
             let size = label.sizeThatFits(CGSize(width: CGFloat.greatestFiniteMagnitude, height: .greatestFiniteMagnitude))
             label.frame = CGRect(origin: .zero, size: size)
@@ -456,6 +464,28 @@ private struct ZoomableText: UIViewRepresentable {
             fitted = false
             fit(scroll)
             if atBottom { scroll.contentOffset.y = bottom(scroll) }
+        }
+
+        /// The screen's own colours on the dark background; dim text is drawn at half strength.
+        static func coloured(_ ansi: String, font: UIFont) -> NSAttributedString {
+            let out = NSMutableAttributedString()
+            let base = UIColor(white: 0.9, alpha: 1)
+            let bold = UIFont.monospacedSystemFont(ofSize: font.pointSize, weight: .bold)
+            for run in Ansi.parse(ansi) {
+                var fg = run.style.fg.map(Self.color) ?? base
+                var bg = run.style.bg.map(Self.color)
+                if run.style.inverse { (fg, bg) = (bg ?? UIColor(Color.codeBackground), fg) }
+                if run.style.dim { fg = fg.withAlphaComponent(0.55) }
+                var attrs: [NSAttributedString.Key: Any] = [.font: run.style.bold ? bold : font, .foregroundColor: fg]
+                if let bg { attrs[.backgroundColor] = bg }
+                if run.style.underline { attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue }
+                out.append(NSAttributedString(string: run.text, attributes: attrs))
+            }
+            return out
+        }
+
+        static func color(_ c: Ansi.Color) -> UIColor {
+            UIColor(red: CGFloat(c.r) / 255, green: CGFloat(c.g) / 255, blue: CGFloat(c.b) / 255, alpha: 1)
         }
 
         /// The smallest zoom shows the whole width; the first layout starts there.

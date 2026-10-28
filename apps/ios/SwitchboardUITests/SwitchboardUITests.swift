@@ -107,7 +107,7 @@ final class SwitchboardUITests: XCTestCase {
         snapshot(app, "home")
         crm.tap()
         XCTAssertTrue(app.staticTexts["orchestrator"].waitForExistence(timeout: 10), app.debugDescription)
-        XCTAssertTrue(app.staticTexts["Review the import"].exists)
+        XCTAssertTrue(app.staticTexts["codex · w1:p2"].exists, "an unnamed agent goes by its kind and pane")
         snapshot(app, "session")
         app.navigationBars.buttons.firstMatch.tap()
 

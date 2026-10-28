@@ -267,9 +267,10 @@ public final class Hub: Sendable {
 
     /// The agent's terminal: the last `lines`, or with `visible` only the screen as it is now.
     /// Only a visible read leaves the agent's terminal still on its machine.
-    public func output(_ id: String, lines: Int = 80, visible: Bool = false) async throws -> Schemas.Output {
+    /// With `visible` and `ansi`, the screen comes with its colours too, when the hub can send them.
+    public func output(_ id: String, lines: Int = 80, visible: Bool = false, ansi: Bool = false) async throws -> Schemas.Output {
         try await Self.unwrap {
-            try await client.getOutput(path: .init(id: id), query: .init(lines: Int32(lines), visible: visible)).ok.body.json
+            try await client.getOutput(path: .init(id: id), query: .init(lines: Int32(lines), visible: visible, ansi: ansi)).ok.body.json
         }
     }
 
@@ -355,9 +356,9 @@ public final class Hub: Sendable {
         try await Self.unwrap { try await client.listAgents().ok.body.json }
     }
 
-    public func agentOutput(machine: String, agent: String, lines: Int = 80, visible: Bool = false) async throws -> Schemas.Output {
+    public func agentOutput(machine: String, agent: String, lines: Int = 80, visible: Bool = false, ansi: Bool = false) async throws -> Schemas.Output {
         try await Self.unwrap {
-            try await client.getAgentOutput(query: .init(machineId: machine, agent: agent, lines: Int32(lines), visible: visible)).ok.body.json
+            try await client.getAgentOutput(query: .init(machineId: machine, agent: agent, lines: Int32(lines), visible: visible, ansi: ansi)).ok.body.json
         }
     }
 
@@ -401,10 +402,11 @@ public final class Hub: Sendable {
 }
 
 extension Schemas.AgentView {
-    /// Its Herdr name, or what its terminal says when it has no name and goes by its pane.
+    /// Its Herdr name, or its kind and pane when it has none, e.g. `claude · w2:p1`. Its terminal
+    /// title is what it's working on, not a name.
     public var displayName: String {
-        guard let title, !title.isEmpty, name.split(separator: "/").last?.contains(":") == true else { return name }
-        return title
+        guard let pane = name.split(separator: "/").last, pane.contains(":") else { return name }
+        return "\(kind ?? "agent") · \(pane)"
     }
 }
 

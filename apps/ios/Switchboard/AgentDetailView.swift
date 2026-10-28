@@ -30,6 +30,9 @@ struct AgentDetailView: View {
                         .foregroundStyle(.secondary)
                 }
                 .padding(.top, -6)
+                if let title = info?.title, !title.isEmpty {
+                    Text(title).font(.headline)
+                }
                 Text("This agent asks for approval in Herdr, on its machine, not here.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)

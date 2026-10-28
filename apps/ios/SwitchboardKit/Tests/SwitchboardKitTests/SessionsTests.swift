@@ -34,7 +34,8 @@ private func ended(_ name: String, at: Int64) throws -> Schemas.EndedAgent {
     )
     #expect(groups.map(\.key.name) == ["crm", "kraft-9f3c", "kraft-0000", "mono1"])
     let crm = groups[0]
-    #expect(crm.agents.map(\.shortName) == ["orchestrator", "Fix the import", "reviewer"], "ended before `since` is left out")
+    #expect(crm.agents.map(\.shortName) == ["orchestrator", "agent · w1:p2", "reviewer"], "ended before `since` is left out")
+    #expect(crm.live[1].title == "Fix the import")
     #expect(crm.ended.map(\.agentStatus) == ["ended"])
     #expect(groups[2].isEnded && groups[3].isEnded)
     #expect(groups[1].live.first?.shortName == "kraft-9f3c")
