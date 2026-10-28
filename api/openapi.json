@@ -562,6 +562,15 @@
             "schema": {
               "type": "boolean"
             }
+          },
+          {
+            "name": "ansi",
+            "in": "query",
+            "description": "With `visible`, also the screen with its colours, in `ansi`.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
@@ -1378,6 +1387,15 @@
             "name": "visible",
             "in": "query",
             "description": "Only the screen as it is now. Reading further back makes Herdr scroll an idle agent's\nterminal on its machine, so a view that refreshes should ask for this.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "ansi",
+            "in": "query",
+            "description": "With `visible`, also the screen with its colours, in `ansi`.",
             "required": false,
             "schema": {
               "type": "boolean"
@@ -2261,6 +2279,13 @@
           },
           "truncated": {
             "type": "boolean"
+          },
+          "ansi": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The same screen with its colours as ANSI SGR codes, when asked for and when it shows\nexactly `text`. Left out when masking changed the screen, or by older hubs and runners."
           }
         }
       },

@@ -397,6 +397,9 @@ pub struct OutputQuery {
     /// terminal on its machine, so a view that refreshes should ask for this.
     #[serde(default)]
     pub visible: bool,
+    /// With `visible`, also the screen with its colours, in `ansi`.
+    #[serde(default)]
+    pub ansi: bool,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -404,6 +407,10 @@ pub struct Output {
     /// The agent's terminal text, masked. Untrusted: it's the agent's, not Switchboard's.
     pub text: String,
     pub truncated: bool,
+    /// The same screen with its colours as ANSI SGR codes, when asked for and when it shows
+    /// exactly `text`. Left out when masking changed the screen, or by older hubs and runners.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ansi: Option<String>,
 }
 
 /// One file a session changed since it started.
@@ -747,6 +754,9 @@ pub struct AgentOutputQuery {
     /// terminal on its machine, so a view that refreshes should ask for this.
     #[serde(default)]
     pub visible: bool,
+    /// With `visible`, also the screen with its colours, in `ansi`.
+    #[serde(default)]
+    pub ansi: bool,
 }
 
 #[derive(Debug, Default, Deserialize, ToSchema)]

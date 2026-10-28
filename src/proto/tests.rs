@@ -114,7 +114,8 @@ fn agent_ops_and_outcomes() {
         !Op::ReadAgent {
             agent: "a".into(),
             lines: 5,
-            visible: true
+            visible: true,
+            ansi: true,
         }
         .is_mutating()
     );
@@ -385,4 +386,13 @@ fn bearer_and_authenticate() {
     let machines = [("mac", mac.as_str()), ("vps", vps.as_str())];
     assert_eq!(authenticate("v", machines), Some("vps"));
     assert_eq!(authenticate("x", machines), None);
+}
+
+#[test]
+fn a_read_from_an_older_hub_asks_for_no_colours() {
+    let op: Op = serde_json::from_value(
+        serde_json::json!({"op": "read_agent", "agent": "a", "lines": 0, "visible": true}),
+    )
+    .unwrap();
+    assert!(matches!(op, Op::ReadAgent { ansi: false, .. }), "{op:?}");
 }

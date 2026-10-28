@@ -62,6 +62,16 @@ pub async fn read(
     }
 }
 
+/// The visible screen with its colours; none when Herdr can't give it.
+pub async fn screen_ansi(herdr: &Client, agent: &str) -> Option<String> {
+    check_agent_target(agent).ok()?;
+    herdr
+        .agent_read_screen_ansi(agent)
+        .await
+        .ok()
+        .map(|r| r.text)
+}
+
 /// Herdr refuses a prompt to an agent at a dialog; the screen says what it is waiting for.
 pub async fn prompt(
     herdr: &Client,

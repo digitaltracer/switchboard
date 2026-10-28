@@ -1143,6 +1143,7 @@ async fn the_app_lists_and_reads_agents_switchboard_didnt_start_masked() {
             agent,
             lines,
             visible,
+            ..
         } => {
             assert_eq!(
                 (agent.as_str(), lines, visible),
@@ -1324,7 +1325,8 @@ async fn a_visible_read_takes_only_the_screen_so_nothing_scrolls() {
         Op::ReadAgent {
             agent: crate::runner::sessions::agent_name(&sid),
             lines: 0,
-            visible: true
+            visible: true,
+            ansi: false,
         }
     );
     r.ok(req.id, json!({"text": "the screen"})).await;

@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -424,6 +424,44 @@ pub struct ReadResult {
     pub truncated: bool,
     /// Terminal output is the agent's, not Switchboard's.
     pub untrusted: bool,
+    /// The screen with its colours as ANSI SGR codes, only when it shows exactly `text`: masking
+    /// that changed anything drops the colours.
+    pub ansi: Option<String>,
+}
+
+/// A runner's screen read, already masked by the runner link.
+fn screen_result(v: &Value) -> ReadResult {
+    let text = v
+        .get("text")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    ReadResult {
+        ansi: screen_colours(&text, v.get("ansi").and_then(Value::as_str)),
+        text,
+        revision: None,
+        truncated: false,
+        untrusted: true,
+    }
+}
+
+/// `ansi` from a runner's screen read, if it holds only colour codes and, without them, is the
+/// masked `text` line for line. A secret split by colour codes could escape masking otherwise.
+pub fn screen_colours(text: &str, ansi: Option<&str>) -> Option<String> {
+    static SGR: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"\x1b\[[0-9;]*m").expect("valid regex"));
+    let ansi = ansi?;
+    let plain = SGR.replace_all(ansi, "");
+    if plain.contains('\x1b') {
+        return None;
+    }
+    let lines = |t: &str| -> Vec<String> {
+        t.trim_end()
+            .lines()
+            .map(|l| l.trim_end().to_owned())
+            .collect()
+    };
+    (lines(&plain) == lines(text)).then(|| ansi.to_owned())
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1079,6 +1117,7 @@ impl SessionService {
             revision: v.get("revision").and_then(Value::as_u64),
             truncated: v.get("truncated").and_then(Value::as_bool).unwrap_or(false),
             untrusted: true,
+            ansi: None,
         })
     }
 
@@ -1150,8 +1189,13 @@ impl SessionService {
         Ok(redact_as(page))
     }
 
-    /// The session agent's visible screen, which shows any dialog. Untrusted text.
-    pub async fn read_screen(&self, session_id: &str) -> Result<ReadResult, HubError> {
+    /// The session agent's visible screen, which shows any dialog, and with `colours` the same
+    /// screen with its colours. Untrusted text.
+    pub async fn read_screen(
+        &self,
+        session_id: &str,
+        colours: bool,
+    ) -> Result<ReadResult, HubError> {
         let s = self.session(session_id).await?;
         let agent = s
             .agent_name
@@ -1163,22 +1207,14 @@ impl SessionService {
             agent,
             lines: 0,
             visible: true,
+            ansi: colours,
         };
         let v = self
             .runners
             .call(&s.machine_id, op, CALL_TIMEOUT)
             .await
             .map_err(|e| runner_error(&s.machine_id, e))?;
-        Ok(ReadResult {
-            text: v
-                .get("text")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned(),
-            revision: None,
-            truncated: false,
-            untrusted: true,
-        })
+        Ok(screen_result(&v))
     }
 
     /// Answers a question dialog the runner recognised. Permission dialogs go through `decide`.
@@ -1256,27 +1292,32 @@ impl SessionService {
         lines: u32,
         visible: bool,
     ) -> Result<ReadResult, HubError> {
+        self.read_agent_with(machine, agent, lines, visible, false)
+            .await
+    }
+
+    /// `read_agent`, and with `colours` the visible screen with its colours too.
+    pub async fn read_agent_with(
+        &self,
+        machine: &str,
+        agent: &str,
+        lines: u32,
+        visible: bool,
+        colours: bool,
+    ) -> Result<ReadResult, HubError> {
         self.known_machine(machine)?;
         let op = Op::ReadAgent {
             agent: agent.to_owned(),
             lines: lines.min(MAX_READ_LINES),
             visible,
+            ansi: visible && colours,
         };
         let v = self
             .runners
             .call(machine, op, CALL_TIMEOUT)
             .await
             .map_err(|e| runner_error(machine, e))?;
-        Ok(ReadResult {
-            text: v
-                .get("text")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned(),
-            revision: None,
-            truncated: false,
-            untrusted: true,
-        })
+        Ok(screen_result(&v))
     }
 
     /// Prompts an agent Switchboard didn't create; Herdr refuses while it sits at a dialog.

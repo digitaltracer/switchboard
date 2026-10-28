@@ -101,11 +101,14 @@ pub enum Op {
     ListSessions,
     /// Every named Herdr agent on the machine, Switchboard's or not.
     Agents,
-    /// Reads any named agent; `visible` is the current screen, which shows a dialog.
+    /// Reads any named agent; `visible` is the current screen, which shows a dialog. `ansi` adds
+    /// that screen with its colours; older runners leave it out.
     ReadAgent {
         agent: String,
         lines: u32,
         visible: bool,
+        #[serde(default)]
+        ansi: bool,
     },
     /// Prompts an agent Switchboard didn't create. It has no hooks, so nothing answers its dialogs.
     PromptAgent {

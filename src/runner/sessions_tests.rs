@@ -740,6 +740,7 @@ async fn agents_in_every_running_herdr_session_are_listed_and_reached_by_session
             agent: "pca-udp/claude".into(),
             lines: 0,
             visible: true,
+            ansi: false,
         })
         .await
         .unwrap();
@@ -750,6 +751,7 @@ async fn agents_in_every_running_herdr_session_are_listed_and_reached_by_session
             agent: "mono1/claude".into(),
             lines: 0,
             visible: true,
+            ansi: false,
         })
         .await
         .unwrap();

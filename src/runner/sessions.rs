@@ -376,6 +376,7 @@ impl Sessions {
                 agent,
                 lines,
                 visible,
+                ansi,
             } => {
                 let lines = if lines == 0 {
                     DEFAULT_READ_LINES
@@ -386,7 +387,14 @@ impl Sessions {
                 let text = agents::read(&herdr, agent, lines, visible)
                     .await
                     .map_err(herdr_err)?;
-                Ok(json!({ "text": text, "untrusted": true }))
+                let mut out = json!({ "text": text, "untrusted": true });
+                if visible
+                    && ansi
+                    && let Some(screen) = agents::screen_ansi(&herdr, agent).await
+                {
+                    out["ansi"] = Value::String(screen);
+                }
+                Ok(out)
             }
             Op::PromptAgent { agent, text } => {
                 let (herdr, name, owned) = self.resolve_agent(&agent);

@@ -1653,14 +1653,15 @@ async fn the_screen_read_forwards_to_the_runners_visible_read_and_is_masked() {
     let mut vps = connect(&r.svc, "vps", vec![]).await;
     let sid = running(&r, &mut vps).await;
     let (svc, s2) = (r.svc.clone(), sid.clone());
-    let task = tokio::spawn(async move { svc.read_screen(&s2).await });
+    let task = tokio::spawn(async move { svc.read_screen(&s2, false).await });
     let req = vps.req().await;
     assert_eq!(
         req.op,
         Op::ReadAgent {
             agent: agent_name(&sid),
             lines: 0,
-            visible: true
+            visible: true,
+            ansi: false,
         }
     );
     vps.ok(
@@ -1672,9 +1673,71 @@ async fn the_screen_read_forwards_to_the_runners_visible_read_and_is_masked() {
     assert!(screen.untrusted);
     assert!(!screen.text.contains("abcdefghijklmnop"), "{}", screen.text);
     assert_eq!(
-        r.svc.read_screen("nope").await.unwrap_err().code(),
+        r.svc.read_screen("nope", false).await.unwrap_err().code(),
         "unknown_session"
     );
+}
+
+#[tokio::test]
+async fn a_screens_colours_come_through_only_when_masking_left_it_alone() {
+    let r = rig().await;
+    let mut vps = connect(&r.svc, "vps", vec![]).await;
+    let sid = running(&r, &mut vps).await;
+    let read = |text: &str, ansi: &str| {
+        let (svc, s2) = (r.svc.clone(), sid.clone());
+        let reply = json!({"text": text, "ansi": ansi, "untrusted": true});
+        async move {
+            let task = tokio::spawn(async move { svc.read_screen(&s2, true).await });
+            (task, reply)
+        }
+    };
+
+    let (task, reply) = read(
+        "❯ push both\n  Pushed",
+        "\x1b[48;2;55;55;55m❯ push both\x1b[0m   \n  \x1b[2mPushed\x1b[0m",
+    )
+    .await;
+    let req = vps.req().await;
+    assert!(
+        matches!(req.op, Op::ReadAgent { ansi: true, .. }),
+        "{:?}",
+        req.op
+    );
+    vps.ok(req.id, reply).await;
+    let screen = task.await.unwrap().unwrap();
+    assert!(screen.ansi.unwrap().contains("48;2;55;55;55"));
+
+    // The colour codes split the token, so only the plain text was masked: no colours.
+    let (task, reply) = read(
+        "found ghp_abcdefghijklmnopqrstuvwxyz0123456789 in the log",
+        "found ghp_abcdefghij\x1b[1mklmnopqrstuvwxyz0123456789\x1b[0m in the log",
+    )
+    .await;
+    let req = vps.req().await;
+    vps.ok(req.id, reply).await;
+    let screen = task.await.unwrap().unwrap();
+    assert!(!screen.text.contains("klmnop"), "{}", screen.text);
+    assert_eq!(screen.ansi, None);
+}
+
+#[test]
+fn colours_must_be_colour_codes_only_and_match_the_text() {
+    assert_eq!(
+        screen_colours("a\nb", Some("\x1b[31ma\x1b[0m  \nb\n")).as_deref(),
+        Some("\x1b[31ma\x1b[0m  \nb\n")
+    );
+    assert_eq!(
+        screen_colours("a", Some("\x1b[2Ja")),
+        None,
+        "cursor control"
+    );
+    assert_eq!(
+        screen_colours("a", Some("\x1b]0;title\x07a")),
+        None,
+        "a title"
+    );
+    assert_eq!(screen_colours("a", Some("b")), None);
+    assert_eq!(screen_colours("a", None), None);
 }
 
 #[tokio::test]
@@ -1685,13 +1748,18 @@ async fn screen_reads_are_capped() {
     let mut tasks = Vec::new();
     for _ in 0..MAX_SCREEN_READS {
         let (svc, s2) = (r.svc.clone(), sid.clone());
-        tasks.push(tokio::spawn(async move { svc.read_screen(&s2).await }));
+        tasks.push(tokio::spawn(
+            async move { svc.read_screen(&s2, false).await },
+        ));
     }
     let mut reqs = Vec::new();
     for _ in 0..MAX_SCREEN_READS {
         reqs.push(vps.req().await);
     }
-    assert_eq!(r.svc.read_screen(&sid).await.unwrap_err().code(), "busy");
+    assert_eq!(
+        r.svc.read_screen(&sid, false).await.unwrap_err().code(),
+        "busy"
+    );
     for req in reqs {
         vps.ok(req.id, json!({"text": "x"})).await;
     }
@@ -1699,7 +1767,7 @@ async fn screen_reads_are_capped() {
         t.await.unwrap().unwrap();
     }
     let (svc, s2) = (r.svc.clone(), sid.clone());
-    let again = tokio::spawn(async move { svc.read_screen(&s2).await });
+    let again = tokio::spawn(async move { svc.read_screen(&s2, false).await });
     let req = vps.req().await;
     vps.ok(req.id, json!({"text": "y"})).await;
     assert_eq!(again.await.unwrap().unwrap().text, "y");

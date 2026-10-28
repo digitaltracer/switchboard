@@ -59,7 +59,15 @@ impl Handler for Fake {
                 )
             }
             Op::Read { .. } => Ok(json!({ "text": OUTPUT, "truncated": false, "untrusted": true })),
-            Op::ReadAgent { .. } => Ok(json!({ "text": OUTPUT, "untrusted": true })),
+            Op::ReadAgent { ansi, .. } => {
+                let mut out = json!({ "text": OUTPUT, "untrusted": true });
+                if ansi {
+                    // The prompt on its shaded band, as Claude draws it.
+                    let (first, rest) = OUTPUT.split_once('\n').unwrap_or((OUTPUT, ""));
+                    out["ansi"] = json!(format!("\x1b[48;2;55;55;55m{first}\x1b[0m\n{rest}"));
+                }
+                Ok(out)
+            }
             Op::Transcript {
                 after: Some(end), ..
             } => Ok(json!({ "items": [], "start": end, "end": end })),
