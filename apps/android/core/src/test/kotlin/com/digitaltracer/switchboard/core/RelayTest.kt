@@ -15,6 +15,7 @@ import mockwebserver3.Dispatcher
 import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
 import mockwebserver3.RecordedRequest
+import mockwebserver3.SocketEffect
 import okhttp3.OkHttpClient
 
 class RelayTest {
@@ -91,14 +92,39 @@ class RelayTest {
         assertIs<HubError.Unreachable>(runCatching { hub.meta() }.exceptionOrNull(), "a relay that's down is unreachable")
     }
 
+    @Test
+    fun aDroppedConnectionIsRetriedOnceSealedAfresh() = runTest {
+        val relay = MockRelay()
+        server.dispatcher = relay
+        server.start()
+        val route = RelayRoute.of(
+            server.url("/relay").toString(),
+            P256.sec1(relay.hub.public as ECPublicKey).base64Url,
+            SoftwareKeys().publicKey(KeyRole.Auth).base64Url,
+        )!!
+        val hub = Hub.paired(Pairing(route.relayUrl, "h1", "d1", "Phone", route), SoftwareKeys(), 3, OkHttpClient())
+
+        relay.drops = 1
+        assertEquals("h1", hub.meta().hubId)
+        assertEquals(2, relay.epks.size)
+        assertEquals(2, relay.epks.toSet().size, "the hub refuses a key it has seen, so the retry needs its own")
+
+        relay.drops = 2
+        assertNull(runCatching { hub.meta() }.getOrNull(), "only one retry")
+        assertEquals(4, relay.epks.size)
+    }
+
     /** Plays relay and hub at once: opens the phone's envelope with the hub key and answers it. */
     private class MockRelay : Dispatcher() {
         val hub = RelaySeal.ephemeral()
         @Volatile var status = 200
         /** A non-JSON error page, as nginx sends when the relay is down. */
         @Volatile var errorPage: String? = null
+        /** Requests to answer by closing the connection instead. */
+        @Volatile var drops = 0
         val seen = mutableListOf<RelaySeal.PlainRequest>()
         val paths = mutableListOf<String>()
+        val epks = mutableListOf<String>()
 
         override fun dispatch(request: RecordedRequest): MockResponse {
             paths += request.url.encodedPath
@@ -107,6 +133,11 @@ class RelayTest {
                     .body(errorPage ?: """{"error":{"code":"hub_offline","message":"x"}}""").build()
             }
             val env = RelaySeal.json.decodeFromString<RelaySeal.Envelope>(request.body!!.utf8())
+            epks += env.epk!!
+            if (drops > 0) {
+                drops--
+                return MockResponse.Builder().onResponseStart(SocketEffect.CloseSocket()).build()
+            }
             val epk = P256.publicKey(base64UrlDecode(env.epk!!)!!)!!
             val keys = RelaySeal.keys(RelaySeal.agree(hub.private, epk), epk, hub.public)
             val plain = RelaySeal.open(base64UrlDecode(env.ct)!!, keys.request)

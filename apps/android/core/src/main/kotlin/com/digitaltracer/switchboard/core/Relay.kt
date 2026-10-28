@@ -155,18 +155,30 @@ class RelayInterceptor(private val route: RelayRoute, private val http: OkHttpCl
             headers = headers,
             body = Base64.getEncoder().encodeToString(body),
         )
-        val eph = RelaySeal.ephemeral()
-        val keys = RelaySeal.keys(RelaySeal.agree(eph.private, hub), eph.public, hub)
-        val envelope = RelaySeal.Envelope(
-            v = RelaySeal.VERSION,
-            epk = P256.sec1(eph.public as ECPublicKey).base64Url,
-            ct = RelaySeal.seal(RelaySeal.json.encodeToString(plain).toByteArray(), keys.request).base64Url,
-        )
-        val post = Request.Builder()
-            .url("${route.relayUrl}/h/${route.relayId}")
-            .post(RelaySeal.json.encodeToString(envelope).toRequestBody(JSON))
-            .build()
-        val (status, data) = http.newCall(post).execute().use { it.code to it.body.bytes() }
+        fun send(): Triple<Int, ByteArray, RelaySeal.Keys> {
+            val eph = RelaySeal.ephemeral()
+            val keys = RelaySeal.keys(RelaySeal.agree(eph.private, hub), eph.public, hub)
+            val envelope = RelaySeal.Envelope(
+                v = RelaySeal.VERSION,
+                epk = P256.sec1(eph.public as ECPublicKey).base64Url,
+                ct = RelaySeal.seal(RelaySeal.json.encodeToString(plain).toByteArray(), keys.request).base64Url,
+            )
+            val post = Request.Builder()
+                .url("${route.relayUrl}/h/${route.relayId}")
+                .post(RelaySeal.json.encodeToString(envelope).toRequestBody(JSON))
+                .build()
+            return http.newCall(post).execute().use { Triple(it.code, it.body.bytes(), keys) }
+        }
+        // A connection that died under the request is retried once, sealed afresh: the hub refuses a
+        // key it has already seen, and mutating calls carry request ids, so a second copy is safe.
+        val (status, data, keys) = try {
+            send()
+        } catch (e: java.io.InterruptedIOException) {
+            throw e
+        } catch (e: IOException) {
+            if (chain.call().isCanceled()) throw e
+            send()
+        }
         if (status != 200) {
             val decoded = runCatching { RelaySeal.json.decodeFromString<ApiError>(data.decodeToString()) }.getOrNull()
             val code = decoded?.error?.code ?: "relay_$status"
@@ -207,8 +219,17 @@ class RelayInterceptor(private val route: RelayRoute, private val http: OkHttpCl
     companion object {
         private val JSON = "application/json".toMediaType()
 
-        /** The relay answers within 45 s, with the hub's reply or its own timeout. */
+        /**
+         * The relay answers within 45 s, with the hub's reply or its own timeout. Pings find a
+         * connection that died quietly within seconds; OkHttp's own retry would resend the same
+         * sealed bytes, which the hub refuses as a replay.
+         */
         fun client(base: OkHttpClient = OkHttpClient()): OkHttpClient =
-            base.newBuilder().callTimeout(50, TimeUnit.SECONDS).readTimeout(50, TimeUnit.SECONDS).build()
+            base.newBuilder()
+                .callTimeout(50, TimeUnit.SECONDS)
+                .readTimeout(50, TimeUnit.SECONDS)
+                .pingInterval(10, TimeUnit.SECONDS)
+                .retryOnConnectionFailure(false)
+                .build()
     }
 }
