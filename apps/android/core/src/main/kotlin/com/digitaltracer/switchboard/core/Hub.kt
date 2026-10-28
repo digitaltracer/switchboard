@@ -285,8 +285,9 @@ class Hub private constructor(
      * The agent's terminal: the last [lines], or with [visible] only the screen as it is now. Only a
      * visible read leaves the agent's terminal still on its machine.
      */
-    suspend fun output(id: String, lines: Int = 80, visible: Boolean = false): Output =
-        authed { sessions.getOutput(id, lines, visible) }
+    /** With [visible] and [ansi], the screen comes with its colours too, when the hub can send them. */
+    suspend fun output(id: String, lines: Int = 80, visible: Boolean = false, ansi: Boolean = false): Output =
+        authed { sessions.getOutput(id, lines, visible, ansi) }
 
     /**
      * A page of the session's conversation from its agent's own log: the latest, the part after an
@@ -338,8 +339,8 @@ class Hub private constructor(
     /** Running agents Switchboard didn't start, and those that ended in the last day. */
     suspend fun agents(): Agents = authed { agentsApi.listAgents() }
 
-    suspend fun agentOutput(machine: String, agent: String, lines: Int = 80, visible: Boolean = false): Output =
-        authed { agentsApi.getAgentOutput(machine, agent, lines, visible) }
+    suspend fun agentOutput(machine: String, agent: String, lines: Int = 80, visible: Boolean = false, ansi: Boolean = false): Output =
+        authed { agentsApi.getAgentOutput(machine, agent, lines, visible, ansi) }
 
     // Approvals.
 
@@ -369,12 +370,11 @@ class Hub private constructor(
         authed { devicesApi.setPushToken(PushTokenRequest(environment, token)) }
 }
 
-/** Its Herdr name, or what its terminal says when it has no name and goes by its pane. */
+/** Its Herdr name, or its kind and pane when it has none, e.g. `claude · w2:p1`. Its terminal title is what it's working on, not a name. */
 val AgentView.displayName: String
     get() {
-        val title = title
-        if (title.isNullOrEmpty() || !name.split('/').last().contains(':')) return name
-        return title
+        val pane = name.substringAfterLast('/')
+        return if (pane.contains(':')) "${kind ?: "agent"} · $pane" else name
     }
 
 fun sessionTarget(s: Session) = TargetView("session", s.machineId, s.label, s.id, s.agentName)

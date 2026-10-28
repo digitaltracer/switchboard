@@ -61,15 +61,15 @@ class RoutingTest {
     }
 
     @Test
-    fun anAgentWithoutANameShowsWhatItsTerminalSays() {
+    fun anAgentWithoutANameGoesByItsKindAndPane() {
         val agents: Agents = decode(
             """
             {"agents":[{"machine_id":"mac","name":"mono1/claude","agent_status":"idle","title":"Ignored"},
-                       {"machine_id":"mac","name":"mono1/w1:p2","agent_status":"idle","title":"Fix the flaky test"},
+                       {"machine_id":"mac","name":"mono1/w1:p2","kind":"claude","agent_status":"idle","title":"Session approval"},
                        {"machine_id":"mac","name":"mono1/w1:p3","agent_status":"idle"}]}
             """,
         )
-        assertEquals(listOf("mono1/claude", "Fix the flaky test", "mono1/w1:p3"), agents.agents.map { it.displayName })
+        assertEquals(listOf("mono1/claude", "claude · w1:p2", "agent · w1:p3"), agents.agents.map { it.displayName })
     }
 
     @Test

@@ -72,12 +72,20 @@ val HerdrSession.Agent.machineId: String
         is HerdrSession.Agent.Ended -> agent.machineId
     }
 
-/** Its name within its session: the Herdr name without the session, or what its terminal says when it has none. */
+/** Its name within its session: the Herdr name without the session, or its kind and pane when it has none, e.g. `claude · w2:p1`. */
 val HerdrSession.Agent.shortName: String
     get() = when (this) {
         is HerdrSession.Agent.Task -> session.label
-        is HerdrSession.Agent.Live -> short(agent.name, agent.title)
-        is HerdrSession.Agent.Ended -> short(agent.name, agent.title)
+        is HerdrSession.Agent.Live -> short(agent.name, agent.kind)
+        is HerdrSession.Agent.Ended -> short(agent.name, agent.kind)
+    }
+
+/** What its terminal says it's working on. */
+val HerdrSession.Agent.title: String?
+    get() = when (this) {
+        is HerdrSession.Agent.Task -> null
+        is HerdrSession.Agent.Live -> agent.title
+        is HerdrSession.Agent.Ended -> agent.title
     }
 
 /** Herdr's view of it: `idle`, `working`, `blocked`, `done`, or `ended`. */
@@ -102,7 +110,7 @@ val HerdrSession.Agent.endedAt: Long
         is HerdrSession.Agent.Ended -> agent.endedAt
     }
 
-private fun short(name: String, title: String?): String {
+private fun short(name: String, kind: String?): String {
     val last = name.substringAfterLast('/')
-    return if (last.contains(':') && !title.isNullOrEmpty()) title else last
+    return if (last.contains(':')) "${kind ?: "agent"} · $last" else last
 }

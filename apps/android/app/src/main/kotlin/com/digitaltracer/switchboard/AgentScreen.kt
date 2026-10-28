@@ -58,6 +58,7 @@ fun AgentScreen(model: AppModel, voice: Voice, listen: Listen, machine: String, 
                     Text(listOfNotNull(info?.kind?.capitalized(), machine).joinToString(" · "), style = Type.subheadline, color = palette.secondary)
                 }
             }
+            info?.title?.takeIf { it.isNotEmpty() }?.let { Text(it, style = Type.headline, color = palette.label) }
             Text(
                 "This agent asks for approval in Herdr, on its machine, not here.",
                 style = Type.footnote, color = palette.secondary,

@@ -77,11 +77,13 @@ import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.digitaltracer.switchboard.api.models.Transcript
 import com.digitaltracer.switchboard.api.models.TranscriptItem
+import com.digitaltracer.switchboard.core.Ansi
 import com.digitaltracer.switchboard.core.Conversation
 import com.digitaltracer.switchboard.core.Hub
 import com.digitaltracer.switchboard.core.HubError
@@ -104,6 +106,9 @@ class ConversationModel(val source: ConversationSource) {
     var unavailable by mutableStateOf<String?>(null)
         private set
     var terminal by mutableStateOf("")
+        private set
+    /** The same screen with its colours, when the hub sends them. */
+    var terminalAnsi by mutableStateOf<String?>(null)
         private set
     /** False until the screen has been read once. */
     var terminalLoaded by mutableStateOf(false)
@@ -170,10 +175,12 @@ class ConversationModel(val source: ConversationSource) {
     /** Only the screen: reading further back would scroll the agent's terminal on the Mac. */
     suspend fun loadTerminal(hub: Hub) {
         try {
-            terminal = when (val s = source) {
-                is ConversationSource.Session -> hub.output(s.id, visible = true).text
-                is ConversationSource.Agent -> hub.agentOutput(s.machine, s.name, visible = true).text
+            val out = when (val s = source) {
+                is ConversationSource.Session -> hub.output(s.id, visible = true, ansi = true)
+                is ConversationSource.Agent -> hub.agentOutput(s.machine, s.name, visible = true, ansi = true)
             }
+            terminal = out.text
+            terminalAnsi = out.ansi
             terminalLoaded = true
             terminalError = null
         } catch (e: CancellationException) {
@@ -249,7 +256,7 @@ fun ConversationScreen(model: AppModel, source: ConversationSource, title: Strin
 private fun Screen(convo: ConversationModel) {
     val error = convo.terminalError
     when {
-        convo.terminalLoaded -> TerminalView(convo.terminal)
+        convo.terminalLoaded -> TerminalView(convo.terminal, convo.terminalAnsi)
         error != null -> Waiting(Icons.Outlined.ErrorOutline, "Couldn't read the screen: $error", busy = false)
         else -> Waiting(Icons.Outlined.Terminal, "Loading the screen…", busy = true)
     }
@@ -442,7 +449,7 @@ private fun StatusLine(status: SessionStatus) {
  * double-tapped between fitted and full size. Text is laid out at full size, so it stays sharp.
  */
 @Composable
-fun TerminalView(text: String) {
+fun TerminalView(text: String, ansi: String? = null) {
     val measurer = rememberTextMeasurer()
     val style = TextStyle(color = Color(0xFFE6E6E6), fontFamily = FontFamily.Monospace, fontSize = 12.sp)
     if (text.isBlank()) {
@@ -451,7 +458,9 @@ fun TerminalView(text: String) {
         }
         return
     }
-    val layout = remember(text) { measurer.measure(text, style, softWrap = false) }
+    val layout = remember(text, ansi) {
+        if (ansi != null) measurer.measure(coloured(ansi), style, softWrap = false) else measurer.measure(text, style, softWrap = false)
+    }
     BoxWithConstraints(Modifier.fillMaxSize().background(codeBackground).clipToBounds().testTag("terminal")) {
         val pad = with(LocalDensity.current) { 12.dp.toPx() }
         val view = Size(constraints.maxWidth.toFloat(), constraints.maxHeight.toFloat())
@@ -498,6 +507,30 @@ fun TerminalView(text: String) {
                 drawText(layout, topLeft = Offset(pad, pad))
             }
         }
+    }
+}
+
+/** The screen's own colours on the dark background; dim text is drawn at half strength. */
+private fun coloured(ansi: String): AnnotatedString = buildAnnotatedString {
+    fun color(c: Ansi.Color) = Color(c.r, c.g, c.b)
+    for (run in Ansi.parse(ansi)) {
+        var fg = run.style.fg?.let(::color) ?: Color(0xFFE6E6E6)
+        var bg = run.style.bg?.let(::color)
+        if (run.style.inverse) {
+            val swapped = bg ?: codeBackground
+            bg = fg
+            fg = swapped
+        }
+        if (run.style.dim) fg = fg.copy(alpha = 0.55f)
+        withStyle(
+            SpanStyle(
+                color = fg,
+                background = bg ?: Color.Unspecified,
+                fontWeight = if (run.style.bold) FontWeight.Bold else null,
+                fontStyle = if (run.style.italic) FontStyle.Italic else null,
+                textDecoration = if (run.style.underline) TextDecoration.Underline else null,
+            ),
+        ) { append(run.text) }
     }
 }
 

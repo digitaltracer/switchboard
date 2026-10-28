@@ -37,7 +37,8 @@ class SessionsTest {
         )
         assertEquals(listOf("crm", "kraft-9f3c", "kraft-0000", "mono1"), groups.map { it.key.name })
         val crm = groups[0]
-        assertEquals(listOf("orchestrator", "Fix the import", "reviewer"), crm.agents.map { it.shortName }, "ended before `since` is left out")
+        assertEquals(listOf("orchestrator", "agent · w1:p2", "reviewer"), crm.agents.map { it.shortName }, "ended before `since` is left out")
+        assertEquals("Fix the import", crm.live[1].title)
         assertEquals(listOf("ended"), crm.ended.map { it.agentStatus })
         assertTrue(groups[2].isEnded && groups[3].isEnded)
         assertEquals("kraft-9f3c", groups[1].live.first().shortName)

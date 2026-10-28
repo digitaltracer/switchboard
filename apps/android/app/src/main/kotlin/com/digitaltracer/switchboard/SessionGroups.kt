@@ -53,13 +53,13 @@ val HerdrSession.Agent.status: SessionStatus
 
 val HerdrSession.Agent.isEnded get() = agentStatus == "ended"
 
-/** "Working · Claude", "Needs you · Claude · fix-flaky", or "Ended 2h ago". */
+/** "Working · Session approval", "Needs you · Claude · fix-flaky", or "Ended 2h ago · …". */
 val HerdrSession.Agent.subtitle: String
     get() = when (this) {
         is HerdrSession.Agent.Task ->
             listOfNotNull(if (isEnded) ended(session.updatedAt) else status.text, session.agent.capitalized(), session.branch).joinToString(" · ")
-        is HerdrSession.Agent.Live -> listOfNotNull(status.text, agent.kind?.capitalized()).joinToString(" · ")
-        is HerdrSession.Agent.Ended -> listOfNotNull(ended(agent.endedAt), agent.kind?.capitalized()).joinToString(" · ")
+        is HerdrSession.Agent.Live -> listOfNotNull(status.text, agent.title ?: agent.kind?.capitalized()).joinToString(" · ")
+        is HerdrSession.Agent.Ended -> listOfNotNull(ended(agent.endedAt), agent.title ?: agent.kind?.capitalized()).joinToString(" · ")
     }
 
 /** Where tapping it goes; an agent that ended outside Switchboard has nothing more to show. */
