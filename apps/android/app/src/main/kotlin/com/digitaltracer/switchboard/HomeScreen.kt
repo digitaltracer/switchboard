@@ -47,7 +47,6 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -94,21 +93,20 @@ fun PairedRoot(model: AppModel, voice: Voice) {
 fun HomeScreen(model: AppModel, voice: Voice, listen: Listen) {
     val waiting = model.sessions.filter { it.pendingApprovals.isNotEmpty() }
     val groups = model.herdrSessions(since = HerdrSession.startOfToday())
-    // Agents working or waiting for you, in any session.
-    val busy = groups.flatMap { g -> g.live.filter { it.needsYou || it.agentStatus == "working" }.map { Tile(it, g.key.name) } }
+    val busy = busyTiles(groups)
     // The last line each busy agent said, by tile id.
     val lastLines = remember { mutableStateMapOf<String, String>() }
     val scope = rememberCoroutineScope()
     var refreshing by remember { mutableStateOf(false) }
     var starting by remember { mutableStateOf(false) }
-    val busyNow by rememberUpdatedState(busy)
 
     LaunchedEffect(model.wakes) {
         while (true) {
             model.refreshAgents()
             val hub = model.hub ?: break
             // Each tile's line comes from the conversation; reading the terminal would scroll it on the Mac.
-            for (t in busyNow.take(8)) {
+            // The tiles are worked out after the refresh, not from the last composition, which predates it.
+            for (t in busyTiles(model.herdrSessions(since = HerdrSession.startOfToday())).take(8)) {
                 val page = when (val a = t.agent) {
                     is HerdrSession.Agent.Task -> runCatching { hub.transcript(a.session.id) }.getOrNull()
                     is HerdrSession.Agent.Live -> runCatching { hub.agentTranscript(a.agent.machineId, a.agent.name) }.getOrNull()
@@ -273,6 +271,10 @@ private fun Empty() {
         Text("Tap the mic and say what to do, like “In kraft, fix the flaky retry test.”", style = Type.body, color = palette.secondary)
     }
 }
+
+/** Agents working or waiting for you, in any session. */
+private fun busyTiles(groups: List<HerdrSession>): List<Tile> =
+    groups.flatMap { g -> g.live.filter { it.needsYou || it.agentStatus == "working" }.map { Tile(it, g.key.name) } }
 
 /** An agent working or waiting for you, and the session it's in. */
 private data class Tile(val agent: HerdrSession.Agent, val session: String) {
