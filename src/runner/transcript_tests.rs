@@ -373,3 +373,35 @@ fn a_real_codex_log_reads() {
     eprintln!("{kinds:?}, {ran} commands named");
     assert!(kinds.contains_key("user") && kinds.contains_key("tool"));
 }
+
+#[test]
+fn the_claude_running_in_the_pane_names_its_own_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let sessions = dir.path().join("sessions");
+    std::fs::create_dir(&sessions).unwrap();
+    let record = |pid: u32, id: &str| {
+        std::fs::write(
+            sessions.join(format!("{pid}.json")),
+            json!({"pid": pid, "sessionId": id, "cwd": "/repo"}).to_string(),
+        )
+        .unwrap()
+    };
+    record(31681, "5fdba77e-live");
+    // A record whose pid doesn't match its file name is someone else's.
+    std::fs::write(
+        sessions.join("400.json"),
+        json!({"pid": 401, "sessionId": "wrong"}).to_string(),
+    )
+    .unwrap();
+
+    // The pane's shell and MCP servers have no record; its Claude does.
+    assert_eq!(
+        live_claude_session(dir.path(), &[60021, 400, 31681]).as_deref(),
+        Some("5fdba77e-live")
+    );
+    assert_eq!(live_claude_session(dir.path(), &[400, 9]), None);
+    assert_eq!(
+        live_claude_session(&dir.path().join("missing"), &[31681]),
+        None
+    );
+}

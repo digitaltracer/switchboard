@@ -24,6 +24,20 @@ const MAX_TEXT: usize = 16_000;
 const MAX_INPUT: usize = 2_000;
 const MAX_OUTPUT: usize = 4_000;
 
+/// The session a running Claude is on, from the record it keeps at `<claude dir>/sessions/<pid>.json`
+/// for the first of `pids` that has one. Herdr's session id can be stale: a background Claude
+/// started from the pane reports its own. Only the `.json` records are read.
+pub fn live_claude_session(claude_dir: &Path, pids: &[u32]) -> Option<String> {
+    pids.iter().find_map(|pid| {
+        let text = std::fs::read_to_string(claude_dir.join("sessions").join(format!("{pid}.json")))
+            .ok()?;
+        let v: Value = serde_json::from_str(&text).ok()?;
+        (v.get("pid")?.as_u64()? == u64::from(*pid))
+            .then(|| v.get("sessionId")?.as_str().map(str::to_owned))
+            .flatten()
+    })
+}
+
 /// The log of Claude session `id` under `projects` (normally `~/.claude/projects`).
 pub fn find_log(projects: &Path, id: &str) -> Option<PathBuf> {
     let valid =

@@ -420,7 +420,8 @@ impl Sessions {
     }
 
     /// A page of an agent's conversation from its own log: a Claude agent's found through the
-    /// session id Herdr reports, a Codex agent's through its folder.
+    /// Claude running in its pane, else the session id Herdr reports; a Codex agent's through its
+    /// folder.
     async fn transcript(
         &self,
         agent: &str,
@@ -442,9 +443,18 @@ impl Sessions {
         };
         let find: Box<dyn FnOnce() -> Option<PathBuf> + Send> = match info.agent.as_deref() {
             Some("claude") => {
-                let id = info.agent_session.map(|s| s.value).ok_or_else(none)?;
+                let pids = herdr
+                    .pane_foreground_pids(&info.pane_id)
+                    .await
+                    .unwrap_or_default();
+                let reported = info.agent_session.map(|s| s.value);
                 let projects = self.cfg.claude_projects.clone();
-                Box::new(move || transcript::find_log(&projects, &id))
+                Box::new(move || {
+                    let live = projects
+                        .parent()
+                        .and_then(|dir| transcript::live_claude_session(dir, &pids));
+                    transcript::find_log(&projects, &live.or(reported)?)
+                })
             }
             Some("codex") => {
                 // A session's own worktree, else wherever Herdr says the agent runs.

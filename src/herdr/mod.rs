@@ -295,6 +295,36 @@ impl Client {
         }
     }
 
+    /// The visible screen with its colours, as ANSI escape codes. Untrusted text.
+    pub async fn agent_read_screen_ansi(&self, target: &str) -> Result<PaneReadResult> {
+        let params = AgentReadParams {
+            target: target.to_owned(),
+            source: ReadSource::Visible,
+            lines: None,
+            format: ReadFormat::Ansi,
+            strip_ansi: false,
+        };
+        match self.call(Method::AgentRead(params), None).await? {
+            ResponseResult::PaneRead { read } => Ok(read),
+            other => unexpected("agent.read", other),
+        }
+    }
+
+    /// The pids of a pane's foreground processes.
+    pub async fn pane_foreground_pids(&self, pane_id: &str) -> Result<Vec<u32>> {
+        let params = PaneProcessInfoParams {
+            pane_id: pane_id.to_owned(),
+        };
+        match self.call(Method::PaneProcessInfo(params), None).await? {
+            ResponseResult::PaneProcessInfo { process_info } => Ok(process_info
+                .foreground_processes
+                .into_iter()
+                .map(|p| p.pid)
+                .collect()),
+            other => unexpected("pane.process_info", other),
+        }
+    }
+
     pub async fn agent_send_keys(&self, target: &str, keys: Vec<String>) -> Result<()> {
         let params = AgentSendKeysParams {
             target: target.to_owned(),

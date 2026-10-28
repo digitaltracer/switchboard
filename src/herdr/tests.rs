@@ -448,3 +448,27 @@ fn finds_the_socket_like_the_herdr_cli() {
         "a configured session overrides the environment"
     );
 }
+
+#[test]
+fn a_panes_foreground_processes_parse() {
+    let r: ResponseResult = serde_json::from_value(serde_json::json!({
+        "type": "pane_process_info",
+        "process_info": {
+            "pane_id": "w2:p1", "shell_pid": 60021, "foreground_process_group_id": 31681,
+            "foreground_processes": [
+                {"pid": 31869, "name": "docker", "argv": ["docker", "run"]},
+                {"pid": 31681, "name": "2.1.312", "argv": ["claude"], "cwd": null}
+            ]
+        }
+    }))
+    .unwrap();
+    let ResponseResult::PaneProcessInfo { process_info } = r else {
+        panic!("expected process info")
+    };
+    let pids: Vec<u32> = process_info
+        .foreground_processes
+        .iter()
+        .map(|p| p.pid)
+        .collect();
+    assert_eq!(pids, vec![31869, 31681]);
+}

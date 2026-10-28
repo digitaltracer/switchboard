@@ -57,6 +57,8 @@ pub enum Method {
     AgentRead(AgentReadParams),
     #[serde(rename = "agent.send_keys")]
     AgentSendKeys(AgentSendKeysParams),
+    #[serde(rename = "pane.process_info")]
+    PaneProcessInfo(PaneProcessInfoParams),
     #[serde(rename = "workspace.close")]
     WorkspaceClose(WorkspaceCloseParams),
     #[serde(rename = "events.subscribe")]
@@ -76,6 +78,7 @@ impl Method {
             Method::AgentWait(_) => "agent.wait",
             Method::AgentRead(_) => "agent.read",
             Method::AgentSendKeys(_) => "agent.send_keys",
+            Method::PaneProcessInfo(_) => "pane.process_info",
             Method::WorkspaceClose(_) => "workspace.close",
             Method::EventsSubscribe(_) => "events.subscribe",
         }
@@ -165,6 +168,23 @@ pub struct AgentReadParams {
     pub lines: Option<u32>,
     pub format: ReadFormat,
     pub strip_ansi: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PaneProcessInfoParams {
+    pub pane_id: String,
+}
+
+/// What runs in a pane. The agent is one of the foreground processes.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct PaneProcessInfo {
+    #[serde(default)]
+    pub foreground_processes: Vec<PaneProcess>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct PaneProcess {
+    pub pid: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -279,6 +299,9 @@ pub enum ResponseResult {
     },
     PaneRead {
         read: PaneReadResult,
+    },
+    PaneProcessInfo {
+        process_info: PaneProcessInfo,
     },
     SubscriptionStarted,
     Ok,
