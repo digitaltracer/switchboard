@@ -14,6 +14,9 @@ struct SendSheet: View {
     @State private var sending = false
     /// One per draft and destination, so a retried send is never typed twice.
     @State private var requestId = UUID().uuidString
+    /// The skills each agent can run, by target, fetched when `/` is first typed for it.
+    @State private var skills: [String: [Schemas.Skill]] = [:]
+    @State private var skillsError: String?
 
     private var current: Schemas.TargetView? { voice.context ?? model.current }
     private var chosen: RouteOption? { routes.options.first { $0.id == (picked ?? routes.suggested) } }
@@ -33,6 +36,7 @@ struct SendSheet: View {
                     .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                     .focused($focused)
                     .accessibilityIdentifier("composeField")
+                if SkillSearch.isTyping(voice.text), let current { skillList(for: current) }
                 if !routes.options.isEmpty {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(preview?.message ?? "Goes to")
@@ -102,6 +106,81 @@ struct SendSheet: View {
         .presentationCornerRadius(28)
         .onAppear { if voice.text.isEmpty { focused = true } }
         .task(id: voice.text) { await loadPreview() }
+    }
+
+    private static func skillKey(_ t: Schemas.TargetView) -> String { AppModel.saidKey(for: t) }
+
+    /// The agent's skills matching what's typed after `/`; picking one puts it in the message.
+    @ViewBuilder
+    private func skillList(for target: Schemas.TargetView) -> some View {
+        let all = skills[Self.skillKey(target)]
+        VStack(alignment: .leading, spacing: 0) {
+            if let all {
+                let shown = Array(SkillSearch.filter(all, typed: voice.text).prefix(30))
+                if shown.isEmpty {
+                    Text("No skill matches \(voice.text).").font(.footnote).foregroundStyle(.secondary).padding(14)
+                }
+                ForEach(Array(shown.enumerated()), id: \.element.name) { i, skill in
+                    Button {
+                        voice.text = skill.name + " "
+                    } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 6) {
+                                Text(skill.name).font(.system(.callout, design: .monospaced).weight(.semibold))
+                                if skill.source != "user" {
+                                    Text(Self.sourceLabel(skill.source)).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                                }
+                            }
+                            if !skill.description.isEmpty {
+                                Text(skill.description).font(.footnote).foregroundStyle(.secondary).lineLimit(2)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 6)
+                        .overlay(alignment: .top) { if i > 0 { Divider().padding(.leading, 14) } }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("skill-\(skill.name)")
+                }
+            } else if let skillsError {
+                Text("Couldn't list its skills: \(skillsError)").font(.footnote).foregroundStyle(.secondary).padding(14)
+            } else {
+                HStack(spacing: 8) { ProgressView(); Text("Listing its skills…").font(.footnote).foregroundStyle(.secondary) }
+                    .padding(14)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .task(id: Self.skillKey(target)) { await loadSkills(for: target) }
+    }
+
+    private static func sourceLabel(_ source: String) -> String {
+        switch source {
+        case "repo": "THIS REPO"
+        case "plugin": "PLUGIN"
+        case "builtin": "BUILT IN"
+        default: source.uppercased()
+        }
+    }
+
+    private func loadSkills(for t: Schemas.TargetView) async {
+        let key = Self.skillKey(t)
+        guard skills[key] == nil, let hub = model.hub else { return }
+        do {
+            let list = if let id = t.sessionId {
+                try await hub.skills(id)
+            } else if let agent = t.agent {
+                try await hub.agentSkills(machine: t.machineId, agent: agent)
+            } else {
+                [Schemas.Skill]()
+            }
+            skills[key] = list
+            skillsError = nil
+        } catch {
+            if !Task.isCancelled { skillsError = error.localizedDescription }
+        }
     }
 
     /// Asks the hub where the text would go, after a short pause in typing.

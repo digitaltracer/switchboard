@@ -82,23 +82,8 @@ struct SessionDetailView: View {
         ForEach(s.pendingApprovals, id: \.id) { a in
             ApprovalCard(approval: a, session: s) { await refresh() }
         }
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Latest").font(.footnote.weight(.semibold)).foregroundStyle(.secondary).textCase(.uppercase)
-            if let why = convo.unavailable {
-                Label("No conversation to show (\(why)).", systemImage: "info.circle")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            } else {
-                ConversationPreview(convo: convo)
-                    .accessibilityIdentifier("latest")
-            }
-            NavigationLink(value: ConversationRef(source: .session(s.id), title: s.label)) {
-                Label(convo.unavailable == nil ? "Open the conversation" : "See the agent's screen", systemImage: "chevron.right")
-                    .labelStyle(TrailingIcon())
-            }
-            .font(.body)
-            .accessibilityIdentifier("openConversation")
-        }
+        SummaryCard(convo: convo, conversation: ConversationRef(source: .session(s.id), title: s.label))
+        ConversationLinks(source: .session(s.id), title: s.label, hasConversation: convo.unavailable == nil)
         if let changes, !changes.files.isEmpty {
             ChangesGrid(changes: changes).id("changes")
         }

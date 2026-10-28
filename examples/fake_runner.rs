@@ -72,6 +72,10 @@ impl Handler for Fake {
                 after: Some(end), ..
             } => Ok(json!({ "items": [], "start": end, "end": end })),
             Op::Transcript { .. } => Ok(json!({ "start": 0, "end": 4096, "items": [
+                { "id": "u0", "kind": "user", "text": "review the retry module", "done": false, "failed": false },
+                { "id": "t0", "kind": "tool", "tool": "Read", "text": "Read crates/core/src/retry.rs", "done": true, "failed": false },
+                { "id": "a0", "kind": "assistant", "done": false, "failed": false, "text":
+                  "## Review · retry module\n\nNo high defects. All **12** retry tests pass.\n\n### Findings\n\n- **retry-1** · `crates/core/src/retry.rs:42` · medium · flaky test\n  - The test sleeps a fixed 50 ms, so it races the scheduler on a busy machine.\n  - Fix: pause tokio's clock and advance it by hand.\n- **retry-2** · `crates/core/tests/retry.rs:9` · low · naming\n\nShall I fix retry-1?" },
                 { "id": "u1", "kind": "user", "text": "fix the flaky retry test", "done": false, "failed": false },
                 { "id": "a1", "kind": "assistant", "done": false, "failed": false, "text":
                   "The retry test sleeps for a fixed **50 ms**, so it races the scheduler on a busy machine.\n\n- Pause tokio's clock\n- Advance it by hand" },

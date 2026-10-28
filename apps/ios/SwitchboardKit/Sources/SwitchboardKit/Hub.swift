@@ -351,6 +351,15 @@ public final class Hub: Sendable {
     }
 
     /// Named Herdr agents Switchboard didn't start.
+    /// The skills and commands a session's agent can run, for the `/` picker.
+    public func skills(_ id: String) async throws -> [Schemas.Skill] {
+        try await Self.unwrap { try await client.getSkills(path: .init(id: id)).ok.body.json.skills }
+    }
+
+    public func agentSkills(machine: String, agent: String) async throws -> [Schemas.Skill] {
+        try await Self.unwrap { try await client.getAgentSkills(query: .init(machineId: machine, agent: agent)).ok.body.json.skills }
+    }
+
     /// Running agents Switchboard didn't start, and those that ended in the last day.
     public func agents() async throws -> Schemas.Agents {
         try await Self.unwrap { try await client.listAgents().ok.body.json }

@@ -8,6 +8,12 @@ extension Color {
     static let working = adaptive(light: UIColor(red: 0, green: 0.35, blue: 0.69, alpha: 1), dark: .systemBlue)
     static let done = adaptive(light: UIColor(red: 0.12, green: 0.49, blue: 0.20, alpha: 1), dark: .systemGreen)
     static let codeBackground = Color(red: 0.11, green: 0.11, blue: 0.12)
+    /// An agent's reply: a touch softer than labels, for long reading.
+    static let replyText = adaptive(light: UIColor(red: 0.12, green: 0.12, blue: 0.13, alpha: 1), dark: UIColor(red: 0.90, green: 0.90, blue: 0.92, alpha: 1))
+    /// Nested list items, one step back from a reply's text.
+    static let replyDim = adaptive(light: UIColor(red: 0.28, green: 0.28, blue: 0.29, alpha: 1), dark: UIColor(red: 0.78, green: 0.78, blue: 0.80, alpha: 1))
+    /// Behind inline code.
+    static let codeFill = adaptive(light: UIColor(red: 0.89, green: 0.89, blue: 0.91, alpha: 1), dark: UIColor(red: 0.20, green: 0.20, blue: 0.21, alpha: 1))
 
     private static func adaptive(light: UIColor, dark: UIColor) -> Color {
         Color(UIColor { $0.userInterfaceStyle == .dark ? dark : light })

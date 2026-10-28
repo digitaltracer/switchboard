@@ -59,8 +59,10 @@ final class SwitchboardUITests: XCTestCase {
             XCTAssertTrue(sent.waitForExistence(timeout: 30), app.debugDescription)
             sent.tap()
             // The latest turns come from the agent's conversation, not its terminal.
-            XCTAssertTrue(app.staticTexts["fix the flaky retry test"].waitForExistence(timeout: 20), app.debugDescription)
-            XCTAssertTrue(app.staticTexts["Edited crates/core/src/retry.rs"].exists)
+            let latest = app.descendants(matching: .any)["latest"]
+            XCTAssertTrue(latest.waitForExistence(timeout: 20), app.debugDescription)
+            XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS 'races the scheduler'")).firstMatch
+                .waitForExistence(timeout: 20), "the latest reply")
             let deny = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'deny-'")).firstMatch
             XCTAssertTrue(deny.waitForExistence(timeout: 20), "the runner asks to run the tests")
             XCTAssertTrue(app.descendants(matching: .any)["crates/core/src/retry.rs"].waitForExistence(timeout: 10), "changed files")
@@ -68,13 +70,26 @@ final class SwitchboardUITests: XCTestCase {
             deny.tap()
             XCTAssertTrue(deny.waitForNonExistence(timeout: 20), "the denied approval is gone")
 
-            // The whole conversation, then the terminal a tab away.
+            // The whole conversation: its steps fold into one line that opens to them.
             app.buttons["openConversation"].tap()
             XCTAssertTrue(app.descendants(matching: .any)["conversation"].waitForExistence(timeout: 10))
+            snapshot(app, "conversation")
+            app.buttons.containing(NSPredicate(format: "label CONTAINS 'Working'")).firstMatch.tap()
             app.staticTexts["Edited crates/core/src/retry.rs"].tap()
             XCTAssertTrue(app.staticTexts["+6 −2"].waitForExistence(timeout: 5), "a tool opens to its result")
-            snapshot(app, "conversation")
-            app.buttons["Terminal"].tap()
+
+            // Typing / lists the agent's skills; picking one puts it in the message.
+            app.buttons["messageBar"].tap()
+            XCTAssertTrue(field.waitForExistence(timeout: 5))
+            field.typeText("/co")
+            let commit = app.buttons["skill-/commit"]
+            XCTAssertTrue(commit.waitForExistence(timeout: 10), app.debugDescription)
+            snapshot(app, "skills")
+            commit.tap()
+            XCTAssertTrue(app.buttons["skill-/commit"].waitForNonExistence(timeout: 5), "picked, the list goes")
+            app.buttons["Cancel"].firstMatch.tap()
+
+            app.buttons["Screen"].tap()
             XCTAssertTrue(app.descendants(matching: .any)["terminal"].waitForExistence(timeout: 10))
             snapshot(app, "terminal")
             app.navigationBars.buttons.element(boundBy: 0).tap()

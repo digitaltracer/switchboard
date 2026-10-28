@@ -31,26 +31,16 @@ struct AgentDetailView: View {
                 }
                 .padding(.top, -6)
                 if let title = info?.title, !title.isEmpty {
-                    Text(title).font(.headline)
+                    Text(title).font(.subheadline.weight(.semibold))
                 }
+                if let said = model.said[AppModel.saidKey(for: target)] { SaidBubble(said: said) }
+                SummaryCard(convo: convo, conversation: ConversationRef(source: .agent(machine: agent.machine, name: agent.name), title: label))
+                ConversationLinks(source: .agent(machine: agent.machine, name: agent.name), title: label,
+                                  hasConversation: convo.unavailable == nil)
                 Text("This agent asks for approval in Herdr, on its machine, not here.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-                if let said = model.said[AppModel.saidKey(for: target)] { SaidBubble(said: said) }
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Latest").font(.footnote.weight(.semibold)).foregroundStyle(.secondary).textCase(.uppercase)
-                    if let why = convo.unavailable {
-                        Label("No conversation to show (\(why)).", systemImage: "info.circle")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        ConversationPreview(convo: convo)
-                    }
-                    NavigationLink(value: ConversationRef(source: .agent(machine: agent.machine, name: agent.name), title: label)) {
-                        Label(convo.unavailable == nil ? "Open the conversation" : "See the agent's screen", systemImage: "chevron.right")
-                            .labelStyle(TrailingIcon())
-                    }
-                }
+                    .padding(.horizontal, 4)
             }
             .padding(.horizontal, 20)
             .padding(.bottom, 120)
