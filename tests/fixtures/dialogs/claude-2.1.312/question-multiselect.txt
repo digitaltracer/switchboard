@@ -1,0 +1,40 @@
+
+❯ Use the AskUserQuestion tool to ask me exactly one single-select question: 'Which colour do you prefer?' with
+  options Red, Green, Blue (header 'Colour'). Do nothing else before or after except reply with my answer in one word.
+
+⏺ User answered Claude's questions:
+  ⎿  · Which colour do you prefer? → Green
+
+⏺ Green
+
+✻ Brewed for 2s · done 3:01 AM
+
+❯ Same again: AskUserQuestion with one single-select question 'Pick a fruit' options Apple, Banana, Cherry (header
+  'Fruit'). Reply with my answer only.
+
+⏺ User answered Claude's questions:
+  ⎿  · Pick a fruit → Cherry
+
+⏺ Cherry
+
+✻ Churned for 2s · done 3:01 AM
+
+❯ AskUserQuestion with one MULTI-select question (multiSelect true) 'Which toppings?' options Cheese, Olives, Basil
+  (header 'Toppings'). Reply with my answer only.
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☐ Toppings  ✔ Submit  →
+
+Which toppings?
+
+❯ 1. [ ] Cheese
+         Cheese
+  2. [ ] Olives
+         Olives
+  3. [ ] Basil
+         Basil
+  4. [ ] Type something
+     Submit
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel

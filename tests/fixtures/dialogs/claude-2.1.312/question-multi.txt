@@ -1,0 +1,40 @@
+
+
+⏺ Green
+
+✻ Brewed for 2s · done 3:01 AM
+
+❯ Same again: AskUserQuestion with one single-select question 'Pick a fruit' options Apple, Banana, Cherry (header
+  'Fruit'). Reply with my answer only.
+
+⏺ User answered Claude's questions:
+  ⎿  · Pick a fruit → Cherry
+
+⏺ Cherry
+
+✻ Churned for 2s · done 3:01 AM
+
+❯ AskUserQuestion with one MULTI-select question (multiSelect true) 'Which toppings?' options Cheese, Olives, Basil
+  (header 'Toppings'). Reply with my answer only.
+
+⏺ User declined to answer questions
+  ⎿  · Which toppings? (Cheese / Olives / Basil)
+
+✻ Crunched for 1s · done 3:02 AM
+
+❯ AskUserQuestion with TWO single-select questions in one call: 'Pick a size' options Small, Large (header 'Size'),
+  and 'Pick a drink' options Tea, Coffee (header 'Drink'). Reply with my answers only.
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☐ Size  ☐ Drink  ✔ Submit  →
+
+Pick a size
+
+❯ 1. Small
+     Small
+  2. Large
+     Large
+  3. Type something.
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel

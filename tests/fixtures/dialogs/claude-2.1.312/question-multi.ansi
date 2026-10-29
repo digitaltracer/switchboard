@@ -1,0 +1,40 @@
+
+
+[0m[38;2;255;255;255m⏺[0m Green
+
+[0m[38;2;153;153;153m✻[0m [0m[38;2;153;153;153mBrewed for 2s · done 3:01 AM[0m
+
+[0m[38;2;153;153;153m[48;2;55;55;55m❯ [0m[38;2;255;255;255m[48;2;55;55;55mSame again: AskUserQuestion with one single-select question 'Pick a fruit' options Apple, Banana, Cherry (header [0m[48;2;55;55;55m    [0m
+[0m[48;2;55;55;55m  [0m[38;2;255;255;255m[48;2;55;55;55m'Fruit'). Reply with my answer only.[0m[48;2;55;55;55m                                                                                 [0m
+
+[0m[38;2;153;153;153m⏺ [0mUser answered Claude's questions:
+[0m[38;2;153;153;153m  ⎿  · Pick a fruit → Cherry[0m
+
+[0m[38;2;255;255;255m⏺[0m Cherry
+
+[0m[38;2;153;153;153m✻[0m [0m[38;2;153;153;153mChurned for 2s · done 3:01 AM[0m
+
+[0m[38;2;153;153;153m[48;2;55;55;55m❯ [0m[38;2;255;255;255m[48;2;55;55;55mAskUserQuestion with one MULTI-select question (multiSelect true) 'Which toppings?' options Cheese, Olives, Basil [0m[48;2;55;55;55m   [0m
+[0m[48;2;55;55;55m  [0m[38;2;255;255;255m[48;2;55;55;55m(header 'Toppings'). Reply with my answer only.[0m[48;2;55;55;55m                                                                      [0m
+
+[0m[38;2;153;153;153m⏺ [0mUser declined to answer questions
+[0m[38;2;153;153;153m  ⎿  · Which toppings? (Cheese / Olives / Basil)[0m
+
+[0m[38;2;153;153;153m✻[0m [0m[38;2;153;153;153mCrunched for 1s · done 3:02 AM[0m
+
+[0m[38;2;153;153;153m[48;2;55;55;55m❯ [0m[38;2;255;255;255m[48;2;55;55;55mAskUserQuestion with TWO single-select questions in one call: 'Pick a size' options Small, Large (header 'Size'), [0m[48;2;55;55;55m   [0m
+[0m[48;2;55;55;55m  [0m[38;2;255;255;255m[48;2;55;55;55mand 'Pick a drink' options Tea, Coffee (header 'Drink'). Reply with my answers only.[0m[48;2;55;55;55m                                 [0m
+[0m[38;2;153;153;153m───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[0m[38;2;153;153;153m← [0m[38;2;0;0;0m[48;2;153;204;255m ☐ Size [0m ☐ Drink  ✔ Submit  →
+
+[0m[1m[38;2;255;255;255mPick a size[0m
+
+[0m[38;2;153;204;255m❯[0m [0m[38;2;153;153;153m1.[0m [0m[38;2;153;204;255mSmall[0m                                                                                           
+     [0m[38;2;153;153;153mSmall[0m
+  [0m[38;2;153;153;153m2. [0mLarge
+     [0m[38;2;153;153;153mLarge[0m
+  [0m[38;2;153;153;153m3. Type something.[0m
+[0m[38;2;153;153;153m───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+  4. Chat about this
+
+[0m[38;2;153;153;153mEnter to select · Tab/Arrow keys to navigate · Esc to cancel[0m

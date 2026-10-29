@@ -1,0 +1,24 @@
+
+ ▐▛███▛█   Claude Code v2.1.312
+▝▜██████▀  Opus 5.5 with high effort · Claude Max
+ ▝▝   ▝▝   ~/personal/switchboard/target/phonecap · /rc
+
+
+❯ Use the AskUserQuestion tool to ask me exactly one single-select question: 'Which colour do you prefer?' with
+  options Red, Green, Blue (header 'Colour'). Do nothing else before or after except reply with my answer in one word.
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ☐ Colour
+
+Which colour do you prefer?
+
+❯ 1. Red
+     Red
+  2. Green
+     Green
+  3. Blue
+     Blue
+  4. Type something.
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel

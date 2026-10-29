@@ -1,0 +1,40 @@
+
+
+[0m[38;2;153;153;153m✻ Churned for 2s · done 3:01 AM[0m
+
+[0m[38;2;153;153;153m[48;2;55;55;55m❯ [0m[38;2;255;255;255m[48;2;55;55;55mAskUserQuestion with one MULTI-select question (multiSelect true) 'Which toppings?' options Cheese, Olives, Basil [0m[48;2;55;55;55m   [0m
+[0m[48;2;55;55;55m  [0m[38;2;255;255;255m[48;2;55;55;55m(header 'Toppings'). Reply with my answer only.[0m[48;2;55;55;55m                                                                      [0m
+
+[0m[38;2;153;153;153m⏺ [0mUser declined to answer questions
+[0m[38;2;153;153;153m  ⎿  · Which toppings? (Cheese / Olives / Basil)[0m
+
+[0m[38;2;153;153;153m✻[0m [0m[38;2;153;153;153mCrunched for 1s · done 3:02 AM[0m
+
+[0m[38;2;153;153;153m[48;2;55;55;55m❯ [0m[38;2;255;255;255m[48;2;55;55;55mAskUserQuestion with TWO single-select questions in one call: 'Pick a size' options Small, Large (header 'Size'), [0m[48;2;55;55;55m   [0m
+[0m[48;2;55;55;55m  [0m[38;2;255;255;255m[48;2;55;55;55mand 'Pick a drink' options Tea, Coffee (header 'Drink'). Reply with my answers only.[0m[48;2;55;55;55m                                 [0m
+
+[0m[38;2;153;153;153m⏺ [0mUser declined to answer questions
+[0m[38;2;153;153;153m  ⎿  · Pick a size (Small / Large)[0m
+     [0m[38;2;153;153;153m· Pick a drink (Tea / Coffee)[0m
+
+[0m[38;2;153;153;153m✻[0m [0m[38;2;153;153;153mCrunched for 1s · done 3:02 AM[0m
+     
+[0m[38;2;153;153;153m[48;2;55;55;55m❯ [0m[38;2;255;255;255m[48;2;55;55;55mRun this exact shell command with the Bash tool: touch made-by-bash.txt[0m[48;2;55;55;55m                                              [0m
+
+[0m[38;2;153;153;153m⏺ [0mCreating an empty file named made-by-bash.txt
+[0m[38;2;153;153;153m  ⎿  $ touch made-by-bash.txt[0m
+
+[0m[38;2;153;204;255m───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+ [0m[1m[38;2;153;204;255mBash command[0m
+ [0m[1mTip: auto mode handles these prompts for you — choose "switch to auto mode" below[0m
+ [0m[38;2;153;153;153mCreate an empty file named made-by-bash.txt[0m
+[0m[38;2;80;80;80m╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌[0m
+ touch made-by-bash.txt                                                                              
+[0m[38;2;80;80;80m╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌[0m
+ Do you want to proceed?
+ [0m[38;2;153;204;255m❯[0m [0m[38;2;153;153;153m1. [0m[38;2;153;204;255mYes[0m
+   [0m[38;2;153;153;153m2. [0mYes, and always allow access to [0m[1m/home/u/personal/switchboard/target/phonecap[0m from this project
+   [0m[38;2;153;153;153m3. [0mYes, and switch to auto mode[0m[38;2;153;153;153m · auto mode handles these prompts for you[0m
+   [0m[38;2;153;153;153m4. [0mNo
+
+ [0m[38;2;153;153;153mEsc to cancel · Tab to amend[0m

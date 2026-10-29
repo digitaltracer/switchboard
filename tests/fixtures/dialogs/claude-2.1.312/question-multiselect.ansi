@@ -1,0 +1,40 @@
+
+[0m[38;2;153;153;153m[48;2;55;55;55m❯ [0m[38;2;255;255;255m[48;2;55;55;55mUse the AskUserQuestion tool to ask me exactly one single-select question: 'Which colour do you prefer?' with [0m[48;2;55;55;55m       [0m
+[0m[48;2;55;55;55m  [0m[38;2;255;255;255m[48;2;55;55;55moptions Red, Green, Blue (header 'Colour'). Do nothing else before or after except reply with my answer in one word.[0m[48;2;55;55;55m [0m
+
+[0m[38;2;153;153;153m⏺ [0mUser answered Claude's questions:
+[0m[38;2;153;153;153m  ⎿  · Which colour do you prefer? → Green[0m
+
+[0m[38;2;255;255;255m⏺[0m Green
+
+[0m[38;2;153;153;153m✻[0m [0m[38;2;153;153;153mBrewed for 2s · done 3:01 AM[0m
+
+[0m[38;2;153;153;153m[48;2;55;55;55m❯ [0m[38;2;255;255;255m[48;2;55;55;55mSame again: AskUserQuestion with one single-select question 'Pick a fruit' options Apple, Banana, Cherry (header [0m[48;2;55;55;55m    [0m
+[0m[48;2;55;55;55m  [0m[38;2;255;255;255m[48;2;55;55;55m'Fruit'). Reply with my answer only.[0m[48;2;55;55;55m                                                                                 [0m
+ 
+[0m[38;2;153;153;153m⏺ [0mUser answered Claude's questions:
+[0m[38;2;153;153;153m  ⎿  · Pick a fruit → Cherry[0m
+
+[0m[38;2;255;255;255m⏺[0m Cherry
+
+[0m[38;2;153;153;153m✻[0m [0m[38;2;153;153;153mChurned for 2s · done 3:01 AM[0m
+
+[0m[38;2;153;153;153m[48;2;55;55;55m❯ [0m[38;2;255;255;255m[48;2;55;55;55mAskUserQuestion with one MULTI-select question (multiSelect true) 'Which toppings?' options Cheese, Olives, Basil [0m[48;2;55;55;55m   [0m
+[0m[48;2;55;55;55m  [0m[38;2;255;255;255m[48;2;55;55;55m(header 'Toppings'). Reply with my answer only.[0m[48;2;55;55;55m                                                                      [0m
+[0m[38;2;153;153;153m───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[0m[38;2;153;153;153m← [0m[38;2;0;0;0m[48;2;153;204;255m ☐ Toppings [0m ✔ Submit  →
+
+[0m[1m[38;2;255;255;255mWhich toppings?[0m
+
+[0m[38;2;153;204;255m❯ [0m[38;2;153;153;153m1. [0m[ ] [0m[38;2;153;204;255mCheese[0m
+         [0m[38;2;153;153;153mCheese[0m
+  [0m[38;2;153;153;153m2.[0m [ ] Olives
+         [0m[38;2;153;153;153mOlives[0m                                                                                      
+  [0m[38;2;153;153;153m3.[0m [ ] Basil
+         [0m[38;2;153;153;153mBasil[0m
+  [0m[38;2;153;153;153m4. [0m[ ] [0m[38;2;153;153;153mType something[0m
+     [0m[1mSubmit[0m
+[0m[38;2;153;153;153m───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+  5. Chat about this
+
+[0m[38;2;153;153;153mEnter to select · ↑/↓ to navigate · Esc to cancel[0m

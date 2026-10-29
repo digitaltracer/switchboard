@@ -1,0 +1,40 @@
+› Run exactly this shell command: touch made-by-codex.txt . If the sandbox blocks it, request escalated permission fo…
+■ Conversation interrupted - use /feedback if something went wrong
+
+
+› Edit notes.txt with apply_patch so it reads 'hello codex'. Do nothing else.
+
+
+• I’ll use apply_patch to set notes.txt to hello codex.
+
+• Added notes.txt (+1 -0)
+    1 +hello codex
+    + Show details
+
+• Set notes.txt to hello codex. No additional checks run.
+
+  Worked for 21s • 3:07 AM
+
+
+› If you have a request_user_input tool, use it to ask me one question 'Pick a colour' with options Red and Blue. If
+  you don't have such a tool, reply exactly: NO_TOOL
+
+
+• Pick a colour
+
+  • Red
+  • Blue
+
+• Pick a colour
+
+  • Red
+  • Blue
+  └ Tip: Use /permissions to control when Codex asks for confirmation.
+
+  Worked for 8s • 3:07 AM
+
+
+› Ask Codex to do anything
+
+  GPT-6-Astra high · ~/personal/switchboard/target/phonecap · Create marker file
+  ? for shortcuts                                                                            ⚠ 3 warnings · f2 to view
