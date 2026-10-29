@@ -9,6 +9,7 @@ use crate::hub::service::Clock;
 use crate::proto::auth::hash_token;
 use crate::proto::{
     AgentSummary, Event, Frame, Hello, Op, Outcome, PROTOCOL_VERSION, ProtoError, Resp,
+    TranscriptItem, TranscriptPage,
 };
 use crate::store::{Lifecycle, Store};
 use crate::whatsapp::limits::{BURST, HOLD, REFILL};
@@ -51,6 +52,8 @@ struct Script {
     agents: Arc<Mutex<Vec<AgentSummary>>>,
     output: Arc<Mutex<HashMap<String, String>>>,
     screens: Arc<Mutex<HashMap<String, String>>>,
+    /// Each agent's conversation log; an agent without one has no log.
+    transcripts: Arc<Mutex<HashMap<String, Vec<TranscriptItem>>>>,
     blocked: Arc<Mutex<Vec<String>>>,
     /// (agent or session id, text) for every prompt that reached the runner.
     prompts: Arc<Mutex<Vec<(String, String)>>>,
@@ -72,6 +75,20 @@ impl Script {
         });
     }
 
+    fn said(&self, agent: &str, items: &[(&str, &str, bool)]) {
+        let items = items
+            .iter()
+            .enumerate()
+            .map(|(n, (kind, text, ends_turn))| {
+                serde_json::from_value(json!({
+                    "id": format!("i{n}"), "kind": kind, "text": text, "ends_turn": ends_turn,
+                }))
+                .unwrap()
+            })
+            .collect();
+        self.transcripts.lock().unwrap().insert(agent.into(), items);
+    }
+
     fn answer(&self, op: Op) -> Outcome {
         self.ops.lock().unwrap().push(format!("{op:?}"));
         let text = |map: &Arc<Mutex<HashMap<String, String>>>, k: &str| {
@@ -86,6 +103,17 @@ impl Script {
             Op::Read { session_id, .. } => {
                 Outcome::Ok(json!({ "text": text(&self.output, &session_id) }))
             }
+            Op::Transcript { agent, .. } => match self.transcripts.lock().unwrap().get(&agent) {
+                Some(items) => Outcome::Ok(
+                    serde_json::to_value(TranscriptPage {
+                        items: items.clone(),
+                        start: 0,
+                        end: 100,
+                    })
+                    .unwrap(),
+                ),
+                None => Outcome::Err(ProtoError::new(ErrorCode::NotFound, "no log")),
+            },
             Op::PromptAgent { agent, text: said } => {
                 let out = if self.blocked.lock().unwrap().contains(&agent) {
                     AgentPromptOutcome::Blocked {
@@ -633,9 +661,21 @@ async fn notifications_follow_watch_state_and_skip_blocks_that_have_an_approval(
     let rig = Rig::new().await;
     rig.script.agent("switchboard-impl", "idle");
     rig.script.agent("reviewer", "idle");
-    rig.script.output.lock().unwrap().insert(
-        "switchboard-impl".into(),
-        format!("pushed with {TOKEN}\nall done\n"),
+    rig.script
+        .output
+        .lock()
+        .unwrap()
+        .insert("switchboard-impl".into(), "terminal history\n".into());
+    rig.script.said(
+        "switchboard-impl",
+        &[
+            ("user", "push it", false),
+            (
+                "assistant",
+                &format!("pushed with {TOKEN}\nall done\n"),
+                true,
+            ),
+        ],
     );
     rig.script
         .screens
@@ -660,6 +700,15 @@ async fn notifications_follow_watch_state_and_skip_blocks_that_have_an_approval(
     assert_eq!(
         done,
         ["switchboard-impl finished:\n\npushed with [redacted]\nall done"]
+    );
+    assert!(
+        rig.script
+            .ops
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|op| !op.starts_with("ReadAgent") && !op.starts_with("Read ")),
+        "the finished notice never reads the terminal"
     );
     let blocked = transition(
         &mut r,
@@ -694,6 +743,83 @@ async fn notifications_follow_watch_state_and_skip_blocks_that_have_an_approval(
     assert!(
         r.approval(&id, &a).await.is_empty(),
         "a muted session's approvals stay quiet"
+    );
+}
+
+#[tokio::test]
+async fn the_finished_notice_quotes_the_reply_from_the_log_and_never_reads_the_terminal() {
+    let rig = Rig::new().await;
+    for a in ["nolog", "later", "noted", "ended", "quiet"] {
+        rig.script.agent(a, "idle");
+        rig.script
+            .output
+            .lock()
+            .unwrap()
+            .insert(a.into(), "terminal history\n".into());
+    }
+    rig.script.said(
+        "later",
+        &[
+            ("user", "first", false),
+            ("assistant", "first answer", true),
+            ("user", "second", false),
+            ("assistant", "second answer", false),
+            ("tool", "Bash: ls", false),
+        ],
+    );
+    rig.script.said(
+        "noted",
+        &[
+            ("user", "go", false),
+            ("assistant", "the answer", false),
+            ("note", "API error: overloaded", false),
+        ],
+    );
+    rig.script.said(
+        "ended",
+        &[
+            ("user", "go", false),
+            ("assistant", "the turn's answer", true),
+            ("assistant", "  ", false),
+            ("assistant", "a background task's reply", false),
+        ],
+    );
+    rig.script
+        .said("quiet", &[("user", "go", false), ("assistant", "hi", true)]);
+    let mut r = rig.relay();
+    for a in ["nolog", "later", "noted", "ended", "quiet"] {
+        reply(&mut r, &format!("watch {a}")).await;
+    }
+    let finished = async |r: &mut Relay, a: &str| {
+        transition(r, a, AgentStatus::Working, AgentStatus::Idle).await
+    };
+    assert_eq!(finished(&mut r, "nolog").await, ["nolog finished:\n\n"]);
+    assert_eq!(
+        finished(&mut r, "later").await,
+        ["later finished:\n\nsecond answer"]
+    );
+    assert_eq!(
+        finished(&mut r, "noted").await,
+        ["noted finished:\n\nthe answer"]
+    );
+    assert_eq!(
+        finished(&mut r, "ended").await,
+        ["ended finished:\n\nthe turn's answer"]
+    );
+
+    reply(&mut r, "mute quiet").await;
+    let before = rig.script.ops.lock().unwrap().len();
+    assert!(finished(&mut r, "quiet").await.is_empty());
+    assert_eq!(
+        rig.script.ops.lock().unwrap().len(),
+        before,
+        "a muted agent's log isn't read"
+    );
+    let ops = rig.script.ops.lock().unwrap();
+    assert!(
+        ops.iter()
+            .all(|op| !op.starts_with("ReadAgent") && !op.starts_with("Read ")),
+        "{ops:?}"
     );
 }
 

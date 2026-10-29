@@ -22,12 +22,12 @@ use crate::hub::service::{
     ApprovalView, Caller, DecideResult, HubError, HubEvent, SessionService, StartRequest,
     StartResult,
 };
-use crate::proto::{AgentPromptOutcome, ErrorCode};
+use crate::proto::{AgentPromptOutcome, ErrorCode, TranscriptItem};
 use crate::redact::redact_str;
 use crate::store::{Decision, Delivery};
 
 const EXCERPT_LINES: usize = 20;
-/// Enough to get above a TUI's input box and status bar to the reply itself.
+/// The end of a long reply.
 const FINISHED_LINES: usize = 20;
 const MAX_INPUT_CHARS: usize = 1500;
 const TICK: Duration = Duration::from_millis(500);
@@ -107,6 +107,27 @@ fn numbered<'a>(items: impl Iterator<Item = &'a str>) -> String {
         .map(|(i, s)| format!("{}. {s}", i + 1))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// The reply a turn ended with: the last one the log marks as ending the turn, if it came after
+/// the last prompt, else the last reply.
+fn last_reply(items: &[TranscriptItem]) -> String {
+    fn text(i: &TranscriptItem) -> Option<&str> {
+        let t = i.text.as_deref().filter(|t| !t.trim().is_empty())?;
+        (i.kind == "assistant").then_some(t)
+    }
+    let since_prompt = items
+        .iter()
+        .rposition(|i| i.kind == "user")
+        .map_or(items, |u| &items[u + 1..]);
+    since_prompt
+        .iter()
+        .rev()
+        .filter(|i| i.ends_turn)
+        .find_map(text)
+        .or_else(|| items.iter().rev().find_map(text))
+        .unwrap_or_default()
+        .to_owned()
 }
 
 fn parse_status(s: &str) -> AgentStatus {
@@ -684,15 +705,16 @@ impl Relay {
                     )
                 }
                 Notify::Finished => {
-                    let output = self
+                    // From the agent's log: reading terminal history scrolls a full-screen agent.
+                    let reply = self
                         .svc
-                        .read_agent(&machine, &agent, overfetch(FINISHED_LINES as u32), false)
+                        .agent_transcript(&machine, &agent, None, None)
                         .await
-                        .map(|r| r.text)
+                        .map(|p| last_reply(&p.items))
                         .unwrap_or_default();
                     format!(
                         "{label} finished:\n\n{}",
-                        tail(&redact_str(&output), FINISHED_LINES)
+                        tail(&redact_str(&reply), FINISHED_LINES)
                     )
                 }
             };

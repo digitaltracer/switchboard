@@ -37,6 +37,8 @@ const ME: &str = "447700900123";
 const RUNNER_TOKEN: &str = "mac-runner-token";
 const SECRET: &str = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
 const FOREIGN: &str = "switchboard-impl";
+/// The Claude session every fake agent reports, whose log the runner reads.
+const CLAUDE_SESSION: &str = "0b5e6a1c-77aa-4d2e-9f00-3c1d2e4f5a6b";
 
 #[derive(Clone)]
 struct FakeAgent {
@@ -100,6 +102,7 @@ impl FakeHerdr {
         json!({"terminal_id": "t", "agent_status": a.status, "workspace_id": a.workspace_id,
                "tab_id": format!("{}:t1", a.workspace_id), "pane_id": a.pane_id, "focused": false,
                "revision": 1, "name": a.name, "agent": "claude",
+               "agent_session": {"agent": "claude", "kind": "id", "value": CLAUDE_SESSION},
                "interactive_ready": true, "launch_pending": false})
     }
 
@@ -269,7 +272,7 @@ impl World {
                 state_dir: state_dir.clone(),
                 claude_config: dir.path().join("claude.json"),
                 claude_mode: Default::default(),
-                claude_projects: std::path::PathBuf::from("/nonexistent/claude/projects"),
+                claude_projects: dir.path().join("claude/projects"),
                 codex_sessions: std::path::PathBuf::from("/nonexistent/codex/sessions"),
                 exe: PathBuf::from("/opt/sb/switchboard"),
                 hook_addr,
@@ -323,6 +326,21 @@ impl World {
 
     fn svc(&self) -> &Arc<SessionService> {
         &self.hub.service
+    }
+
+    /// The agents' Claude log: a prompt and the reply that ended the turn.
+    fn claude_said(&self, reply: &str) {
+        let folder = self._dir.path().join("claude/projects/-srv-demo");
+        std::fs::create_dir_all(&folder).unwrap();
+        let lines = [
+            json!({"type": "user", "uuid": "u1", "isSidechain": false,
+                   "message": {"role": "user", "content": "push it"}}),
+            json!({"type": "assistant", "uuid": "a1", "isSidechain": false,
+                   "message": {"role": "assistant", "stop_reason": "end_turn",
+                               "content": [{"type": "text", "text": reply}]}}),
+        ];
+        let text: String = lines.iter().map(|l| format!("{l}\n")).collect();
+        std::fs::write(folder.join(format!("{CLAUDE_SESSION}.jsonl")), text).unwrap();
     }
 
     /// You, typing in your own chat.
@@ -667,16 +685,23 @@ async fn notifications_mutes_and_echoes() {
 
     w.herdr.set(FOREIGN, "working", "");
     tokio::time::sleep(Duration::from_secs(4)).await;
-    w.herdr.set(
-        FOREIGN,
-        "idle",
-        &format!("export GITHUB_TOKEN={SECRET}\nall done\n"),
-    );
+    w.claude_said(&format!("export GITHUB_TOKEN={SECRET}\nall done\n"));
+    w.herdr.set(FOREIGN, "idle", "terminal history\n");
     let done = w.heard(&mut seen).await;
     assert_eq!(
         done,
         format!("{FOREIGN} finished:\n\nexport GITHUB_TOKEN=[redacted]\nall done")
     );
+    let history: Vec<Value> = w
+        .herdr
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|c| c["method"] == "agent.read" && c["params"]["source"] != "visible")
+        .cloned()
+        .collect();
+    assert!(history.is_empty(), "read past the screen: {history:?}");
 
     w.say(&format!("mute {FOREIGN}")).await;
     assert_eq!(w.heard(&mut seen).await, format!("Muted {FOREIGN}."));
