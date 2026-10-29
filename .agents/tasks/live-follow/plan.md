@@ -412,10 +412,10 @@ Resolve routine details yourself, such as naming, test helpers and how each plat
 **Steps**
 - **Step 1, done** (`08715d9`). The WhatsApp finished notice now quotes the reply from the conversation log and no longer reads the terminal. `cargo test whatsapp` passes. The end-to-end WhatsApp test (`tests/whatsapp_hub.rs`) now gives its fake Claude a log, and it checks that no `agent.read` beyond the visible screen reaches Herdr.
 - **Step 2, done** (`896cf8f`). An app's visible agent read now goes through its own service method, `read_agent_screen`, which takes a screen-read permit. A hub test runs five mixed reads and exactly one gets Busy. A relay test confirms the blocked notice still reads the screen while the apps hold all four permits.
-- **Step 3, blocked.** It is built and left uncommitted: `src/runner/logwatch.rs`, `wait_ms` on `Op::Transcript`, the status tap, and the cap of 8 waits. Its checks, `cargo clippy` and all 336 tests pass, but the finding below defeats criterion 3 for Codex on macOS.
-- **Steps 4 to 6, not started.** iOS e2e was not run.
+- **Step 3, done on 2026-10-30** (`307912b`), after the decision below. See "Steps 3 to 6" further down.
+- **Steps 4 to 6, done on 2026-10-30.** See "Steps 3 to 6" further down.
 
-**Blocking finding: macOS doesn't report appends to a file that is still open**
+**Blocking finding: macOS doesn't report appends to a file that is still open** (resolved by the decision of 2026-10-30)
 - FSEvents reports a write to a file still held open only when the file is closed. Measured: a runner wait whose log was appended through a held-open handle got no event and ran to its 20 s deadline. Closing the handle woke it within a second.
 - `lsof` shows that Codex keeps every live `rollout-*.jsonl` open. Claude holds none open.
 - So on macOS, a follower of a Codex agent would update only every 20 s, or on a status change, which breaks criterion 3. Linux's inotify reports every write, and Claude logs work on both.
@@ -440,3 +440,55 @@ Resolve routine details yourself, such as naming, test helpers and how each plat
 - If the first lookup in a wait passes the deadline, it answers `deadline_exceeded`.
 - Timing tests on OS events take turns through one test lock.
 - It was not confirmed live that `/clear` or `/resume` replaces the Claude record (no throwaway session was run). If they rewrite it in place, the pane's-own-record check covers it.
+
+## Decisions during implementation (2026-10-30)
+
+**Decision 3 is amended for macOS.** FSEvents reports a write to a file that is still open only when the file is closed. Codex keeps its live rollout logs open: `lsof` showed one Codex process holding 7 of them. A folder watch alone would therefore leave a Codex follower on macOS waiting the full 20 s.
+
+The user chose this:
+- On macOS, the wait also watches the log file itself with kqueue. In the implementer's measurement, this fired 0.31 s after an append to a held-open file.
+- The folder watches stay, to catch replacement by rename and new sessions. The file watch is re-armed whenever the path changes, and is released with the wait like the folder watches.
+- Linux keeps inotify on folders, which reports writes to held-open files.
+
+Add a Check: on macOS, appending to a log held open by another handle ends the wait within about 1 s.
+
+## As built (2026-10-30): steps 3 to 6
+
+**Steps**
+- **Step 3, done** (`307912b`). The wait is as described under "As built (2026-10-29)", plus the macOS file watch:
+  - On macOS, each wait also opens the log with `O_EVTONLY` and watches it with its own kqueue (`NOTE_WRITE | NOTE_EXTEND | NOTE_DELETE | NOTE_RENAME`). The kqueue is registered with tokio, so no thread is added. It is set up before the length check, set up again whenever a lookup returns the log, and closed with the wait. Linux has no file watch.
+  - A watcher marked unavailable turns the file watch off too, so the 1 s fallback stays testable.
+  - Checks: 13 runner tests pass. They include the new one: on macOS, an append through another handle held open ends the wait between 0.6 and 1.6 s. The runner-level test (eight waits, then a ninth that answers at once) now also appends through a held-open handle.
+- **Step 4, done** (`e7cf5b6`). `wait_ms` was added to both transcript queries and passed through the session service, capped at 20 s (`MAX_TRANSCRIPT_WAIT`), inside `CALL_TIMEOUT`.
+  - An app test checks that `wait_ms` reaches `Op::Transcript`. A hub test holds 8 waits, capped at 20000 ms, while an approval decides.
+  - `api/openapi.json` was regenerated: only two optional query parameters were added, and the drift test passes.
+- **Step 5, done** (`6cf4b79`). The loops and requests now live in Kit (`Follow.swift`) and Android core (`Follow.kt`). `ConversationSource` moved there too. The apps' `ConversationModel` keeps only its state.
+  - **Transcript:** after the first load, every continuing read asks the hub to wait 20000 ms.
+  - **Screen:** the visible screen only, once a second while shown; Busy skips a tick.
+  - **Foreground, iOS:** `AppModel.active`, cleared whenever `scenePhase` leaves `.active`. Following tasks are keyed on `followKey`, which is nil while away.
+  - **Foreground, Android:** `AppModel.foreground`, set in `becameActive` and `wentToBackground`. The follow effects are keyed on it.
+  - Checks: Kit `swift test` passes (39 tests). Android `./gradlew :core:test` passes (6 new tests). They cover old-hub pacing, a waiting hub, backing off after an error, `wait_ms` only after the first load, `visible=true`, and no rounds once the foreground flag is false. The iOS app builds and the Android app compiles.
+  - **iOS e2e:** run twice. Every step passed, including opening the session page and the agent's page ("latest"), except the final check that the "New device paired" push shows up (`SwitchboardUITests.swift:146`). That failure was already there: the orchestrator's run on 2026-10-29, before this task, failed the same way.
+  - The manual check against a live agent on a phone was not done.
+- **Step 6, done** (`b193b5b`).
+  - **Renames:** the service names its history reads `read_history` (sessions) and `read_agent_history`, used only by WhatsApp's `read` and the output endpoints without `visible`. `read_agent` is now the visible screen only, and `read_agent_with` became private.
+  - **Guard test:** a relay test drives the finished and blocked notices, the blocked-session reply, both follow-style transcript calls and both app screen reads through the recording runner, and finds no `Read` or `ReadAgent { visible: false }`. A person's `read 10` is then caught, which proves the guard can see a history read.
+  - **Live test:** `tests/no_scroll_live.rs` is written. It skips unless its variables are set, and it was not run.
+
+**Deviations**
+- Decision 3 on macOS: the kqueue file watch, as decided on 2026-10-30.
+- Transcript requests are paced start to start at 1 s after every answer, not only after empty ones. This keeps an older hub to one request a second even while it keeps returning items. A waiting hub adds at most 1 s of delay when items arrive faster than that.
+- After a failed request, or while the conversation is unavailable (no log yet, or an older hub), the transcript is retried every 3 s, as before.
+- The live test calls the runner's `Op::Transcript` directly rather than going through the WhatsApp bridge. The Step 1 tests show that this op is the only thing the finished notice sends.
+- The live test also needs a full-screen Claude to be already running as a named agent in the throwaway session, so that it never edits Claude's config. It finds the session name from the socket path, and fails if the pane redraws while idle.
+
+**Assumptions**
+- The Linux side of the file watch (a stub returning none) was not compiled, since there is no Linux target or rustup here.
+- On iOS, `Follow.repeating` runs on the main actor. Passing the caller's isolation hit a Swift compiler bug ("region-based isolation checker does not understand"), and the apps call it from the main actor anyway.
+- The 20 s cap is applied twice: in the hub, on what reaches the runner, and in the runner, on the wait itself.
+
+**Left undone**
+- The live no-scroll test was not run.
+- The manual phone check of about 1 s replies and a once-a-second Screen tab was not done.
+- The timed CPU comparison for criterion 10 was not done; the tests count lookups and folder registrations instead.
+- `/clear` and `/resume` replacing the Claude record was not confirmed live.
