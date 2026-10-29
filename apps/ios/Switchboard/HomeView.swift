@@ -216,8 +216,9 @@ struct HomeView: View {
         .padding(.top, 36)
         .padding(.bottom, 8)
         .background(alignment: .bottom) {
+            // Solid before the hint, so rows scrolling under it don't show through.
             LinearGradient(colors: [Color(.systemGroupedBackground).opacity(0), Color(.systemGroupedBackground)],
-                           startPoint: .top, endPoint: UnitPoint(x: 0.5, y: 0.4))
+                           startPoint: .top, endPoint: UnitPoint(x: 0.5, y: 0.22))
                 .ignoresSafeArea()
                 .allowsHitTesting(false)
         }

@@ -207,7 +207,8 @@ private fun open(model: AppModel, t: TargetView) {
 private fun BoxScope.Dock(voice: Voice, listen: Listen) {
     Column(
         Modifier.align(Alignment.BottomCenter).fillMaxWidth()
-            .background(Brush.verticalGradient(0f to palette.background.copy(alpha = 0f), 0.4f to palette.background))
+            // Solid before the hint, so rows scrolling under it don't show through.
+            .background(Brush.verticalGradient(0f to palette.background.copy(alpha = 0f), 0.22f to palette.background))
             .windowInsetsPadding(WindowInsets.navigationBars)
             .padding(start = 16.dp, end = 16.dp, top = 36.dp, bottom = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
