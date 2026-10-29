@@ -142,10 +142,8 @@ struct HomeView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 12) {
                     ForEach(busy) { t in
-                        if let to = t.agent.destination {
-                            NavigationLink(value: to) { BusyTile(tile: t, lastLine: lastLines[t.id]) }
-                                .buttonStyle(.plain)
-                        }
+                        AgentLink(agent: t.agent) { BusyTile(tile: t, lastLine: lastLines[t.id]) }
+                            .buttonStyle(.plain)
                     }
                 }
                 .padding(.horizontal, 16)

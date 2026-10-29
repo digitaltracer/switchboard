@@ -51,12 +51,19 @@ extension HerdrSession.Agent {
         }
     }
 
-    /// Where tapping it goes; an agent that ended outside Switchboard has nothing more to show.
-    var destination: AnyHashable? {
-        switch self {
-        case .task(let s): s.id
-        case .live(let a): AgentRef(machine: a.machineId, name: a.name)
-        case .ended: nil
+}
+
+/// A link to the agent's page, or just the label for one that ended outside Switchboard. Each
+/// value keeps its own type: one typed `AnyHashable` matches no destination, so the tap does nothing.
+struct AgentLink<Label: View>: View {
+    let agent: HerdrSession.Agent
+    @ViewBuilder let label: Label
+
+    var body: some View {
+        switch agent {
+        case .task(let s): NavigationLink(value: s.id) { label }
+        case .live(let a): NavigationLink(value: AgentRef(machine: a.machineId, name: a.name)) { label }
+        case .ended: label
         }
     }
 }
@@ -115,12 +122,7 @@ struct HerdrSessionView: View {
 
     @ViewBuilder
     private func row(_ a: HerdrSession.Agent) -> some View {
-        let label = AgentLabel(agent: a)
-        if let to = a.destination {
-            NavigationLink(value: to) { label }
-        } else {
-            label
-        }
+        AgentLink(agent: a) { AgentLabel(agent: a) }
     }
 }
 

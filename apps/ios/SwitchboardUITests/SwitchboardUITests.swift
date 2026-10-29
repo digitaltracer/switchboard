@@ -124,6 +124,9 @@ final class SwitchboardUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["orchestrator"].waitForExistence(timeout: 10), app.debugDescription)
         XCTAssertTrue(app.staticTexts["codex · w1:p2"].exists, "an unnamed agent goes by its kind and pane")
         snapshot(app, "session")
+        app.staticTexts["orchestrator"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["latest"].waitForExistence(timeout: 10), "tapping an agent opens its page")
+        app.navigationBars.buttons.firstMatch.tap()
         app.navigationBars.buttons.firstMatch.tap()
 
         if env["SB_EXPECT_PUSH"] != nil {
