@@ -1,13 +1,16 @@
 //! A scripted runner for the app's UI tests: it connects to a hub like a real one, accepts
 //! starts, and answers reads with canned output, without Herdr or any agent. Each started
-//! session reports working, then asks to run `cargo test --workspace`.
+//! session reports working, then asks to run `cargo test --workspace`. Of the agents it lists,
+//! the Claude one waits at a question and the Codex one at a permission dialog, until answered.
 //!
 //! Usage: cargo run --example fake_runner -- <hub ws url> <machine id> <token>
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use switchboard::proto::{ErrorCode, Event, Op, OwnedSession, ProtoError};
 use switchboard::runner::link::{self, Handler, LinkConfig};
 use tokio::sync::mpsc;
@@ -23,6 +26,35 @@ Pausing tokio's clock makes it deterministic.
 
 struct Fake {
     events: mpsc::Sender<Event>,
+    /// The Codex agent's permission dialog was answered.
+    answered: AtomicBool,
+}
+
+fn option(id: &str, label: &str, is_deny: bool, offered: bool) -> Value {
+    let sha = hex::encode(Sha256::digest(label.as_bytes()));
+    json!({ "id": id, "label": label, "label_sha256": sha, "is_deny": is_deny, "offered": offered })
+}
+
+fn dialog(agent: &str, answered: bool) -> Value {
+    let d = match agent {
+        "crm/orchestrator" => json!({
+            "kind": "question", "prompt": "Which colour should the banner be?", "occurrence": "occ-q",
+            "options": [option("q1", "Red", false, true), option("q2", "Blue", false, true),
+                        option("q3", "Type something.", false, false)],
+            "selected": "q1", "answerable": true,
+        }),
+        "crm/w1:p2" if !answered => json!({
+            "kind": "permission", "occurrence": "occ-p",
+            "prompt": "Would you like to run the following command?\n$ cargo test --workspace",
+            "options": [option("p1", "Yes, proceed (y)", false, true),
+                        option("p2", "Yes, and don't ask again (p)", false, false),
+                        option("p3", "No, and tell Codex what to do differently (esc)", true, true)],
+            "selected": "p1", "answerable": true,
+        }),
+        _ => Value::Null,
+    };
+    let occurrence = d["occurrence"].as_str().unwrap_or("none").to_owned();
+    json!({ "dialog": d, "occurrence": occurrence })
 }
 
 impl Handler for Fake {
@@ -101,12 +133,49 @@ impl Handler for Fake {
                 {"name": "/council", "description": "Several agents review a plan", "source": "user"},
                 {"name": "/compact", "description": "Summarise the conversation to free up context", "source": "builtin"}
             ]})),
-            Op::Agents => Ok(json!([
-                {"name": "crm/orchestrator", "pane_id": "w1:p1", "kind": "claude",
-                 "agent_status": "working", "session_id": null, "herdr_session": "crm"},
-                {"name": "crm/w1:p2", "pane_id": "w1:p2", "kind": "codex", "agent_status": "idle",
-                 "session_id": null, "herdr_session": "crm", "title": "Review the import"}
-            ])),
+            Op::Agents => {
+                let codex = if self.answered.load(Ordering::SeqCst) {
+                    "working"
+                } else {
+                    "blocked"
+                };
+                Ok(json!([
+                    {"name": "crm/orchestrator", "pane_id": "w1:p1", "kind": "claude",
+                     "agent_status": "blocked", "session_id": null, "herdr_session": "crm"},
+                    {"name": "crm/w1:p2", "pane_id": "w1:p2", "kind": "codex", "agent_status": codex,
+                     "session_id": null, "herdr_session": "crm", "title": "Review the import"}
+                ]))
+            }
+            Op::Dialog { agent } => Ok(dialog(&agent, self.answered.load(Ordering::SeqCst))),
+            Op::Answer {
+                agent,
+                occurrence,
+                option,
+                deny_only,
+                ..
+            } => {
+                let current = dialog(&agent, self.answered.load(Ordering::SeqCst));
+                let chosen = current["dialog"]["options"]
+                    .as_array()
+                    .and_then(|o| o.iter().find(|o| o["id"] == option.as_str()).cloned());
+                match chosen {
+                    _ if current["occurrence"] != occurrence.as_str() => Err(ProtoError::new(
+                        ErrorCode::DialogChanged,
+                        "the dialog changed",
+                    )),
+                    Some(o) if deny_only && o["is_deny"] != true => Err(ProtoError::new(
+                        ErrorCode::ApproveNotAllowed,
+                        "only the deny may be chosen without a signature",
+                    )),
+                    Some(_) => {
+                        if agent == "crm/w1:p2" {
+                            self.answered.store(true, Ordering::SeqCst);
+                        }
+                        Ok(json!({ "answered": true }))
+                    }
+                    None => Err(ProtoError::new(ErrorCode::DialogChanged, "no such option")),
+                }
+            }
             other => Err(ProtoError::new(
                 ErrorCode::BadRequest,
                 format!("the fake runner doesn't do {other:?}"),
@@ -139,6 +208,10 @@ async fn main() -> anyhow::Result<()> {
         machine_id: machine.clone(),
         herdr_version: None,
     };
-    link::run(cfg, Arc::new(Fake { events: tx }), rx).await;
+    let fake = Fake {
+        events: tx,
+        answered: AtomicBool::new(false),
+    };
+    link::run(cfg, Arc::new(fake), rx).await;
     Ok(())
 }
