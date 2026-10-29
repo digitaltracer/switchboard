@@ -497,3 +497,35 @@ async fn a_watch_that_fails_to_start_holds_nothing_so_the_wait_checks_each_secon
         "a later wait would take the folders as watched"
     );
 }
+
+#[tokio::test]
+async fn a_setup_stuck_behind_a_stalled_restart_still_answers_by_the_deadline() {
+    let _turn = TIMED.lock().await;
+    let w = World::new();
+    let watch = watcher();
+    // A sweep restarting the stream holds the watcher's lock; this one doesn't let go for 3 s.
+    let (held, locked) = std::sync::mpsc::channel();
+    let stalled = watch.clone();
+    let sweep = std::thread::spawn(move || {
+        let _restarting = stalled.watcher.lock().unwrap();
+        held.send(()).unwrap();
+        std::thread::sleep(Duration::from_secs(3));
+    });
+    locked.recv().unwrap();
+    let runs = Arc::new(AtomicUsize::new(0));
+    let start = Instant::now();
+    let got = wait(
+        &watch,
+        None,
+        AGENT,
+        w.len(),
+        start + Duration::from_millis(500),
+        w.found(&w.log, "aaaa"),
+        w.lookup(&runs),
+    )
+    .await;
+    assert_eq!(got, w.log);
+    let took = start.elapsed();
+    assert!(took < Duration::from_millis(900), "{took:?}");
+    sweep.join().unwrap();
+}

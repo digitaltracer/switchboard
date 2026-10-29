@@ -427,11 +427,14 @@ where
         found.log.parent().unwrap_or(Path::new("/")).to_owned(),
         found.switch.folder().to_owned(),
     ];
+    // A setup stuck behind a stalled stream restart mustn't hold the wait past its deadline.
     let watching = {
         let (watch, folders) = (watch.clone(), folders.clone());
-        tokio::task::spawn_blocking(move || watch.watch(&folders))
+        let setup = tokio::task::spawn_blocking(move || watch.watch(&folders));
+        tokio::time::timeout_at(deadline, setup)
             .await
             .ok()
+            .and_then(Result::ok)
             .flatten()
     };
     let canonical = |p: &Path| {
