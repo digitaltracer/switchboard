@@ -18,6 +18,7 @@ struct SwitchboardApp: App {
         }
         .onChange(of: scenePhase) { old, new in
             if new == .active, old != .active { delegate.model.becameActive() }
+            if new != .active { delegate.model.wentInactive() }
         }
     }
 }

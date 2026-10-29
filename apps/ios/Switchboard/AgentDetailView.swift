@@ -63,6 +63,6 @@ struct AgentDetailView: View {
         .navigationTitle(label)
         .navigationBarTitleDisplayMode(.large)
         .refreshable { if let hub = model.hub { await convo.refresh(hub) } }
-        .task(id: model.wakes) { await convo.follow(model) }
+        .task(id: model.followKey) { await convo.follow(model) }
     }
 }

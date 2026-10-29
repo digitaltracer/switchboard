@@ -13,6 +13,7 @@ import com.digitaltracer.switchboard.api.models.Meta
 import com.digitaltracer.switchboard.api.models.Project
 import com.digitaltracer.switchboard.api.models.Session
 import com.digitaltracer.switchboard.api.models.TargetView
+import com.digitaltracer.switchboard.core.ConversationSource
 import com.digitaltracer.switchboard.core.HerdrSession
 import com.digitaltracer.switchboard.core.DeviceKeys
 import com.digitaltracer.switchboard.core.Hub
@@ -103,6 +104,10 @@ class AppModel(context: Context, val keys: DeviceKeys) {
      * since a long-poll begun before the phone slept may be on a dead connection.
      */
     var wakes by mutableStateOf(0)
+        private set
+
+    /** False while the app isn't in the foreground; nothing is followed then. */
+    var foreground by mutableStateOf(true)
         private set
 
     /** What this phone last said to each session or agent. Kept on the phone only: the hub doesn't store prompts. */
@@ -248,6 +253,7 @@ class AppModel(context: Context, val keys: DeviceKeys) {
 
     /** The app is in the foreground again: restart every poll. */
     fun becameActive() {
+        foreground = true
         if (phase != Phase.Paired) return
         wakes++
         startPolling()
@@ -255,6 +261,7 @@ class AppModel(context: Context, val keys: DeviceKeys) {
 
     /** Nothing polls while the app isn't on screen; push covers that once it's built. */
     fun wentToBackground() {
+        foreground = false
         pollJob?.cancel()
     }
 

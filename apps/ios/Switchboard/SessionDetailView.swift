@@ -48,7 +48,7 @@ struct SessionDetailView: View {
         .navigationBarTitleDisplayMode(.large)
         .refreshable { await refresh() }
         .task(id: model.wakes) { await follow() }
-        .task(id: model.wakes) { await convo.follow(model) }
+        .task(id: model.followKey) { await convo.follow(model) }
         .confirmationDialog(
             running
                 ? "Stop keeps the worktree and branch. Delete also deletes its Herdr session, and its worktree if it's clean and merged."

@@ -275,17 +275,18 @@ public final class Hub: Sendable {
     }
 
     /// A page of the session's conversation from its agent's own log: the latest, the part after
-    /// an earlier page's `end`, or the part before its `start`.
-    public func transcript(_ id: String, after: Int64? = nil, before: Int64? = nil) async throws -> Schemas.Transcript {
+    /// an earlier page's `end`, or the part before its `start`. With `after` and `waitMs`, the hub
+    /// waits up to that long for the conversation to go on.
+    public func transcript(_ id: String, after: Int64? = nil, before: Int64? = nil, waitMs: Int64? = nil) async throws -> Schemas.Transcript {
         try await Self.unwrap {
-            try await client.getTranscript(path: .init(id: id), query: .init(after: after, before: before)).ok.body.json
+            try await client.getTranscript(path: .init(id: id), query: .init(after: after, before: before, waitMs: waitMs)).ok.body.json
         }
     }
 
     /// As `transcript`, for an agent Switchboard didn't start.
-    public func agentTranscript(machine: String, agent: String, after: Int64? = nil, before: Int64? = nil) async throws -> Schemas.Transcript {
+    public func agentTranscript(machine: String, agent: String, after: Int64? = nil, before: Int64? = nil, waitMs: Int64? = nil) async throws -> Schemas.Transcript {
         try await Self.unwrap {
-            try await client.getAgentTranscript(query: .init(machineId: machine, agent: agent, after: after, before: before)).ok.body.json
+            try await client.getAgentTranscript(query: .init(machineId: machine, agent: agent, after: after, before: before, waitMs: waitMs)).ok.body.json
         }
     }
 

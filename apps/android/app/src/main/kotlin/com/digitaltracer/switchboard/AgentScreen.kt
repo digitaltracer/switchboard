@@ -18,6 +18,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.digitaltracer.switchboard.core.ConversationSource
 import com.digitaltracer.switchboard.core.agentTarget
 import com.digitaltracer.switchboard.core.displayName
 
@@ -31,7 +32,7 @@ fun AgentScreen(model: AppModel, voice: Voice, listen: Listen, machine: String, 
     val info = model.agents.firstOrNull { it.machineId == machine && it.name == name }
     val label = info?.displayName ?: name
 
-    LaunchedEffect(machine, name, model.wakes) { convo.follow(model) }
+    LaunchedEffect(machine, name, model.wakes, model.foreground) { if (model.foreground) convo.follow(model) }
 
     val target = agentTarget(machine, name, label)
     Page(model.backLabel, model::pop, bottomBar = {

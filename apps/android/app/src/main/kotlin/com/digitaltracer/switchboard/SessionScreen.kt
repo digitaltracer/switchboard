@@ -39,6 +39,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.digitaltracer.switchboard.api.models.Changes
 import com.digitaltracer.switchboard.api.models.Session
+import com.digitaltracer.switchboard.core.ConversationSource
 import com.digitaltracer.switchboard.core.sessionTarget
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
@@ -129,7 +130,7 @@ fun SessionScreen(model: AppModel, voice: Voice, listen: Listen, sessionId: Stri
             }
         }
     }
-    LaunchedEffect(sessionId, model.wakes) { convo.follow(model) }
+    LaunchedEffect(sessionId, model.wakes, model.foreground) { if (model.foreground) convo.follow(model) }
 
     val s = session
     Page(model.backLabel, model::pop, bottomBar = s?.let { current ->

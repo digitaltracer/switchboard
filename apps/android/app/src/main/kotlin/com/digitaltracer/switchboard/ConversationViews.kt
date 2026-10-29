@@ -117,18 +117,14 @@ import com.digitaltracer.switchboard.api.models.Transcript
 import com.digitaltracer.switchboard.api.models.TranscriptItem
 import com.digitaltracer.switchboard.core.Ansi
 import com.digitaltracer.switchboard.core.Conversation
+import com.digitaltracer.switchboard.core.ConversationSource
+import com.digitaltracer.switchboard.core.Follow
 import com.digitaltracer.switchboard.core.Hub
 import com.digitaltracer.switchboard.core.HubError
 import kotlin.math.min
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
-
-/** Whose conversation: a Switchboard session's, or an agent started in Herdr. */
-sealed interface ConversationSource {
-    data class Session(val id: String) : ConversationSource
-    data class Agent(val machine: String, val name: String) : ConversationSource
-}
 
 /** One agent's conversation, and its terminal, followed while a screen shows them. */
 class ConversationModel(val source: ConversationSource) {
@@ -154,27 +150,33 @@ class ConversationModel(val source: ConversationSource) {
     /** The terminal is read only while it's on screen or standing in. */
     var wantsTerminal = false
 
-    /** Polls until cancelled. */
+    /**
+     * Follows until cancelled or the app leaves the foreground: the conversation as the hub sends
+     * more of it, and the screen each second while it's shown or standing in.
+     */
     suspend fun follow(model: AppModel) {
-        while (true) {
-            model.hub?.let { hub ->
-                refresh(hub)
-                if (wantsTerminal || unavailable != null) loadTerminal(hub)
+        coroutineScope {
+            launch { Follow.repeating(going = { model.foreground }) { model.hub?.let { refresh(it) } ?: false } }
+            launch {
+                Follow.repeating(going = { model.foreground }) {
+                    if (!wantsTerminal && unavailable == null) true else model.hub?.let { loadTerminal(it) } ?: false
+                }
             }
-            delay(3_000)
         }
     }
 
-    suspend fun refresh(hub: Hub) {
+    /** False when it should be tried again later rather than at once. */
+    suspend fun refresh(hub: Hub): Boolean {
         try {
             conversation = if (conversation.isLoaded) {
                 val after = conversation.end
-                conversation.append(page(hub, after, null), askedAfter = after)
+                conversation.append(Follow.page(hub, source, after, null), askedAfter = after)
             } else {
-                Conversation.of(page(hub, null, null))
+                Conversation.of(Follow.page(hub, source, null, null))
             }
             unavailable = null
             error = null
+            return true
         } catch (e: CancellationException) {
             throw e
         } catch (e: HubError) {
@@ -187,6 +189,7 @@ class ConversationModel(val source: ConversationSource) {
         } catch (e: Exception) {
             error = e.message
         }
+        return false
     }
 
     suspend fun loadEarlier(hub: Hub) {
@@ -194,7 +197,7 @@ class ConversationModel(val source: ConversationSource) {
         if (start <= 0 || loadingEarlier) return
         loadingEarlier = true
         try {
-            conversation = conversation.prepend(page(hub, null, start))
+            conversation = conversation.prepend(Follow.page(hub, source, null, start))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -204,27 +207,27 @@ class ConversationModel(val source: ConversationSource) {
         }
     }
 
-    /** Only the screen: reading further back would scroll the agent's terminal on the Mac. */
-    suspend fun loadTerminal(hub: Hub) {
+    /**
+     * Only the screen: reading further back would scroll the agent's terminal on the Mac. A hub
+     * busy with other screen reads skips this one.
+     */
+    suspend fun loadTerminal(hub: Hub): Boolean {
         try {
-            val out = when (val s = source) {
-                is ConversationSource.Session -> hub.output(s.id, visible = true, ansi = true)
-                is ConversationSource.Agent -> hub.agentOutput(s.machine, s.name, visible = true, ansi = true)
-            }
+            val out = Follow.screen(hub, source)
             terminal = out.text
             terminalAnsi = out.ansi
             terminalLoaded = true
             terminalError = null
+            return true
         } catch (e: CancellationException) {
             throw e
+        } catch (e: HubError) {
+            if (e.code == "busy") return true
+            terminalError = e.message
         } catch (e: Exception) {
             terminalError = e.message
         }
-    }
-
-    private suspend fun page(hub: Hub, after: Long?, before: Long?): Transcript = when (val s = source) {
-        is ConversationSource.Session -> hub.transcript(s.id, after, before)
-        is ConversationSource.Agent -> hub.agentTranscript(s.machine, s.name, after, before)
+        return false
     }
 }
 
@@ -237,9 +240,9 @@ fun ConversationScreen(model: AppModel, voice: Voice, listen: Listen, source: Co
     val convo = rememberConversation(source)
     var terminalTab by remember { mutableStateOf(screen) }
     val scope = rememberCoroutineScope()
-    LaunchedEffect(source, model.wakes) {
+    LaunchedEffect(source, model.wakes, model.foreground) {
         convo.wantsTerminal = terminalTab
-        convo.follow(model)
+        if (model.foreground) convo.follow(model)
     }
     val target = when (source) {
         is ConversationSource.Session -> model.sessions.firstOrNull { it.id == source.id }?.let(::sessionTarget)

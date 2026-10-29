@@ -38,6 +38,8 @@ final class AppModel {
     /// Bumped each time the app comes back to the foreground; screens restart their polls on it,
     /// since a long-poll begun before the phone slept may be on a dead connection.
     private(set) var wakes = 0
+    /// False while the app isn't in the foreground; nothing is followed then.
+    private(set) var active = true
     /// What this phone last said to each session or agent, by its id. Kept on the phone only:
     /// the hub doesn't store prompts.
     private(set) var said: [String: Said] = [:]
@@ -162,11 +164,20 @@ final class AppModel {
         phase = .unpaired
     }
 
+    /// What a following screen restarts on: each return to the foreground, and none while away.
+    var followKey: Int? { active ? wakes : nil }
+
     /// The app is in the foreground again: restart every poll and resend anything still owed.
     func becameActive() {
+        active = true
         guard phase == .paired else { return }
         wakes += 1
         startPolling()
+    }
+
+    /// The app left the foreground: following stops until it comes back.
+    func wentInactive() {
+        active = false
     }
 
     /// Remembers a message this phone sent, for the session page and the home screen.

@@ -292,10 +292,11 @@ class Hub private constructor(
 
     /**
      * A page of the session's conversation from its agent's own log: the latest, the part after an
-     * earlier page's `end`, or the part before its `start`.
+     * earlier page's `end`, or the part before its `start`. With [after] and [waitMs], the hub
+     * waits up to that long for the conversation to go on.
      */
-    suspend fun transcript(id: String, after: Long? = null, before: Long? = null): Transcript =
-        authed { sessions.getTranscript(id, after, before) }
+    suspend fun transcript(id: String, after: Long? = null, before: Long? = null, waitMs: Long? = null): Transcript =
+        authed { sessions.getTranscript(id, after, before, waitMs) }
 
     /** The skills and commands a session's agent can run, for the `/` picker. */
     suspend fun skills(id: String): List<Skill> = authed { sessions.getSkills(id).skills }
@@ -304,8 +305,9 @@ class Hub private constructor(
         authed { agentsApi.getAgentSkills(machine, agent).skills }
 
     /** As [transcript], for an agent Switchboard didn't start. */
-    suspend fun agentTranscript(machine: String, agent: String, after: Long? = null, before: Long? = null): Transcript =
-        authed { agentsApi.getAgentTranscript(machine, agent, after, before) }
+    suspend fun agentTranscript(
+        machine: String, agent: String, after: Long? = null, before: Long? = null, waitMs: Long? = null,
+    ): Transcript = authed { agentsApi.getAgentTranscript(machine, agent, after, before, waitMs) }
 
     /** Files the session changed since it started, committed or not. */
     suspend fun changes(id: String): Changes = authed { sessions.getChanges(id) }

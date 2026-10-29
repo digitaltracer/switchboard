@@ -1,12 +1,6 @@
 import SwiftUI
 import SwitchboardKit
 
-/// Whose conversation: a Switchboard session's, or an agent started in Herdr.
-enum ConversationSource: Hashable {
-    case session(String)
-    case agent(machine: String, name: String)
-}
-
 /// What the navigation stack opens to show a whole conversation.
 struct ConversationRef: Hashable {
     let source: ConversationSource
@@ -38,27 +32,39 @@ final class ConversationModel {
         self.source = source
     }
 
-    /// Polls until cancelled.
+    /// Follows until cancelled or the app leaves the foreground: the conversation as the hub
+    /// sends more of it, and the screen each second while it's shown or standing in.
     func follow(_ model: AppModel) async {
-        while !Task.isCancelled {
-            if let hub = model.hub {
-                await refresh(hub)
-                if wantsTerminal || unavailable != nil { await loadTerminal(hub) }
-            }
-            try? await Task.sleep(for: .seconds(3))
+        async let talk: Void = followConversation(model)
+        async let look: Void = followScreen(model)
+        _ = await (talk, look)
+    }
+
+    private func followConversation(_ model: AppModel) async {
+        await Follow.repeating(going: { model.active }) { await refresh(model.hub) }
+    }
+
+    private func followScreen(_ model: AppModel) async {
+        await Follow.repeating(going: { model.active }) {
+            guard wantsTerminal || unavailable != nil else { return true }
+            return await loadTerminal(model.hub)
         }
     }
 
-    func refresh(_ hub: Hub) async {
+    /// False when it should be tried again later rather than at once.
+    @discardableResult
+    func refresh(_ hub: Hub?) async -> Bool {
+        guard let hub else { return false }
         do {
             if conversation.isLoaded {
                 let after = conversation.end
-                conversation.append(try await page(hub, after: after, before: nil), askedAfter: after)
+                conversation.append(try await Follow.page(hub, source, after: after, before: nil), askedAfter: after)
             } else {
-                conversation.replace(with: try await page(hub, after: nil, before: nil))
+                conversation.replace(with: try await Follow.page(hub, source, after: nil, before: nil))
             }
             unavailable = nil
             error = nil
+            return true
         } catch let e as HubError where e.code == "http_404" {
             // A hub older than this app has no conversations to give.
             unavailable = "the hub needs updating"
@@ -67,6 +73,7 @@ final class ConversationModel {
         } catch {
             if !Task.isCancelled { self.error = error.localizedDescription }
         }
+        return false
     }
 
     func loadEarlier(_ hub: Hub) async {
@@ -74,32 +81,29 @@ final class ConversationModel {
         loadingEarlier = true
         defer { loadingEarlier = false }
         do {
-            conversation.prepend(try await page(hub, after: nil, before: start))
+            conversation.prepend(try await Follow.page(hub, source, after: nil, before: start))
         } catch {
             self.error = error.localizedDescription
         }
     }
 
-    /// Only the screen: reading further back would scroll the agent's terminal on the Mac.
-    func loadTerminal(_ hub: Hub) async {
+    /// Only the screen: reading further back would scroll the agent's terminal on the Mac. A hub
+    /// busy with other screen reads skips this one.
+    @discardableResult
+    func loadTerminal(_ hub: Hub?) async -> Bool {
+        guard let hub else { return false }
         do {
-            let out = switch source {
-            case .session(let id): try await hub.output(id, visible: true, ansi: true)
-            case .agent(let machine, let name): try await hub.agentOutput(machine: machine, agent: name, visible: true, ansi: true)
-            }
+            let out = try await Follow.screen(hub, source)
             terminal = out.text
             terminalAnsi = out.ansi
             terminalLoaded = true
             terminalError = nil
+            return true
+        } catch let e as HubError where e.code == "busy" {
+            return true
         } catch {
             if !Task.isCancelled { terminalError = error.localizedDescription }
-        }
-    }
-
-    private func page(_ hub: Hub, after: Int64?, before: Int64?) async throws -> Schemas.Transcript {
-        switch source {
-        case .session(let id): try await hub.transcript(id, after: after, before: before)
-        case .agent(let machine, let name): try await hub.agentTranscript(machine: machine, agent: name, after: after, before: before)
+            return false
         }
     }
 }
@@ -172,7 +176,7 @@ struct ConversationScreen: View {
             // Shown at once, not at the next refresh.
             if t == .terminal, let hub = model.hub { Task { await convo.loadTerminal(hub) } }
         }
-        .task(id: model.wakes) { await convo.follow(model) }
+        .task(id: model.followKey) { await convo.follow(model) }
     }
 
     @ViewBuilder
