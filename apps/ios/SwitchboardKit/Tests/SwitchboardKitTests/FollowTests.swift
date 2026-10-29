@@ -90,3 +90,50 @@ private func run(_ clock: Clock, rounds: Int, going: @escaping () -> Bool = { tr
     }
     #expect(clock.starts.count == 2)
 }
+
+/// Counts screen reads and how many ran at once.
+@MainActor
+private final class Reads {
+    var count = 0
+    var inFlight = 0
+    var most = 0
+    func read() async -> Bool {
+        count += 1
+        inFlight += 1
+        most = max(most, inFlight)
+        try? await Task.sleep(for: .milliseconds(20))
+        inFlight -= 1
+        return true
+    }
+}
+
+@Test @MainActor func aHiddenScreenIsNotReadUntilItIsShown() async throws {
+    let (bell, reads) = (Bell(), Reads())
+    var shown = false
+    let loop = Task { @MainActor in
+        await Follow.screens(bell: bell, shown: { shown }) { await reads.read() }
+    }
+    try await Task.sleep(for: .milliseconds(1500))
+    #expect(reads.count == 0, "nothing wakes it while the conversation is shown")
+    shown = true
+    bell.ring()
+    try await Task.sleep(for: .milliseconds(200))
+    #expect(reads.count == 1, "opening the Screen tab reads it at once")
+    loop.cancel()
+    await loop.value
+}
+
+@Test @MainActor func openingTheScreenBringsTheNextReadForwardWithoutAnotherAlongside() async throws {
+    let (bell, reads) = (Bell(), Reads())
+    let loop = Task { @MainActor in
+        await Follow.screens(bell: bell, shown: { true }, every: .seconds(30)) { await reads.read() }
+    }
+    try await Task.sleep(for: .milliseconds(5))
+    bell.ring()
+    bell.ring()
+    try await Task.sleep(for: .milliseconds(200))
+    #expect(reads.count == 2, "a ring during a read starts one more after it, not one beside it")
+    #expect(reads.most == 1)
+    loop.cancel()
+    await loop.value
+}

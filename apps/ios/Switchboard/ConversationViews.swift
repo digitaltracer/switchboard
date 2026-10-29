@@ -26,7 +26,9 @@ final class ConversationModel {
     private(set) var error: String?
     private(set) var loadingEarlier = false
     /// The terminal is read only while it's on screen or standing in.
-    var wantsTerminal = false
+    private(set) var wantsTerminal = false
+    /// Wakes the screen loop when the screen is shown.
+    private let screenBell = Bell()
 
     init(_ source: ConversationSource) {
         self.source = source
@@ -45,16 +47,24 @@ final class ConversationModel {
     }
 
     private func followScreen(_ model: AppModel) async {
-        await Follow.repeating(going: { model.active }) {
-            guard wantsTerminal || unavailable != nil else { return true }
-            return await loadTerminal(model.hub)
+        await Follow.screens(bell: screenBell, shown: { wantsTerminal || unavailable != nil }, going: { model.active }) {
+            await loadTerminal(model.hub)
         }
+    }
+
+    /// The Screen tab opened or closed; opening it reads the screen at once.
+    func showTerminal(_ shown: Bool) {
+        wantsTerminal = shown
+        if shown { screenBell.ring() }
     }
 
     /// False when it should be tried again later rather than at once.
     @discardableResult
     func refresh(_ hub: Hub?, wait: Bool = false) async -> Bool {
         guard let hub else { return false }
+        let wasAvailable = unavailable == nil
+        // The screen stands in for a conversation there's none of.
+        defer { if wasAvailable, unavailable != nil { screenBell.ring() } }
         do {
             if conversation.isLoaded {
                 let after = conversation.end
@@ -172,9 +182,7 @@ struct ConversationScreen: View {
         .navigationTitle(ref.title)
         .navigationBarTitleDisplayMode(.inline)
         .onChange(of: tab, initial: true) { _, t in
-            convo.wantsTerminal = t == .terminal
-            // Shown at once, not at the next refresh.
-            if t == .terminal, let hub = model.hub { Task { await convo.loadTerminal(hub) } }
+            convo.showTerminal(t == .terminal)
         }
         .task(id: model.followKey) { await convo.follow(model) }
     }

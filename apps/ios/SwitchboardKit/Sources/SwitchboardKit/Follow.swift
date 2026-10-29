@@ -35,6 +35,29 @@ public enum Follow {
         }
     }
 
+    /// Reads the screen while `shown`, one read at a time and at most once every `every`. While
+    /// it's hidden nothing runs until `bell` rings; a ring also brings the next read forward, as
+    /// when the Screen tab is opened.
+    @MainActor
+    public static func screens(
+        bell: Bell,
+        shown: () -> Bool,
+        going: () -> Bool = { true },
+        every: Duration = every,
+        retry: Duration = retry,
+        _ read: () async -> Bool
+    ) async {
+        while !Task.isCancelled, going() {
+            guard shown() else {
+                await bell.wait()
+                continue
+            }
+            let start = ContinuousClock.now
+            let rest = (await read() ? every : retry) - (ContinuousClock.now - start)
+            if rest > .zero { await bell.wait(upTo: rest) }
+        }
+    }
+
     /// Runs `round` until cancelled or `going` turns false, one at a time, each starting at least
     /// `every` after the last began, or `retry` after one that failed. `round` returns false on failure.
     @MainActor
@@ -54,5 +77,52 @@ public enum Follow {
                 do { try await sleep(rest) } catch { return }
             }
         }
+    }
+}
+
+/// Wakes one waiting loop. A ring while nothing waits is kept for the next wait.
+@MainActor
+public final class Bell {
+    private var waiting: (id: Int, resume: CheckedContinuation<Void, Never>)?
+    private var rung = false
+    private var waits = 0
+
+    public init() {}
+
+    public func ring() {
+        if let w = waiting {
+            waiting = nil
+            w.resume.resume()
+        } else {
+            rung = true
+        }
+    }
+
+    /// Returns when rung, after `limit` if there is one, or when the task is cancelled.
+    public func wait(upTo limit: Duration? = nil) async {
+        if rung || Task.isCancelled {
+            rung = false
+            return
+        }
+        waits += 1
+        let id = waits
+        let timer = limit.map { limit in
+            Task { [weak self] in
+                try? await Task.sleep(for: limit)
+                self?.end(id)
+            }
+        }
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { waiting = (id, $0) }
+        } onCancel: {
+            Task { @MainActor [weak self] in self?.end(id) }
+        }
+        timer?.cancel()
+    }
+
+    private func end(_ id: Int) {
+        guard let w = waiting, w.id == id else { return }
+        waiting = nil
+        w.resume.resume()
     }
 }

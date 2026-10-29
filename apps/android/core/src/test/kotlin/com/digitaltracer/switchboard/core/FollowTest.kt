@@ -6,6 +6,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
 import mockwebserver3.MockWebServer
@@ -99,5 +100,49 @@ class FollowTest {
             20_000L to true
         }
         assertEquals(2, starts.size)
+    }
+
+    /** Counts screen reads and how many ran at once. */
+    private class Reads {
+        var count = 0
+        var inFlight = 0
+        var most = 0
+        suspend fun read(): Boolean {
+            count++
+            inFlight++
+            most = maxOf(most, inFlight)
+            delay(20)
+            inFlight--
+            return true
+        }
+    }
+
+    @Test
+    fun aHiddenScreenIsNotReadUntilItIsShown() = runTest {
+        val (bell, reads) = Bell() to Reads()
+        var shown = false
+        val loop = launch { Follow.screens(bell, { shown }, now = { testScheduler.currentTime }) { reads.read() } }
+        delay(60_000)
+        assertEquals(0, reads.count, "nothing wakes it while the conversation is shown")
+        shown = true
+        bell.ring()
+        delay(200)
+        assertEquals(1, reads.count, "opening the Screen tab reads it at once")
+        loop.cancel()
+    }
+
+    @Test
+    fun openingTheScreenBringsTheNextReadForwardWithoutAnotherAlongside() = runTest {
+        val (bell, reads) = Bell() to Reads()
+        val loop = launch {
+            Follow.screens(bell, { true }, everyMs = 30_000, now = { testScheduler.currentTime }) { reads.read() }
+        }
+        delay(5)
+        bell.ring()
+        bell.ring()
+        delay(200)
+        assertEquals(2, reads.count, "a ring during a read starts one more after it, not one beside it")
+        assertEquals(1, reads.most)
+        loop.cancel()
     }
 }

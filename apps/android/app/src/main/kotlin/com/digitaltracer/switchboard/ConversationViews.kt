@@ -116,6 +116,7 @@ import androidx.compose.ui.unit.sp
 import com.digitaltracer.switchboard.api.models.Transcript
 import com.digitaltracer.switchboard.api.models.TranscriptItem
 import com.digitaltracer.switchboard.core.Ansi
+import com.digitaltracer.switchboard.core.Bell
 import com.digitaltracer.switchboard.core.Conversation
 import com.digitaltracer.switchboard.core.ConversationSource
 import com.digitaltracer.switchboard.core.Follow
@@ -149,6 +150,10 @@ class ConversationModel(val source: ConversationSource) {
         private set
     /** The terminal is read only while it's on screen or standing in. */
     var wantsTerminal = false
+        private set
+
+    /** Wakes the screen loop when the screen is shown. */
+    private val screenBell = Bell()
 
     /**
      * Follows until cancelled or the app leaves the foreground: the conversation as the hub sends
@@ -158,15 +163,22 @@ class ConversationModel(val source: ConversationSource) {
         coroutineScope {
             launch { Follow.repeating(going = { model.foreground }) { model.hub?.let { refresh(it, wait = true) } ?: false } }
             launch {
-                Follow.repeating(going = { model.foreground }) {
-                    if (!wantsTerminal && unavailable == null) true else model.hub?.let { loadTerminal(it) } ?: false
+                Follow.screens(screenBell, { wantsTerminal || unavailable != null }, { model.foreground }) {
+                    model.hub?.let { loadTerminal(it) } ?: false
                 }
             }
         }
     }
 
+    /** The Screen tab opened or closed; opening it reads the screen at once. */
+    fun showTerminal(shown: Boolean) {
+        wantsTerminal = shown
+        if (shown) screenBell.ring()
+    }
+
     /** False when it should be tried again later rather than at once. */
     suspend fun refresh(hub: Hub, wait: Boolean = false): Boolean {
+        val wasAvailable = unavailable == null
         try {
             conversation = if (conversation.isLoaded) {
                 val after = conversation.end
@@ -189,6 +201,8 @@ class ConversationModel(val source: ConversationSource) {
         } catch (e: Exception) {
             error = e.message
         }
+        // The screen stands in for a conversation there's none of.
+        if (wasAvailable && unavailable != null) screenBell.ring()
         return false
     }
 
@@ -241,7 +255,7 @@ fun ConversationScreen(model: AppModel, voice: Voice, listen: Listen, source: Co
     var terminalTab by remember { mutableStateOf(screen) }
     val scope = rememberCoroutineScope()
     LaunchedEffect(source, model.wakes, model.foreground) {
-        convo.wantsTerminal = terminalTab
+        convo.showTerminal(terminalTab)
         if (model.foreground) convo.follow(model)
     }
     val target = when (source) {
@@ -273,9 +287,7 @@ fun ConversationScreen(model: AppModel, voice: Voice, listen: Listen, source: Co
                             .card(7.dp, if (selected) palette.background else Color.Transparent)
                             .clickable {
                                 terminalTab = isTerminal
-                                convo.wantsTerminal = isTerminal
-                                // Shown at once, not at the next refresh.
-                                if (isTerminal) scope.launch { model.hub?.let { convo.loadTerminal(it) } }
+                                convo.showTerminal(isTerminal)
                             }
                             .padding(vertical = 6.dp)
                             .testTag(label),

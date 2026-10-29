@@ -2,9 +2,11 @@ package com.digitaltracer.switchboard.core
 
 import com.digitaltracer.switchboard.api.models.Output
 import com.digitaltracer.switchboard.api.models.Transcript
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withTimeoutOrNull
 
 /** Whose conversation: a Switchboard session's, or an agent started in Herdr. */
 sealed interface ConversationSource {
@@ -45,6 +47,31 @@ object Follow {
     }
 
     /**
+     * Reads the screen while [shown], one read at a time and at most once every [everyMs]. While
+     * it's hidden nothing runs until [bell] rings; a ring also brings the next read forward, as
+     * when the Screen tab is opened.
+     */
+    suspend fun screens(
+        bell: Bell,
+        shown: () -> Boolean,
+        going: () -> Boolean = { true },
+        everyMs: Long = EVERY_MS,
+        retryMs: Long = RETRY_MS,
+        now: () -> Long = { System.nanoTime() / 1_000_000 },
+        read: suspend () -> Boolean,
+    ) {
+        while (currentCoroutineContext().isActive && going()) {
+            if (!shown()) {
+                bell.await()
+                continue
+            }
+            val start = now()
+            val rest = (if (read()) everyMs else retryMs) - (now() - start)
+            if (rest > 0) bell.await(rest)
+        }
+    }
+
+    /**
      * Runs [round] until cancelled or [going] turns false, one at a time, each starting at least
      * [everyMs] after the last began, or [retryMs] after one that failed. [round] returns false on failure.
      */
@@ -61,5 +88,19 @@ object Follow {
             val rest = (if (ok) everyMs else retryMs) - (now() - start)
             if (rest > 0) delay(rest)
         }
+    }
+}
+
+/** Wakes one waiting loop. A ring while nothing waits is kept for the next wait. */
+class Bell {
+    private val rings = Channel<Unit>(Channel.CONFLATED)
+
+    fun ring() {
+        rings.trySend(Unit)
+    }
+
+    /** Returns when rung, or after [limitMs] if there is one. */
+    suspend fun await(limitMs: Long? = null) {
+        if (limitMs == null) rings.receive() else withTimeoutOrNull(limitMs) { rings.receive() }
     }
 }
