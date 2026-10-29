@@ -189,6 +189,9 @@ pub struct TranscriptItem {
     pub added: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub removed: Option<u32>,
+    /// A reply the agent ended its turn with, as its log says; work after it was started by something else.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ends_turn: bool,
 }
 
 /// One skill or command, as typed: `/name`, or `$name` for a Codex skill.

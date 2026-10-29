@@ -3060,6 +3060,10 @@
             ],
             "format": "int32",
             "minimum": 0
+          },
+          "ends_turn": {
+            "type": "boolean",
+            "description": "The reply the agent ended its turn with: its answer, even when work follows that something\nelse started. Older hubs leave it out."
           }
         }
       }

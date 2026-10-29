@@ -470,6 +470,10 @@ pub struct TranscriptItem {
     pub added: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub removed: Option<u32>,
+    /// The reply the agent ended its turn with: its answer, even when work follows that something
+    /// else started. Older hubs leave it out.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ends_turn: bool,
 }
 
 impl From<TranscriptPage> for Transcript {
@@ -490,6 +494,7 @@ impl From<TranscriptPage> for Transcript {
                     at: i.at,
                     added: i.added,
                     removed: i.removed,
+                    ends_turn: i.ends_turn,
                 })
                 .collect(),
             start: p.start,

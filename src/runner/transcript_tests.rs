@@ -440,3 +440,58 @@ fn a_codex_patch_names_its_files_and_counts_its_lines() {
     assert_eq!(summary, "Edited src/a.rs and 1 more");
     assert_eq!(lines, Some((3, 1)));
 }
+
+#[test]
+fn a_reply_that_ends_its_turn_says_so() {
+    let ended = |uuid: &str, text: &str, stop: &str| {
+        line(
+            json!({"type": "assistant", "uuid": uuid, "timestamp": "2026-10-26T09:00:00Z",
+                    "message": {"stop_reason": stop, "content": [{"type": "text", "text": text}]}}),
+        )
+    };
+    let claude = [
+        user("u1", json!("review it")),
+        ended("a1", "Still reading.", "tool_use"),
+        ended("a2", "No defects.", "end_turn"),
+        // A background task's notice starts the next work; the phone doesn't show it.
+        user("n1", json!("<task-notification>done</task-notification>")),
+        ended("a3", "The task finished.", "end_turn"),
+    ]
+    .concat();
+    let (_d, path) = log(&claude);
+    let page = read_page(&path, None, None).unwrap();
+    let ends: Vec<_> = page
+        .items
+        .iter()
+        .map(|i| (i.text.clone().unwrap_or_default(), i.ends_turn))
+        .collect();
+    assert_eq!(
+        ends,
+        [
+            ("review it".to_owned(), false),
+            ("Still reading.".to_owned(), false),
+            ("No defects.".to_owned(), true),
+            ("The task finished.".to_owned(), true),
+        ]
+    );
+
+    let codex = [
+        codex_line(json!({"type": "message", "role": "user", "id": "m1",
+                          "content": [{"type": "input_text", "text": "run the tests"}]})),
+        codex_line(
+            json!({"type": "message", "role": "assistant", "id": "m2", "phase": "commentary",
+                          "content": [{"type": "output_text", "text": "Running them."}]}),
+        ),
+        codex_line(
+            json!({"type": "message", "role": "assistant", "id": "m3", "phase": "final_answer",
+                          "content": [{"type": "output_text", "text": "All tests pass."}]}),
+        ),
+    ]
+    .concat();
+    let (_d, path) = log(&codex);
+    let page = read_page(&path, None, None).unwrap();
+    assert_eq!(
+        page.items.iter().map(|i| i.ends_turn).collect::<Vec<_>>(),
+        [false, false, true]
+    );
+}

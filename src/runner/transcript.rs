@@ -240,6 +240,7 @@ fn parse<'a>(lines: impl IntoIterator<Item = (u64, &'a str)>) -> Vec<(u64, Trans
             at: at.clone(),
             added: None,
             removed: None,
+            ends_turn: false,
         };
         let content = d.pointer("/message/content");
         match d.get("type").and_then(Value::as_str) {
@@ -334,7 +335,15 @@ fn parse<'a>(lines: impl IntoIterator<Item = (u64, &'a str)>) -> Vec<(u64, Trans
                             } else {
                                 "assistant"
                             };
-                            out.push((offset, item(id, kind, clip(text, MAX_TEXT))));
+                            let stop = d.pointer("/message/stop_reason").and_then(Value::as_str);
+                            out.push((
+                                offset,
+                                TranscriptItem {
+                                    ends_turn: kind == "assistant"
+                                        && matches!(stop, Some("end_turn" | "stop_sequence")),
+                                    ..item(id, kind, clip(text, MAX_TEXT))
+                                },
+                            ));
                         }
                         Some("tool_use") => {
                             let call = b
@@ -399,6 +408,7 @@ fn codex(
         at: at.clone(),
         added: None,
         removed: None,
+        ends_turn: false,
     };
     match s("type") {
         Some("message") => {
@@ -415,7 +425,10 @@ fn codex(
                     _ => None,
                 };
                 if let Some((kind, text)) = shown {
-                    let item = new(format!("{id}:{i}"), kind, Some(clip(&text, MAX_TEXT)));
+                    let item = TranscriptItem {
+                        ends_turn: kind == "assistant" && s("phase") == Some("final_answer"),
+                        ..new(format!("{id}:{i}"), kind, Some(clip(&text, MAX_TEXT)))
+                    };
                     out.push((offset, item));
                 }
             }
