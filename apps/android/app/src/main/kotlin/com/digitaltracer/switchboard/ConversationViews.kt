@@ -1,5 +1,18 @@
 package com.digitaltracer.switchboard
 
+import androidx.compose.material.icons.filled.ArrowDownward
+import androidx.compose.ui.draw.shadow
+import androidx.compose.foundation.border
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.AnimatedVisibility
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.flow.first
+import androidx.compose.runtime.snapshotFlow
 import com.digitaltracer.switchboard.core.Markdown
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.draw.clip
@@ -327,46 +340,66 @@ fun ConversationSkeleton(rows: Int = 3) {
 private fun Feed(model: AppModel, convo: ConversationModel, source: ConversationSource, loadEarlier: () -> Unit) {
     val items = convo.conversation.items
     val list = rememberLazyListState()
+    var opened by remember { mutableStateOf(false) }
     // Start at the latest, and keep up with new items unless scrolled back.
-    LaunchedEffect(items.size) {
-        val last = list.layoutInfo.totalItemsCount - 1
-        val atEnd = list.layoutInfo.visibleItemsInfo.lastOrNull()?.index?.let { it >= last - 2 } ?: true
-        if (atEnd && last > 0) list.scrollToItem(last)
+    LaunchedEffect(items.lastOrNull()?.id) {
+        if (items.isEmpty()) return@LaunchedEffect
+        val before = list.layoutInfo
+        val atEnd = before.visibleItemsInfo.lastOrNull()?.index?.let { it >= before.totalItemsCount - 3 } ?: true
+        if (opened && !atEnd) return@LaunchedEffect
+        // The list counts the new rows a frame later; until then its last row is the old one, or the placeholder.
+        withTimeoutOrNull(1_000) { snapshotFlow { list.layoutInfo.totalItemsCount }.first { it != before.totalItemsCount } }
+        list.scrollToItem((list.layoutInfo.totalItemsCount - 1).coerceAtLeast(0))
+        opened = true
     }
-    LazyColumn(
-        Modifier.fillMaxSize().testTag("conversation"),
-        state = list,
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        if (convo.conversation.hasEarlier) {
-            item {
-                Box(Modifier.fillMaxWidth(), Alignment.Center) {
-                    if (convo.loadingEarlier) {
-                        CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                    } else {
-                        Text("Show earlier messages", Modifier.clickable(onClick = loadEarlier).padding(8.dp), style = Type.body, color = palette.accent)
+    // Away from the latest row, a button brings you back to it.
+    val away by remember { derivedStateOf { list.layoutInfo.visibleItemsInfo.lastOrNull()?.index?.let { it < list.layoutInfo.totalItemsCount - 1 } ?: false } }
+    val scope = rememberCoroutineScope()
+    Box(Modifier.fillMaxSize()) {
+        LazyColumn(
+            Modifier.fillMaxSize().testTag("conversation"),
+            state = list,
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            if (convo.conversation.hasEarlier) {
+                item {
+                    Box(Modifier.fillMaxWidth(), Alignment.Center) {
+                        if (convo.loadingEarlier) {
+                            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                        } else {
+                            Text("Show earlier messages", Modifier.clickable(onClick = loadEarlier).padding(8.dp), style = Type.body, color = palette.accent)
+                        }
                     }
                 }
             }
-        }
-        val error = convo.error
-        if (!convo.conversation.isLoaded) {
-            item {
-                if (error != null) {
-                    Waiting(Icons.Outlined.ErrorOutline, "Couldn't load the conversation: $error", busy = false, Modifier.fillMaxWidth().padding(top = 40.dp))
-                } else {
-                    ConversationSkeleton()
+            val error = convo.error
+            if (!convo.conversation.isLoaded) {
+                item {
+                    if (error != null) {
+                        Waiting(Icons.Outlined.ErrorOutline, "Couldn't load the conversation: $error", busy = false, Modifier.fillMaxWidth().padding(top = 40.dp))
+                    } else {
+                        ConversationSkeleton()
+                    }
                 }
+            } else if (items.isEmpty()) {
+                item { Waiting(Icons.Outlined.Forum, "Nothing said yet.", busy = false, Modifier.fillMaxWidth().padding(top = 40.dp)) }
             }
-        } else if (items.isEmpty()) {
-            item { Waiting(Icons.Outlined.Forum, "Nothing said yet.", busy = false, Modifier.fillMaxWidth().padding(top = 40.dp)) }
+            val speaker = speaker(model, source)
+            items(Turns.entries(items), key = { it.id }) { EntryRow(it, speaker) }
+            if (convo.conversation.isLoaded) {
+                status(model, source)?.let { s -> item { StatusLine(s) } }
+                error?.let { e -> item { Text(e, style = Type.footnote, color = palette.needs) } }
+            }
         }
-        val speaker = speaker(model, source)
-        items(Turns.entries(items), key = { it.id }) { EntryRow(it, speaker) }
-        if (convo.conversation.isLoaded) {
-            status(model, source)?.let { s -> item { StatusLine(s) } }
-            error?.let { e -> item { Text(e, style = Type.footnote, color = palette.needs) } }
+        AnimatedVisibility(away, Modifier.align(Alignment.BottomCenter).padding(bottom = 10.dp), enter = fadeIn() + scaleIn(initialScale = 0.8f), exit = fadeOut() + scaleOut(targetScale = 0.8f)) {
+            Box(
+                Modifier.size(40.dp).shadow(6.dp, CircleShape).clip(CircleShape).background(palette.card)
+                    .border(0.5.dp, palette.separator, CircleShape)
+                    .clickable { scope.launch { list.animateScrollToItem((list.layoutInfo.totalItemsCount - 1).coerceAtLeast(0)) } }
+                    .semantics { contentDescription = "Jump to the latest" }.testTag("jumpToLatest"),
+                Alignment.Center,
+            ) { Icon(Icons.Filled.ArrowDownward, null, Modifier.size(20.dp), tint = palette.label) }
         }
     }
 }

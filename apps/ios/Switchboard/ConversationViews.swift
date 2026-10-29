@@ -111,6 +111,8 @@ struct ConversationScreen: View {
     let ref: ConversationRef
     @State private var convo: ConversationModel
     @State private var tab: Tab
+    /// Whether the conversation is scrolled to its latest message.
+    @State private var atEnd = true
 
     enum Tab: String, CaseIterable {
         case conversation = "Conversation"
@@ -185,38 +187,72 @@ struct ConversationScreen: View {
     }
 
     private var feed: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 12) {
-                if convo.conversation.hasEarlier {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    if convo.conversation.hasEarlier {
+                        Button {
+                            Task { if let hub = model.hub { await convo.loadEarlier(hub) } }
+                        } label: {
+                            if convo.loadingEarlier { ProgressView() } else { Text("Show earlier messages") }
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                    if !convo.conversation.isLoaded {
+                        if let error = convo.error {
+                            Waiting(symbol: "exclamationmark.triangle", text: "Couldn't load the conversation: \(error)", busy: false)
+                                .padding(.top, 40)
+                        } else {
+                            ConversationSkeleton()
+                        }
+                    } else if convo.conversation.items.isEmpty {
+                        Waiting(symbol: "bubble.left.and.bubble.right", text: "Nothing said yet.", busy: false).padding(.top, 40)
+                    }
+                    ForEach(Turns.entries(convo.conversation.items)) { EntryRow(entry: $0, speaker: speaker) }
+                    if convo.conversation.isLoaded {
+                        if let status { StatusLine(status: status) }
+                        if let error = convo.error { Text(error).font(.footnote).foregroundStyle(.orange) }
+                    }
+                    Color.clear.frame(height: 1).id(Self.end)
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 24)
+            }
+            .defaultScrollAnchor(.bottom)
+            .modifier(TracksEnd(atEnd: $atEnd))
+            // The first page replaces the loading placeholder, whose offset leaves the lazy stack showing
+            // nothing until scrolled; new messages follow only if you were at the end.
+            .onChange(of: convo.conversation.items.last?.id, initial: true) { old, _ in
+                if old == nil || atEnd { proxy.scrollTo(Self.end, anchor: .bottom) }
+            }
+            .overlay(alignment: .bottom) {
+                if !atEnd {
                     Button {
-                        Task { if let hub = model.hub { await convo.loadEarlier(hub) } }
+                        withAnimation(.snappy) { proxy.scrollTo(Self.end, anchor: .bottom) }
                     } label: {
-                        if convo.loadingEarlier { ProgressView() } else { Text("Show earlier messages") }
+                        Image(systemName: "arrow.down")
+                            .font(.body.weight(.semibold))
+                            .frame(width: 40, height: 40)
+                            .background(Color(.secondarySystemGroupedBackground), in: Circle())
+                            .overlay(Circle().stroke(Color(.separator).opacity(0.6), lineWidth: 0.5))
+                            .shadow(color: .black.opacity(0.15), radius: 6, y: 2)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Circle())
                     }
-                    .frame(maxWidth: .infinity)
-                }
-                if !convo.conversation.isLoaded {
-                    if let error = convo.error {
-                        Waiting(symbol: "exclamationmark.triangle", text: "Couldn't load the conversation: \(error)", busy: false)
-                            .padding(.top, 40)
-                    } else {
-                        ConversationSkeleton()
-                    }
-                } else if convo.conversation.items.isEmpty {
-                    Waiting(symbol: "bubble.left.and.bubble.right", text: "Nothing said yet.", busy: false).padding(.top, 40)
-                }
-                ForEach(Turns.entries(convo.conversation.items)) { EntryRow(entry: $0, speaker: speaker) }
-                if convo.conversation.isLoaded {
-                    if let status { StatusLine(status: status) }
-                    if let error = convo.error { Text(error).font(.footnote).foregroundStyle(.orange) }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.primary)
+                    .padding(.bottom, 10)
+                    .transition(.opacity.combined(with: .scale(scale: 0.8)))
+                    .accessibilityLabel("Jump to the latest")
+                    .accessibilityIdentifier("jumpToLatest")
                 }
             }
-            .padding(.horizontal, 16)
-            .padding(.bottom, 24)
+            .animation(.easeOut(duration: 0.15), value: atEnd)
+            .accessibilityIdentifier("conversation")
         }
-        .defaultScrollAnchor(.bottom)
-        .accessibilityIdentifier("conversation")
     }
+
+    private static let end = "end"
 
     /// Opens the review sheet, where `/` lists the agent's skills.
     private var messageBar: some View {
@@ -387,6 +423,23 @@ private struct Clamped<Content: View>: View {
                     if full > height { LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom).frame(height: 56) }
                 }
             }
+    }
+}
+
+/// Keeps `atEnd` up to date where iOS can say where the scroll view is; elsewhere it stays true.
+private struct TracksEnd: ViewModifier {
+    @Binding var atEnd: Bool
+
+    func body(content: Content) -> some View {
+        if #available(iOS 18.0, *) {
+            content.onScrollGeometryChange(for: Bool.self) { g in
+                g.contentOffset.y + g.containerSize.height >= g.contentSize.height - 80
+            } action: { _, now in
+                atEnd = now
+            }
+        } else {
+            content
+        }
     }
 }
 
