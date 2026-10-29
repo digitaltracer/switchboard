@@ -11,6 +11,7 @@ class SwitchboardApp : Application() {
     override fun onCreate() {
         super.onCreate()
         model = AppModel(this, KeystoreKeys(this))
+        if (Push.start(this)) Push.token(model::registerPush)
         voice = Voice(this) { model.vocabulary }
     }
 }

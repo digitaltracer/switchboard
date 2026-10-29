@@ -38,6 +38,21 @@ otherwise:
 - The approval key needs a strong biometric or the screen lock for every signature. The key
   itself enforces this; a new fingerprint doesn't invalidate it. Creating it needs a screen lock.
 
+## Push
+
+Push goes through Firebase Cloud Messaging. Both halves come from your own Firebase project and
+stay outside the repo:
+- **The app** reads its Firebase settings at build time from
+  `~/.config/switchboard/android-firebase.properties` (or `-Pswitchboard.firebase=<file>`), with
+  `appId`, `apiKey`, `projectId` and `senderId` from the project's Android app. Without the file
+  the app builds with push off. There is no `google-services.json`.
+- **The relay** (or a hub that sends its own pushes) sends with the project's service-account
+  key, set in its config as `[push.fcm] key_file = "<absolute path>"`. The key must be mode 0600
+  and outside any git working tree. Deploy that relay before any hub sends `waiting` pushes; an
+  older relay drops them.
+
+The phone registers its FCM token with the hub, and notifications carry only generic text and ids.
+
 ## Pairing against a throwaway hub
 
 Run a relay and a hub on the Mac with a scratch config, as `apps/ios/scripts/e2e.sh` does, then

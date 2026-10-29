@@ -135,6 +135,16 @@ class HubTest {
     }
 
     @Test
+    fun anFcmTokenIsRegisteredAsFcm() = runTest {
+        val fake = FakeHub { op, _ -> tokenAnswers(op) ?: (204 to "") }
+        hub(fake).setFcmToken("dXk1:APA91b")
+        val body = json(fake.requests.last { it.op == "PUT /devices/self/push" }.body)
+        assertEquals("fcm", body.str("provider"))
+        assertEquals("dXk1:APA91b", body.str("token"))
+        assertEquals("production", body.str("environment"))
+    }
+
+    @Test
     fun aLostStartIsLookedUpByItsRequestId() = runTest {
         val fake = FakeHub { op, _ ->
             tokenAnswers(op) ?: when (op) {

@@ -1,6 +1,9 @@
 package com.digitaltracer.switchboard
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.graphics.Color
 import androidx.activity.ComponentActivity
@@ -17,6 +20,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         if (savedInstanceState == null) opened(intent)
+        askToNotify()
         setContent {
             val isDark = when (model.appearance) {
                 AppModel.Appearance.System -> isSystemInDarkTheme()
@@ -35,6 +39,14 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    /** Android 13 and later show nothing from push until the user allows it. */
+    private fun askToNotify() {
+        val needed = BuildConfig.FIREBASE_APP_ID.isNotEmpty() &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        if (needed) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
     }
 
     override fun onStart() {

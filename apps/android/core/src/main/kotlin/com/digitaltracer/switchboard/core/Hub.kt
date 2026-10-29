@@ -38,6 +38,7 @@ import com.digitaltracer.switchboard.api.models.Project
 import com.digitaltracer.switchboard.api.models.PromptRequest
 import com.digitaltracer.switchboard.api.models.PromptResponse
 import com.digitaltracer.switchboard.api.models.PushEnvironment
+import com.digitaltracer.switchboard.api.models.PushProviderKind
 import com.digitaltracer.switchboard.api.models.PushTokenRequest
 import com.digitaltracer.switchboard.api.models.Session
 import com.digitaltracer.switchboard.api.models.Skill
@@ -377,6 +378,10 @@ class Hub private constructor(
 
     suspend fun setPushToken(token: String?, environment: PushEnvironment) =
         authed { devicesApi.setPushToken(PushTokenRequest(environment, token)) }
+
+    /** Registers this phone's FCM token; FCM has no sandbox. */
+    suspend fun setFcmToken(token: String?) =
+        authed { devicesApi.setPushToken(PushTokenRequest(PushEnvironment.production, token, PushProviderKind.fcm)) }
 }
 
 /** Its Herdr name, or its kind and pane when it has none, e.g. `claude · w2:p1`. Its terminal title is what it's working on, not a name. */

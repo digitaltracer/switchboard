@@ -171,6 +171,7 @@ class AppModel(context: Context, val keys: DeviceKeys) {
         hub = Hub.paired(p, keys, build)
         phase = Phase.Paired
         startPolling()
+        sendPushToken()
     }
 
     // Pairing.
@@ -259,7 +260,21 @@ class AppModel(context: Context, val keys: DeviceKeys) {
         startPolling()
     }
 
-    /** Nothing polls while the app isn't on screen; push covers that once it's built. */
+    /** This phone's FCM token, sent to the hub whenever it changes or the phone pairs. */
+    private var pushToken: String? = prefs.getString(PUSH_TOKEN, null)
+
+    fun registerPush(token: String) {
+        pushToken = token
+        prefs.edit().putString(PUSH_TOKEN, token).apply()
+        sendPushToken()
+    }
+
+    private fun sendPushToken() {
+        val (hub, token) = (hub ?: return) to (pushToken ?: return)
+        scope.launch { runCatching { hub.setFcmToken(token) } }
+    }
+
+    /** Nothing polls while the app isn't on screen; push tells it when an agent needs it. */
     fun wentToBackground() {
         foreground = false
         pollJob?.cancel()
@@ -339,6 +354,7 @@ class AppModel(context: Context, val keys: DeviceKeys) {
         private const val PAIRING = "pairing"
         private const val SAID = "said"
         private const val APPEARANCE = "appearance"
+        private const val PUSH_TOKEN = "push_token"
         private const val MAX_SAID = 50
         private val saidSerializer = MapSerializer(String.serializer(), Said.serializer())
 

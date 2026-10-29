@@ -13,6 +13,16 @@ val uploadKey = file(
         .getOrElse("${System.getProperty("user.home")}/.config/switchboard/android-upload.properties"),
 )
 
+// The Firebase project for push, outside any repo: a properties file with appId, apiKey,
+// projectId and senderId from the project's Android app. Without it the app builds with push off.
+val firebase = Properties().apply {
+    val f = file(
+        providers.gradleProperty("switchboard.firebase")
+            .getOrElse("${System.getProperty("user.home")}/.config/switchboard/android-firebase.properties"),
+    )
+    if (f.exists()) f.inputStream().use(::load)
+}
+
 android {
     namespace = "com.digitaltracer.switchboard"
     compileSdk = 37
@@ -25,6 +35,12 @@ android {
         // Each Play upload needs a higher one: `-Pswitchboard.build=N`.
         versionCode = providers.gradleProperty("switchboard.build").getOrElse("1").toInt()
         versionName = "1.0"
+        for ((field, key) in listOf(
+            "FIREBASE_APP_ID" to "appId", "FIREBASE_API_KEY" to "apiKey",
+            "FIREBASE_PROJECT_ID" to "projectId", "FIREBASE_SENDER_ID" to "senderId",
+        )) {
+            buildConfigField("String", field, "\"${firebase.getProperty(key, "")}\"")
+        }
     }
 
     signingConfigs {
@@ -51,6 +67,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 
@@ -63,6 +80,7 @@ dependencies {
     implementation(libs.core.ktx)
     implementation(libs.activity.compose)
     implementation(libs.code.scanner)
+    implementation(libs.firebase.messaging)
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.material3)
     implementation(libs.compose.icons)
