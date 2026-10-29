@@ -842,16 +842,21 @@ pub async fn get_agent_output(
     _d: DeviceAuth,
     Query(q): Query<AgentOutputQuery>,
 ) -> ApiResult<Output> {
-    let r = st
-        .svc
-        .read_agent_with(
-            &q.machine_id,
-            &q.agent,
-            q.lines.unwrap_or(DEFAULT_OUTPUT_LINES),
-            q.visible,
-            q.ansi,
-        )
-        .await?;
+    let r = if q.visible {
+        st.svc
+            .read_agent_screen(&q.machine_id, &q.agent, q.ansi)
+            .await?
+    } else {
+        st.svc
+            .read_agent_with(
+                &q.machine_id,
+                &q.agent,
+                q.lines.unwrap_or(DEFAULT_OUTPUT_LINES),
+                false,
+                false,
+            )
+            .await?
+    };
     Ok(Json(Output {
         text: r.text,
         truncated: r.truncated,

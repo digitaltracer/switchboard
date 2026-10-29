@@ -1328,6 +1328,21 @@ impl SessionService {
             .await
     }
 
+    /// A named agent's visible screen for the apps. It shares the screen-read limit, which
+    /// WhatsApp's reads stay outside.
+    pub async fn read_agent_screen(
+        &self,
+        machine: &str,
+        agent: &str,
+        colours: bool,
+    ) -> Result<ReadResult, HubError> {
+        self.known_machine(machine)?;
+        let Ok(_permit) = self.screen_reads.try_acquire() else {
+            return Err(HubError::Busy);
+        };
+        self.read_agent_with(machine, agent, 0, true, colours).await
+    }
+
     /// `read_agent`, and with `colours` the visible screen with its colours too.
     pub async fn read_agent_with(
         &self,

@@ -1774,6 +1774,58 @@ async fn screen_reads_are_capped() {
 }
 
 #[tokio::test]
+async fn app_screen_reads_of_sessions_and_agents_share_the_cap_and_whatsapps_stay_outside() {
+    let r = rig().await;
+    let mut vps = connect(&r.svc, "vps", vec![]).await;
+    let sid = running(&r, &mut vps).await;
+    let mut tasks = Vec::new();
+    for n in 0..=MAX_SCREEN_READS {
+        let (svc, s2) = (r.svc.clone(), sid.clone());
+        tasks.push(tokio::spawn(async move {
+            if n % 2 == 0 {
+                svc.read_screen(&s2, false).await
+            } else {
+                svc.read_agent_screen("vps", "reviewer", true).await
+            }
+        }));
+    }
+    let mut reqs = Vec::new();
+    for _ in 0..MAX_SCREEN_READS {
+        reqs.push(vps.req().await);
+    }
+    while !tasks.iter().any(|t| t.is_finished()) {
+        tokio::task::yield_now().await;
+    }
+
+    // WhatsApp's blocked notice reads the screen while the apps hold every permit.
+    let svc = r.svc.clone();
+    let whatsapp = tokio::spawn(async move { svc.read_agent("vps", "reviewer", 0, true).await });
+    let req = vps.req().await;
+    assert!(
+        matches!(req.op, Op::ReadAgent { visible: true, .. }),
+        "{:?}",
+        req.op
+    );
+    vps.ok(req.id, json!({"text": "Allow edit?"})).await;
+    assert_eq!(whatsapp.await.unwrap().unwrap().text, "Allow edit?");
+
+    for req in reqs {
+        vps.ok(req.id, json!({"text": "x"})).await;
+    }
+    let mut busy = 0;
+    for t in tasks {
+        match t.await.unwrap() {
+            Ok(_) => {}
+            Err(e) => {
+                assert_eq!(e.code(), "busy");
+                busy += 1;
+            }
+        }
+    }
+    assert_eq!(busy, 1);
+}
+
+#[tokio::test]
 async fn the_start_records_the_runners_starting_commit() {
     let r = rig().await;
     let mut vps = connect(&r.svc, "vps", vec![]).await;

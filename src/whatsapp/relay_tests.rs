@@ -58,6 +58,18 @@ struct Script {
     /// (agent or session id, text) for every prompt that reached the runner.
     prompts: Arc<Mutex<Vec<(String, String)>>>,
     ops: Arc<Mutex<Vec<String>>>,
+    /// Agents whose screen reads aren't answered until `release` opens.
+    held: Arc<Mutex<Vec<String>>>,
+    release: Arc<Gate>,
+}
+
+/// Closed until permits are added.
+struct Gate(tokio::sync::Semaphore);
+
+impl Default for Gate {
+    fn default() -> Self {
+        Self(tokio::sync::Semaphore::new(0))
+    }
 }
 
 impl Script {
@@ -91,6 +103,10 @@ impl Script {
 
     fn answer(&self, op: Op) -> Outcome {
         self.ops.lock().unwrap().push(format!("{op:?}"));
+        self.reply(op)
+    }
+
+    fn reply(&self, op: Op) -> Outcome {
         let text = |map: &Arc<Mutex<HashMap<String, String>>>, k: &str| {
             map.lock().unwrap().get(k).cloned().unwrap_or_default()
         };
@@ -175,6 +191,22 @@ impl Rig {
         tokio::spawn(async move {
             while let Some(frame) = outbound.recv().await {
                 if let Frame::Req(req) = frame {
+                    if let Op::ReadAgent { agent, .. } = &req.op
+                        && s.held.lock().unwrap().contains(agent)
+                    {
+                        s.ops.lock().unwrap().push(format!("{:?}", req.op));
+                        let (svc, s) = (svc2.clone(), s.clone());
+                        tokio::spawn(async move {
+                            let _open = s.release.0.acquire().await.unwrap();
+                            let outcome = s.reply(req.op);
+                            let resp = Resp {
+                                id: req.id,
+                                outcome,
+                            };
+                            svc.runner_frame("mac", generation, Frame::Resp(resp)).await;
+                        });
+                        continue;
+                    }
                     let outcome = s.answer(req.op);
                     svc2.runner_frame(
                         "mac",
@@ -821,6 +853,64 @@ async fn the_finished_notice_quotes_the_reply_from_the_log_and_never_reads_the_t
             .all(|op| !op.starts_with("ReadAgent") && !op.starts_with("Read ")),
         "{ops:?}"
     );
+}
+
+#[tokio::test]
+async fn the_blocked_notice_reads_the_screen_while_the_apps_hold_every_screen_read() {
+    let rig = Rig::new().await;
+    rig.script.agent("switchboard-impl", "idle");
+    rig.script.agent("watched-on-phone", "working");
+    rig.script
+        .screens
+        .lock()
+        .unwrap()
+        .insert("switchboard-impl".into(), "Allow edit?\n".into());
+    rig.script
+        .held
+        .lock()
+        .unwrap()
+        .push("watched-on-phone".into());
+    let mut r = rig.relay();
+    reply(&mut r, "watch switchboard-impl").await;
+    let reads: Vec<_> = (0..crate::hub::service::MAX_SCREEN_READS)
+        .map(|_| {
+            let svc = rig.svc.clone();
+            tokio::spawn(async move {
+                svc.read_agent_screen("mac", "watched-on-phone", false)
+                    .await
+            })
+        })
+        .collect();
+    let held = || {
+        rig.script
+            .ops
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|op| op.contains("watched-on-phone"))
+            .count()
+    };
+    while held() < reads.len() {
+        tokio::task::yield_now().await;
+    }
+    assert!(matches!(
+        rig.svc
+            .read_agent_screen("mac", "watched-on-phone", false)
+            .await,
+        Err(HubError::Busy)
+    ));
+    let blocked = transition(
+        &mut r,
+        "switchboard-impl",
+        AgentStatus::Working,
+        AgentStatus::Blocked,
+    )
+    .await;
+    assert!(blocked[0].contains("Allow edit?"), "{blocked:?}");
+    rig.script.release.0.add_permits(reads.len());
+    for t in reads {
+        t.await.unwrap().unwrap();
+    }
 }
 
 #[tokio::test]
