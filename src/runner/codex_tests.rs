@@ -317,7 +317,8 @@ fn only_this_module_sends_keys() {
                     .unwrap()
                     .to_string_lossy()
                     .into_owned();
-                if calls > 0 && rel != "runner/codex.rs" && !rel.starts_with("herdr/") {
+                let allowed = ["runner/codex.rs", "runner/dialogs.rs"];
+                if calls > 0 && !allowed.contains(&rel.as_str()) && !rel.starts_with("herdr/") {
                     offenders.push(rel);
                 }
             }
@@ -325,6 +326,6 @@ fn only_this_module_sends_keys() {
     }
     assert!(
         offenders.is_empty(),
-        "keys sent outside runner/codex.rs: {offenders:?}"
+        "keys sent outside runner/codex.rs and runner/dialogs.rs: {offenders:?}"
     );
 }

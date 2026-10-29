@@ -1,6 +1,6 @@
-//! Every keystroke the runner sends goes through here, and only to Codex panes:
-//! the "Open restricted" startup choice and the keystroke-deny fallback for a failed hook.
-//! Claude panes have no key path at all, so a pending Claude approval can't be answered by keys.
+//! Keys the runner sends on its own, only to Codex panes: the "Open restricted" startup choice
+//! and the keystroke-deny fallback for a failed hook. The owner's own choices on a dialog go
+//! through `dialogs.rs`; nothing here approves anything.
 
 use std::future::Future;
 use std::time::Duration;

@@ -145,6 +145,10 @@ pub enum Op {
     Skills {
         agent: String,
     },
+    /// The dialog on an agent's screen, as `{"dialog": DialogView | null}`. Read-only.
+    Dialog {
+        agent: String,
+    },
 }
 
 impl Op {
@@ -159,6 +163,7 @@ impl Op {
                 | Op::Changes { .. }
                 | Op::Transcript { .. }
                 | Op::Skills { .. }
+                | Op::Dialog { .. }
         )
     }
 }
@@ -204,6 +209,36 @@ pub struct TranscriptItem {
     /// A reply the agent ended its turn with, as its log says; work after it was started by something else.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub ends_turn: bool,
+}
+
+/// A dialog on an agent's screen as the runner recognised it. Masked; the ids are opaque.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DialogView {
+    pub kind: crate::agents::dialog::DialogKind,
+    pub prompt: String,
+    pub options: Vec<DialogOptionView>,
+    /// The option the screen has selected.
+    #[serde(default)]
+    pub selected: Option<String>,
+    /// This showing of the dialog; an answer names it.
+    pub occurrence: String,
+    /// Keys may answer it now.
+    pub answerable: bool,
+    /// Why not, when not: `read_only`, `unpinned`, `hooked`, `hook_pending`, `hook_failed`,
+    /// `not_blocked` or `answered`.
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DialogOptionView {
+    pub id: String,
+    pub label: String,
+    /// SHA-256 hex of `label`, which an answer repeats.
+    pub label_sha256: String,
+    pub is_deny: bool,
+    /// May be chosen from the phone; free-text, chat and standing-permission rows may not.
+    pub offered: bool,
 }
 
 /// One skill or command, as typed: `/name`, or `$name` for a Codex skill.

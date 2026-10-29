@@ -57,6 +57,8 @@ pub enum Method {
     AgentRead(AgentReadParams),
     #[serde(rename = "agent.send_keys")]
     AgentSendKeys(AgentSendKeysParams),
+    #[serde(rename = "agent.get")]
+    AgentGet(AgentTarget),
     #[serde(rename = "pane.process_info")]
     PaneProcessInfo(PaneProcessInfoParams),
     #[serde(rename = "workspace.close")]
@@ -78,6 +80,7 @@ impl Method {
             Method::AgentWait(_) => "agent.wait",
             Method::AgentRead(_) => "agent.read",
             Method::AgentSendKeys(_) => "agent.send_keys",
+            Method::AgentGet(_) => "agent.get",
             Method::PaneProcessInfo(_) => "pane.process_info",
             Method::WorkspaceClose(_) => "workspace.close",
             Method::EventsSubscribe(_) => "events.subscribe",
@@ -185,6 +188,11 @@ pub struct PaneProcessInfo {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct PaneProcess {
     pub pid: u32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentTarget {
+    pub target: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -370,6 +378,9 @@ pub struct AgentInfo {
     pub cwd: Option<String>,
     #[serde(default)]
     pub state_change_seq: u64,
+    /// The pane's terminal; a new one means a new process in the pane.
+    #[serde(default)]
+    pub terminal_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]

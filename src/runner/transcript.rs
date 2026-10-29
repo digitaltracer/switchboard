@@ -152,6 +152,14 @@ pub fn read_page(
     }
 }
 
+/// The id of the latest tool call if it has no result yet: Claude's tool_use id or Codex's
+/// call_id, for the dialog that call is waiting at.
+pub fn pending_call(path: &Path) -> Option<String> {
+    let page = read_page(path, None, None).ok()?;
+    let last = page.items.iter().rev().find(|i| i.kind == "tool")?;
+    (!last.done).then(|| last.id.clone())
+}
+
 /// The page made of whole lines `body`, which starts at `start`.
 fn page(start: u64, end: u64, body: &[u8]) -> TranscriptPage {
     let mut lines = Vec::new();

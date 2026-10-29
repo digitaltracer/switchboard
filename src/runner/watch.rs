@@ -216,6 +216,11 @@ impl Tracker {
                     return;
                 };
                 let version = s.codex_version.as_deref().unwrap_or_default();
+                let pane_id = s.pane_id.as_deref().unwrap_or_default();
+                let _lock = sessions
+                    .pane_locks
+                    .lock(s.herdr_session.as_deref(), pane_id)
+                    .await;
                 match deny_dialog(&pane, version).await {
                     FallbackOutcome::Denied { screen_excerpt } => {
                         sessions.fallback_denied(s, screen_excerpt);

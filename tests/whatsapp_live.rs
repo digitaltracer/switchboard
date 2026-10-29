@@ -159,6 +159,7 @@ async fn whatsapp_starts_a_claude_session_and_decides_its_approvals() {
             exe: PathBuf::from(env!("CARGO_BIN_EXE_switchboard")),
             hook_addr,
             codex_version_cmd: vec!["codex".into(), "--version".into()],
+            claude_version_cmd: vec!["claude".into(), "--version".into()],
             liveness_timeout: Duration::from_secs(30),
             startup_timeout: Duration::from_secs(30),
         },

@@ -150,6 +150,7 @@ fn rig_with(dir: tempfile::TempDir, socket: &Path, codex_version_output: &str) -
         exe: PathBuf::from("/opt/sb/switchboard"),
         hook_addr: "127.0.0.1:9".parse().unwrap(),
         codex_version_cmd: vec!["echo".into(), codex_version_output.into()],
+        claude_version_cmd: vec!["echo".into(), "2.1.312 (Claude Code)".into()],
         liveness_timeout: Duration::from_secs(1),
         startup_timeout: Duration::from_secs(2),
     };
@@ -400,6 +401,7 @@ async fn sessions_reload_after_restart_with_new_hook_address() {
         exe: PathBuf::from("/opt/sb/switchboard"),
         hook_addr: "127.0.0.1:4242".parse().unwrap(),
         codex_version_cmd: vec![],
+        claude_version_cmd: vec!["echo".into(), "2.1.312 (Claude Code)".into()],
         liveness_timeout: Duration::from_secs(1),
         startup_timeout: Duration::from_secs(2),
     };
@@ -581,6 +583,7 @@ fn multi_rig(dir: tempfile::TempDir, screens: Vec<String>) -> (Rig, PathBuf, Sta
         exe: PathBuf::from("/opt/sb/switchboard"),
         hook_addr: "127.0.0.1:9".parse().unwrap(),
         codex_version_cmd: vec!["echo".into(), "codex-cli 0.163.0".into()],
+        claude_version_cmd: vec!["echo".into(), "2.1.312 (Claude Code)".into()],
         liveness_timeout: Duration::from_secs(1),
         startup_timeout: Duration::from_secs(2),
     };
@@ -987,4 +990,128 @@ async fn only_a_real_status_change_wakes_transcript_waits() {
         n += 1;
     }
     assert_eq!(n, 3);
+}
+
+fn dialog_screen(name: &str, selected: u32) -> String {
+    let text = std::fs::read_to_string(format!(
+        "{}/tests/fixtures/dialogs/codex-0.165.0/{name}.txt",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .unwrap();
+    text.replace("› 1. Yes", "  1. Yes")
+        .replace(&format!("  {selected}. "), &format!("› {selected}. "))
+}
+
+fn blocked_codex() -> Value {
+    let mut a = agent_info("blocked");
+    a["agent"] = json!("codex");
+    a["name"] = json!("cx");
+    a["state_change_seq"] = json!(9);
+    json!({"type": "agent_info", "agent": a})
+}
+
+#[tokio::test]
+async fn an_outside_codex_dialog_is_listed_and_answered_by_arrows_then_enter() {
+    let dir = tempfile::tempdir().unwrap();
+    let herdr = FakeHerdr::start(
+        dir.path(),
+        json!({}),
+        vec![
+            dialog_screen("permission-command", 1),
+            dialog_screen("permission-command", 1),
+            dialog_screen("permission-command", 3),
+            std::fs::read_to_string(format!(
+                "{}/tests/fixtures/dialogs/codex-0.165.0/after-deny-command.txt",
+                env!("CARGO_MANIFEST_DIR")
+            ))
+            .unwrap(),
+        ],
+    );
+    herdr.answer("agent.get", blocked_codex());
+    let r = rig_with(dir, &herdr.socket, "codex-cli 0.165.0");
+    let v = r
+        .sessions
+        .handle(Op::Dialog { agent: "cx".into() })
+        .await
+        .unwrap();
+    let d: crate::proto::DialogView = serde_json::from_value(v["dialog"].clone()).unwrap();
+    assert!(d.answerable, "{d:?}");
+    let no = &d.options[2];
+    assert!(no.is_deny && no.offered);
+    r.sessions
+        .handle(Op::Answer {
+            agent: "cx".into(),
+            occurrence: d.occurrence.clone(),
+            option: no.id.clone(),
+            label_sha256: no.label_sha256.clone(),
+            deny_only: true,
+        })
+        .await
+        .unwrap();
+    let keys: Vec<Value> = herdr
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|c| c["method"] == "agent.send_keys")
+        .map(|c| c["params"]["keys"].clone())
+        .collect();
+    assert_eq!(keys, [json!(["down", "down"]), json!(["enter"])]);
+}
+
+#[tokio::test]
+async fn a_claude_session_switchboard_started_never_gets_dialog_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let screen = std::fs::read_to_string(format!(
+        "{}/tests/fixtures/dialogs/claude-2.1.312/permission-bash.txt",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .unwrap();
+    let herdr = FakeHerdr::start(dir.path(), json!({}), vec![screen]);
+    let mut a = agent_info("blocked");
+    a["agent"] = json!("claude");
+    herdr.answer("agent.get", json!({"type": "agent_info", "agent": a}));
+    let r = rig_with(dir, &herdr.socket, "codex-cli 0.165.0");
+    std::fs::create_dir_all(r.sessions.dir("s1")).unwrap();
+    r.sessions
+        .save(&RunnerSession {
+            session_id: "s1".into(),
+            agent: Agent::Claude,
+            project_id: "p".into(),
+            repo_path: "/srv/repo".into(),
+            branch: "sb/s1".into(),
+            deny_patterns: vec![],
+            agent_name: "sb-s1".into(),
+            workspace_id: Some("w2".into()),
+            pane_id: Some("w2:p1".into()),
+            worktree_path: None,
+            codex_version: None,
+            start_commit: None,
+            herdr_session: None,
+            launched: true,
+        })
+        .unwrap();
+    let v = r
+        .sessions
+        .handle(Op::Dialog {
+            agent: "sb-s1".into(),
+        })
+        .await
+        .unwrap();
+    let d: crate::proto::DialogView = serde_json::from_value(v["dialog"].clone()).unwrap();
+    assert_eq!((d.answerable, d.reason.as_deref()), (false, Some("hooked")));
+    let yes = &d.options[0];
+    let e = r
+        .sessions
+        .handle(Op::Answer {
+            agent: "sb-s1".into(),
+            occurrence: d.occurrence.clone(),
+            option: yes.id.clone(),
+            label_sha256: yes.label_sha256.clone(),
+            deny_only: false,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, ErrorCode::DialogChanged);
+    assert!(!herdr.methods().contains(&"agent.send_keys".to_string()));
 }

@@ -325,6 +325,16 @@ impl Client {
         }
     }
 
+    pub async fn agent_get(&self, target: &str) -> Result<AgentInfo> {
+        let params = AgentTarget {
+            target: target.to_owned(),
+        };
+        match self.call(Method::AgentGet(params), None).await? {
+            ResponseResult::AgentInfo { agent } => Ok(agent),
+            other => unexpected("agent.get", other),
+        }
+    }
+
     pub async fn agent_send_keys(&self, target: &str, keys: Vec<String>) -> Result<()> {
         let params = AgentSendKeysParams {
             target: target.to_owned(),

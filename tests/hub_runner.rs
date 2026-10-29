@@ -242,6 +242,7 @@ impl World {
                 exe: PathBuf::from("/opt/sb/switchboard"),
                 hook_addr,
                 codex_version_cmd: vec!["false".into()],
+                claude_version_cmd: vec!["echo".into(), "2.1.312 (Claude Code)".into()],
                 liveness_timeout: Duration::from_secs(10),
                 startup_timeout: Duration::from_secs(10),
             },
