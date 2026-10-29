@@ -722,6 +722,53 @@ async fn approve_then_replay_returns_the_recorded_outcome_without_resending() {
 }
 
 #[tokio::test]
+async fn transcript_waits_are_capped_and_approvals_decide_while_eight_are_held() {
+    let r = rig().await;
+    let (mut vps, sid) = with_approval(&r).await;
+    let mut waits = Vec::new();
+    for _ in 0..8 {
+        let svc = r.svc.clone();
+        waits.push(tokio::spawn(async move {
+            svc.agent_transcript("vps", "mono1/claude", Some(10), None, Some(60_000))
+                .await
+        }));
+    }
+    let mut held = Vec::new();
+    for _ in 0..8 {
+        let req = vps.req().await;
+        assert_eq!(
+            req.op,
+            Op::Transcript {
+                agent: "mono1/claude".into(),
+                after: Some(10),
+                before: None,
+                wait_ms: Some(20_000),
+            },
+            "capped at 20 s"
+        );
+        held.push(req.id);
+    }
+
+    let task = decide(&r, &sid, true).await;
+    let req = vps.req().await;
+    assert!(
+        matches!(req.op, Op::Decide { allow: true, .. }),
+        "{:?}",
+        req.op
+    );
+    vps.ok(req.id, json!({"applied": true})).await;
+    assert_eq!(task.await.unwrap().unwrap().outcome, Decision::Allow);
+
+    for id in held {
+        vps.ok(id, json!({"items": [], "start": 10, "end": 10}))
+            .await;
+    }
+    for w in waits {
+        assert!(w.await.unwrap().unwrap().items.is_empty());
+    }
+}
+
+#[tokio::test]
 async fn a_burst_of_approvals_is_announced_one_at_a_time() {
     let r = rig().await;
     let mut events = r.svc.subscribe();

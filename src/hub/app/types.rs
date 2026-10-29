@@ -510,6 +510,8 @@ pub struct TranscriptQuery {
     pub after: Option<u64>,
     /// Go back from an earlier page's `start`.
     pub before: Option<u64>,
+    /// With `after`, wait up to this long, capped at 20000, for the conversation to go on past it.
+    pub wait_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, IntoParams)]
@@ -521,6 +523,8 @@ pub struct AgentTranscriptQuery {
     pub after: Option<u64>,
     /// Go back from an earlier page's `start`.
     pub before: Option<u64>,
+    /// With `after`, wait up to this long, capped at 20000, for the conversation to go on past it.
+    pub wait_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, IntoParams)]

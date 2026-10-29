@@ -1323,7 +1323,7 @@ async fn a_conversation_comes_from_the_runner_a_page_at_a_time_masked() {
 
     let call = r.call_later(
         "GET",
-        "/agents/transcript?machine_id=mac&agent=mono1/w1:p2&after=10",
+        "/agents/transcript?machine_id=mac&agent=mono1/w1:p2&after=10&wait_ms=20000",
         &token,
         Value::Null,
     );
@@ -1334,8 +1334,9 @@ async fn a_conversation_comes_from_the_runner_a_page_at_a_time_masked() {
             agent: "mono1/w1:p2".into(),
             after: Some(10),
             before: None,
-            wait_ms: None,
-        }
+            wait_ms: Some(20_000),
+        },
+        "the wait reaches the runner"
     );
     r.err(
         req.id,

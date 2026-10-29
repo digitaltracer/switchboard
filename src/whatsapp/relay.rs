@@ -708,7 +708,7 @@ impl Relay {
                     // From the agent's log: reading terminal history scrolls a full-screen agent.
                     let reply = self
                         .svc
-                        .agent_transcript(&machine, &agent, None, None)
+                        .agent_transcript(&machine, &agent, None, None, None)
                         .await
                         .map(|p| last_reply(&p.items))
                         .unwrap_or_default();

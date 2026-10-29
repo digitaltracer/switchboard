@@ -705,6 +705,17 @@
               "format": "int64",
               "minimum": 0
             }
+          },
+          {
+            "name": "wait_ms",
+            "in": "query",
+            "description": "With `after`, wait up to this long, capped at 20000, for the conversation to go on past it.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
           }
         ],
         "responses": {
@@ -1536,6 +1547,17 @@
             "name": "before",
             "in": "query",
             "description": "Go back from an earlier page's `start`.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "wait_ms",
+            "in": "query",
+            "description": "With `after`, wait up to this long, capped at 20000, for the conversation to go on past it.",
             "required": false,
             "schema": {
               "type": "integer",

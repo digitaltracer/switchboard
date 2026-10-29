@@ -466,7 +466,10 @@ pub async fn get_transcript(
     Query(q): Query<TranscriptQuery>,
 ) -> ApiResult<Transcript> {
     Ok(Json(
-        st.svc.transcript(&id, q.after, q.before).await?.into(),
+        st.svc
+            .transcript(&id, q.after, q.before, q.wait_ms)
+            .await?
+            .into(),
     ))
 }
 
@@ -828,7 +831,7 @@ pub async fn get_agent_transcript(
 ) -> ApiResult<Transcript> {
     let page = st
         .svc
-        .agent_transcript(&q.machine_id, &q.agent, q.after, q.before)
+        .agent_transcript(&q.machine_id, &q.agent, q.after, q.before, q.wait_ms)
         .await?;
     Ok(Json(page.into()))
 }

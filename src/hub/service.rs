@@ -41,6 +41,8 @@ pub const DEDUPE_WINDOW: Duration = Duration::from_secs(60);
 /// The hub expires an approval this long before the runner would, so a decision never races it.
 pub const DEADLINE_MARGIN: Duration = Duration::from_secs(5);
 pub const MAX_WAIT: Duration = Duration::from_secs(25);
+/// The longest a transcript read waits for its log to grow, well inside `CALL_TIMEOUT`.
+pub const MAX_TRANSCRIPT_WAIT: Duration = Duration::from_secs(20);
 pub const MAX_READ_LINES: u32 = 500;
 pub const SWEEP_INTERVAL: Duration = Duration::from_secs(1);
 const AGENT_WATCH_INTERVAL: Duration = Duration::from_secs(15);
@@ -1141,17 +1143,19 @@ impl SessionService {
     }
 
     /// A page of the session's conversation, from its agent's own log. Untrusted text, masked.
+    /// With `after` and `wait_ms`, the runner first waits for the log to grow past `after`.
     pub async fn transcript(
         &self,
         session_id: &str,
         after: Option<u64>,
         before: Option<u64>,
+        wait_ms: Option<u64>,
     ) -> Result<TranscriptPage, HubError> {
         let s = self.session(session_id).await?;
         let agent = s
             .agent_name
             .ok_or_else(|| HubError::BadRequest("this session has no agent name".into()))?;
-        self.transcript_of(&s.machine_id, &agent, after, before)
+        self.transcript_of(&s.machine_id, &agent, after, before, wait_ms)
             .await
     }
 
@@ -1194,9 +1198,11 @@ impl SessionService {
         agent: &str,
         after: Option<u64>,
         before: Option<u64>,
+        wait_ms: Option<u64>,
     ) -> Result<TranscriptPage, HubError> {
         self.known_machine(machine)?;
-        self.transcript_of(machine, agent, after, before).await
+        self.transcript_of(machine, agent, after, before, wait_ms)
+            .await
     }
 
     async fn transcript_of(
@@ -1205,12 +1211,13 @@ impl SessionService {
         agent: &str,
         after: Option<u64>,
         before: Option<u64>,
+        wait_ms: Option<u64>,
     ) -> Result<TranscriptPage, HubError> {
         let op = Op::Transcript {
             agent: agent.to_owned(),
             after,
             before,
-            wait_ms: None,
+            wait_ms: wait_ms.map(|ms| ms.min(MAX_TRANSCRIPT_WAIT.as_millis() as u64)),
         };
         let v = self
             .runners
