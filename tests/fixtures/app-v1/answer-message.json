@@ -1,0 +1,20 @@
+{
+  "hub": "h1",
+  "device": "d1",
+  "target": "agent:mac/work/cx",
+  "occurrence": "occ1",
+  "option": "o1",
+  "labels": [
+    "Yes, proceed (y)"
+  ],
+  "label_sha256": "717ca27c82024803f7cb8b40ebf5b3ab47afa125e251aa8620b8d3c6dfc57ac1",
+  "request": "r1",
+  "nonce": "n1",
+  "expires": 42,
+  "message": "switchboard-answer-v1\nhub=h1\ndevice=d1\ntarget=agent:mac/work/cx\noccurrence=occ1\noption=o1\nlabel=717ca27c82024803f7cb8b40ebf5b3ab47afa125e251aa8620b8d3c6dfc57ac1\nrequest=r1\nnonce=n1\nexpires=42",
+  "labels_two": [
+    "Large",
+    "Basil"
+  ],
+  "label_sha256_two": "dff561eb2d71b8b25a2c6905417e73615457e75f375afdcbb225b3f9d0e97221"
+}

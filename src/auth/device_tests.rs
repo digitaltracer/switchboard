@@ -383,3 +383,34 @@ fn a_cryptokit_signature_verifies() {
     assert!(verify(key, message, sig));
     assert!(!verify(key, &message.replace("allow", "deny"), sig));
 }
+
+#[test]
+fn the_answer_message_matches_the_shared_vector() {
+    // The iOS and Android tests check the same file.
+    let v: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string("tests/fixtures/app-v1/answer-message.json").unwrap(),
+    )
+    .unwrap();
+    let s = |k: &str| v[k].as_str().unwrap().to_owned();
+    let labels = |k: &str| -> Vec<String> {
+        v[k].as_array()
+            .unwrap()
+            .iter()
+            .map(|l| l.as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(label_sha256(&labels("labels")), s("label_sha256"));
+    assert_eq!(label_sha256(&labels("labels_two")), s("label_sha256_two"));
+    let label = s("label_sha256");
+    let fields = AnswerFields {
+        target: &s("target"),
+        occurrence: &s("occurrence"),
+        option: &s("option"),
+        label: &label,
+        request_id: &s("request"),
+    };
+    assert_eq!(
+        answer_message(&s("hub"), &s("device"), &fields, &s("nonce"), 42),
+        s("message")
+    );
+}
