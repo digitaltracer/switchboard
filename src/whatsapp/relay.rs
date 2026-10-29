@@ -109,8 +109,8 @@ fn numbered<'a>(items: impl Iterator<Item = &'a str>) -> String {
         .join("\n")
 }
 
-/// The reply a turn ended with: the last one the log marks as ending the turn, if it came after
-/// the last prompt, else the last reply.
+/// The reply the latest turn ended with: of the replies after the last prompt, the last one the
+/// log marks as ending the turn, else the last. A turn with none quotes nothing, not an older one.
 fn last_reply(items: &[TranscriptItem]) -> String {
     fn text(i: &TranscriptItem) -> Option<&str> {
         let t = i.text.as_deref().filter(|t| !t.trim().is_empty())?;
@@ -125,7 +125,7 @@ fn last_reply(items: &[TranscriptItem]) -> String {
         .rev()
         .filter(|i| i.ends_turn)
         .find_map(text)
-        .or_else(|| items.iter().rev().find_map(text))
+        .or_else(|| since_prompt.iter().rev().find_map(text))
         .unwrap_or_default()
         .to_owned()
 }

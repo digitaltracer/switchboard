@@ -781,7 +781,7 @@ async fn notifications_follow_watch_state_and_skip_blocks_that_have_an_approval(
 #[tokio::test]
 async fn the_finished_notice_quotes_the_reply_from_the_log_and_never_reads_the_terminal() {
     let rig = Rig::new().await;
-    for a in ["nolog", "later", "noted", "ended", "quiet"] {
+    for a in ["nolog", "later", "noted", "ended", "quiet", "unanswered"] {
         rig.script.agent(a, "idle");
         rig.script
             .output
@@ -818,8 +818,18 @@ async fn the_finished_notice_quotes_the_reply_from_the_log_and_never_reads_the_t
     );
     rig.script
         .said("quiet", &[("user", "go", false), ("assistant", "hi", true)]);
+    // The latest turn ended in an API error with no reply: the turn before isn't quoted.
+    rig.script.said(
+        "unanswered",
+        &[
+            ("user", "first", false),
+            ("assistant", "first answer", true),
+            ("user", "second", false),
+            ("note", "API error: overloaded", false),
+        ],
+    );
     let mut r = rig.relay();
-    for a in ["nolog", "later", "noted", "ended", "quiet"] {
+    for a in ["nolog", "later", "noted", "ended", "quiet", "unanswered"] {
         reply(&mut r, &format!("watch {a}")).await;
     }
     let finished = async |r: &mut Relay, a: &str| {
@@ -837,6 +847,10 @@ async fn the_finished_notice_quotes_the_reply_from_the_log_and_never_reads_the_t
     assert_eq!(
         finished(&mut r, "ended").await,
         ["ended finished:\n\nthe turn's answer"]
+    );
+    assert_eq!(
+        finished(&mut r, "unanswered").await,
+        ["unanswered finished:\n\n"]
     );
 
     reply(&mut r, "mute quiet").await;
