@@ -56,8 +56,12 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         didReceive response: UNNotificationResponse,
         withCompletionHandler done: @escaping () -> Void
     ) {
-        let sessionId = response.notification.request.content.userInfo["session_id"] as? String
-        Task { @MainActor in self.model.openSessionId = sessionId }
+        let info = response.notification.request.content.userInfo
+        let sessionId = info["session_id"] as? String
+        let attentionId = info["kind"] as? String == "waiting" ? info["attention_id"] as? String : nil
+        Task { @MainActor in
+            if let attentionId { self.model.openAttentionId = attentionId } else { self.model.openSessionId = sessionId }
+        }
         done()
     }
 }

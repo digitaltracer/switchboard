@@ -195,3 +195,18 @@ func tokenAnswers(_ op: String) -> (Int, String)? {
     #expect(!APNsEnvironment.isSandbox(profile: nil, simulator: false), "TestFlight and the App Store carry no profile")
     #expect(APNsEnvironment.isSandbox(profile: nil, simulator: true))
 }
+
+/// `tests/fixtures/app-v1/answer-message.json`, shared with the hub's and Android's tests.
+@Test func theAnswerMessageMatchesTheSharedVector() throws {
+    let root = URL(filePath: #filePath).deletingLastPathComponent().appending(path: "../../../../..").standardized
+    let data = try Data(contentsOf: root.appending(path: "tests/fixtures/app-v1/answer-message.json"))
+    let v = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+    let s = { (k: String) in v[k] as? String ?? "" }
+    #expect(SignedMessage.labelSHA256(v["labels"] as? [String] ?? []) == s("label_sha256"))
+    #expect(SignedMessage.labelSHA256(v["labels_two"] as? [String] ?? []) == s("label_sha256_two"))
+    let message = SignedMessage.answer(
+        hub: s("hub"), device: s("device"), target: s("target"), occurrence: s("occurrence"), option: s("option"),
+        label: s("label_sha256"), request: s("request"), nonce: s("nonce"), expiresAt: 42
+    )
+    #expect(message == s("message"))
+}

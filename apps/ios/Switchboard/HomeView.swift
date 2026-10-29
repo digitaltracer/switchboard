@@ -109,6 +109,13 @@ struct HomeView: View {
                 model.openSessionId = nil
             }
         }
+        // Only an attention that still waits opens; a moved-on or replaced agent stays closed.
+        .task(id: model.openAttentionId) {
+            guard let id = model.openAttentionId, let hub = model.hub else { return }
+            model.openAttentionId = nil
+            guard let a = try? await hub.attention(id), a.state == "open" else { return }
+            if let s = a.sessionId { path = NavigationPath([s]) } else { path = NavigationPath([AgentRef(machine: a.machineId, name: a.agent)]) }
+        }
     }
 
     private func open(_ t: Schemas.TargetView) {

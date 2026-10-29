@@ -28,6 +28,8 @@ final class AppModel {
     var banner: String?
     /// Set from a notification tap; the sessions screen opens it.
     var openSessionId: String?
+    /// Set from a `waiting` notification's tap; the sessions screen resolves and opens it.
+    var openAttentionId: String?
     /// Where text in the message box that names no project goes.
     var current: Schemas.TargetView?
     /// Herdr agents Switchboard didn't start, refreshed while a list is on screen.

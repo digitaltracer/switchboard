@@ -29,6 +29,36 @@ public enum SignedMessage {
     }
 }
 
+extension SignedMessage {
+    /// `switchboard-answer-v1`: one chosen option of a question, plan or screen dialog.
+    public static let answerVersion: Int32 = 3
+
+    /// `target` is `approval:<id>` for a hook question or plan, else `agent:<machine>/<agent>`;
+    /// `label` is `labelSHA256` of the chosen labels.
+    public static func answer(
+        hub: String, device: String, target: String, occurrence: String, option: String,
+        label: String, request: String, nonce: String, expiresAt: Int64
+    ) -> String {
+        [
+            "switchboard-answer-v1",
+            "hub=\(hub)",
+            "device=\(device)",
+            "target=\(target)",
+            "occurrence=\(occurrence)",
+            "option=\(option)",
+            "label=\(label)",
+            "request=\(request)",
+            "nonce=\(nonce)",
+            "expires=\(expiresAt)",
+        ].joined(separator: "\n")
+    }
+
+    /// SHA-256 hex of the chosen labels joined by newlines, as the hub shows them.
+    public static func labelSHA256(_ labels: [String]) -> String {
+        SHA256.hash(data: Data(labels.joined(separator: "\n").utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+}
+
 /// What the phone shows and the admin's terminal must match: SHA-256 over the hub id and both
 /// public keys, as six groups of four hex digits.
 public func pairingFingerprint(hubId: String, authKey: String, approvalKey: String) -> String {

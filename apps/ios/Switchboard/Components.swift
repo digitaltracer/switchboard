@@ -87,9 +87,8 @@ enum Ago {
     }
 }
 
-/// A pending approval as a card, with its countdown. A permission can be approved with Face ID
-/// or denied; a question or plan can only be denied here, since approving would leave the
-/// agent at a dialog nobody can answer from the phone.
+/// A pending approval as a card, with its countdown. A permission or plan is approved with Face
+/// ID or denied; a question is answered by picking its options, then sending them with Face ID.
 struct ApprovalCard: View {
     @Environment(AppModel.self) private var model
     let approval: Schemas.Approval
@@ -99,6 +98,7 @@ struct ApprovalCard: View {
     let decided: () async -> Void
     @State private var busy = false
     @State private var result: String?
+    @State private var picked: [Int: Set<String>] = [:]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -126,11 +126,16 @@ struct ApprovalCard: View {
             .disabled(open == nil)
             switch approval.kind {
             case "question":
-                ForEach(approval.questions, id: \.self) { Text($0).font(.body) }
-                Text("Answer questions in Herdr for now.").font(.footnote).foregroundStyle(.secondary)
+                ForEach(Array(approval.questionOptions.enumerated()), id: \.offset) { i, q in
+                    OptionList(
+                        prompt: q.question,
+                        options: q.options.map { OptionItem(id: $0.id, label: $0.label, detail: $0.description) },
+                        selected: picked[i] ?? [],
+                        disabled: busy
+                    ) { o in pick(o.id, in: i, multi: q.multiSelect) }
+                }
             case "plan":
                 Text(approval.plan ?? "").font(.callout)
-                Text("Approve plans in Herdr for now.").font(.footnote).foregroundStyle(.secondary)
             default:
                 Text(approval.inputText)
                     .font(.system(.callout, design: .monospaced))
@@ -149,9 +154,9 @@ struct ApprovalCard: View {
                         .foregroundStyle(.primary)
                 }
                 .accessibilityIdentifier("deny-\(approval.id)")
-                if approval.kind == "permission" {
+                if approval.kind != "question" || answered {
                     Button { Task { await approve() } } label: {
-                        Label("Approve", systemImage: "faceid").frame(maxWidth: .infinity, minHeight: 50)
+                        Label(approval.kind == "question" ? "Send" : "Approve", systemImage: "faceid").frame(maxWidth: .infinity, minHeight: 50)
                             .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                             .foregroundStyle(.white)
                     }
@@ -174,12 +179,27 @@ struct ApprovalCard: View {
         }
     }
 
+    /// Every question has its answer.
+    private var answered: Bool {
+        approval.questionOptions.indices.allSatisfy { !(picked[$0] ?? []).isEmpty }
+    }
+
+    private func pick(_ id: String, in question: Int, multi: Bool) {
+        var s = picked[question] ?? []
+        if multi { if s.contains(id) { s.remove(id) } else { s.insert(id) } } else { s = [id] }
+        picked[question] = s
+    }
+
     private func approve() async {
         guard let hub = model.hub else { return }
         busy = true
         defer { busy = false }
         do {
-            let r = try await hub.approve(approval.id, reason: "Approve \(approval.toolName) in \(session.label)", requestId: UUID().uuidString)
+            let reason = "Approve \(approval.toolName) in \(session.label)"
+            let r = approval.kind == "permission"
+                ? try await hub.approve(approval.id, reason: reason, requestId: UUID().uuidString)
+                : try await hub.answer(approval, choices: picked.keys.sorted().flatMap { (picked[$0] ?? []).sorted() },
+                                       reason: reason, requestId: UUID().uuidString)
             result = describe(r)
             UINotificationFeedbackGenerator().notificationOccurred(.success)
         } catch {

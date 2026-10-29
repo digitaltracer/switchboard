@@ -393,6 +393,69 @@ public final class Hub: Sendable {
         }
     }
 
+    /// Answers a question with the chosen option ids, or approves a plan, signed with the
+    /// approval key over the answer message.
+    public func answer(
+        _ approval: Schemas.Approval, choices: [String], reason: String, requestId: String
+    ) async throws -> Schemas.DecisionResponse {
+        guard let pairing else { throw HubError.notPaired }
+        let ch = try await Self.unwrap { try await client.approvalChallenge(path: .init(id: approval.id)).ok.body.json }
+        // In the order of `choices`, as the hub reads them.
+        let byId = Dictionary(approval.questionOptions.flatMap(\.options).map { ($0.id, $0.label) }, uniquingKeysWith: { a, _ in a })
+        let labels = approval.kind == "plan" ? ["Approve"] : choices.compactMap { byId[$0] }
+        let option = approval.kind == "plan" ? "allow" : choices.joined(separator: ",")
+        let message = SignedMessage.answer(
+            hub: ch.hubId, device: pairing.deviceId, target: "approval:\(approval.id)", occurrence: approval.id,
+            option: option, label: SignedMessage.labelSHA256(labels), request: requestId, nonce: ch.nonce, expiresAt: ch.expiresAt
+        )
+        let signature = try await keys.sign(message, with: .approval, reason: reason)
+        return try await Self.unwrap {
+            try await client.decideApproval(path: .init(id: approval.id), body: .json(.init(
+                decision: .allow, nonce: ch.nonce, signature: signature.base64URL, messageVersion: SignedMessage.answerVersion,
+                requestId: requestId, choices: approval.kind == "plan" ? nil : choices
+            ))).ok.body.json
+        }
+    }
+
+    // Dialogs on an agent's screen.
+
+    /// The dialog on any agent's screen; nil when none is recognised.
+    public func dialog(machine: String, agent: String) async throws -> Schemas.Dialog? {
+        try await Self.unwrap { try await client.getAgentDialog(query: .init(machineId: machine, agent: agent)).ok.body.json.dialog }
+    }
+
+    /// Picks one offered option. The deny is sent unsigned; any other option is signed with the
+    /// approval key, which asks for Face ID or the passcode.
+    public func answer(
+        machine: String, agent: String, dialog: Schemas.Dialog, option: Schemas.DialogOption, reason: String, requestId: String
+    ) async throws -> Schemas.DialogAnswerResponse {
+        var body = Schemas.DialogAnswerRequest(
+            machineId: machine, agent: agent, occurrenceId: dialog.occurrenceId, optionId: option.id,
+            labelSha256: option.labelSha256, requestId: requestId
+        )
+        if !option.isDeny {
+            guard let pairing else { throw HubError.notPaired }
+            let ch = try await Self.unwrap {
+                try await client.dialogChallenge(body: .json(.init(machineId: machine, agent: agent, occurrenceId: dialog.occurrenceId))).ok.body.json
+            }
+            let message = SignedMessage.answer(
+                hub: ch.hubId, device: pairing.deviceId, target: ch.target, occurrence: dialog.occurrenceId,
+                option: option.id, label: option.labelSha256, request: requestId, nonce: ch.nonce, expiresAt: ch.expiresAt
+            )
+            let signature = try await keys.sign(message, with: .approval, reason: reason)
+            body.nonce = ch.nonce
+            body.signature = signature.base64URL
+            body.messageVersion = SignedMessage.answerVersion
+        }
+        let request = body
+        return try await Self.unwrap { try await client.answerDialog(body: .json(request)).ok.body.json }
+    }
+
+    /// What a `waiting` push names, if it still shows.
+    public func attention(_ id: String) async throws -> Schemas.Attention {
+        try await Self.unwrap { try await client.getAttention(path: .init(id: id)).ok.body.json }
+    }
+
     // Devices.
 
     public func devices() async throws -> [Schemas.Device] {

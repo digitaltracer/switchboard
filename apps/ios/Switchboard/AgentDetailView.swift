@@ -1,8 +1,8 @@
 import SwiftUI
 import SwitchboardKit
 
-/// A Herdr agent Switchboard didn't start: its latest turns, refreshed while on screen. It has
-/// no permission hooks, so its dialogs are answered in Herdr. The mic talks to it.
+/// A Herdr agent Switchboard didn't start: its latest turns, refreshed while on screen. A dialog
+/// on its screen is answered from its card when Switchboard recognises it. The mic talks to it.
 struct AgentDetailView: View {
     @Environment(AppModel.self) private var model
     @Environment(Voice.self) private var voice
@@ -33,14 +33,11 @@ struct AgentDetailView: View {
                 if let title = info?.title, !title.isEmpty {
                     Text(title).font(.subheadline.weight(.semibold))
                 }
+                DialogCard(machine: agent.machine, agent: agent.name, label: label, status: info?.agentStatus ?? "")
                 if let said = model.said[AppModel.saidKey(for: target)] { SaidBubble(said: said) }
                 SummaryCard(convo: convo, conversation: ConversationRef(source: .agent(machine: agent.machine, name: agent.name), title: label))
                 ConversationLinks(source: .agent(machine: agent.machine, name: agent.name), title: label,
                                   hasConversation: convo.unavailable == nil)
-                Text("This agent asks for approval in Herdr, on its machine, not here.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 4)
             }
             .padding(.horizontal, 20)
             .padding(.bottom, 120)
