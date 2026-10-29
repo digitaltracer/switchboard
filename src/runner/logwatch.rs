@@ -289,15 +289,24 @@ pub enum Switch {
         pids: Vec<u32>,
         session: String,
     },
-    /// Codex's folder for today's logs: a new log there.
-    Codex { day: PathBuf },
+    /// Codex's folder for today's logs: a new log there. `next` is tomorrow's, which a wait
+    /// that spans midnight sees being made.
+    Codex { day: PathBuf, next: PathBuf },
 }
 
 impl Switch {
     fn folder(&self) -> &Path {
         match self {
             Switch::Claude { records, .. } => records,
-            Switch::Codex { day } => day,
+            Switch::Codex { day, .. } => day,
+        }
+    }
+
+    /// Tomorrow's folder, for a Codex agent.
+    fn next(&self) -> Option<&Path> {
+        match self {
+            Switch::Claude { .. } => None,
+            Switch::Codex { next, .. } => Some(next),
         }
     }
 
@@ -309,13 +318,18 @@ impl Switch {
     }
 }
 
-/// Codex's folder for logs started today, `<sessions>/YYYY/MM/DD` in local time.
-pub fn codex_day(sessions: &Path) -> PathBuf {
-    // SAFETY: `localtime_r` only writes the `tm` it is given.
+/// Codex's folder for logs started `ahead` days from today, `<sessions>/YYYY/MM/DD` in local time.
+pub fn codex_day(sessions: &Path, ahead: i32) -> PathBuf {
+    // SAFETY: `localtime_r` and `mktime` only read and write the `tm` they are given.
     let tm = unsafe {
         let now = libc::time(std::ptr::null_mut());
         let mut tm: libc::tm = std::mem::zeroed();
         libc::localtime_r(&now, &mut tm);
+        // Midday, so a daylight-saving change can't move the date; `mktime` carries the month.
+        tm.tm_mday += ahead;
+        tm.tm_hour = 12;
+        tm.tm_isdst = -1;
+        libc::mktime(&mut tm);
         tm
     };
     sessions
@@ -435,9 +449,11 @@ where
     let mut file = watch.watch_file(&found.log);
     let mut known = inodes(&found.switch);
     let log_dir = found.log.parent().unwrap_or(Path::new("/")).to_owned();
-    // Today's Codex folder may not exist yet: its nearest parent shows it being made.
+    // Today's Codex folder may not exist yet, and tomorrow's surely doesn't: their nearest
+    // parents show them being made.
     let mut armed = nearest(found.switch.folder());
-    let mut watching = setup(watch, [log_dir.clone(), armed.clone()], deadline).await;
+    let mut watching = setup(watch, targets(&log_dir, &found.switch), deadline).await;
+    let mut coming = found.switch.next().and_then(made_in);
     let canonical = |p: &Path| {
         let dir = p.parent().and_then(|d| std::fs::canonicalize(d).ok());
         dir.zip(p.file_name()).map(|(d, n)| d.join(n))
@@ -456,7 +472,8 @@ where
     loop {
         if std::mem::take(&mut deeper) {
             armed = nearest(found.switch.folder());
-            if let Some(w) = setup(watch, [log_dir.clone(), armed.clone()], deadline).await {
+            coming = found.switch.next().and_then(made_in);
+            if let Some(w) = setup(watch, targets(&log_dir, &found.switch), deadline).await {
                 // The old watch is released once the new one holds.
                 watching.replace(w);
             }
@@ -469,6 +486,8 @@ where
             match tokio::time::timeout_at(deadline, lookup()).await {
                 Ok(Some(now)) if now.log != found.log => return now.log,
                 Ok(Some(now)) => {
+                    // The day turned: watch the new day's folder.
+                    deeper = now.switch.folder() != found.switch.folder();
                     found = now;
                     file = watch.watch_file(&found.log);
                     log = canonical(&found.log);
@@ -504,6 +523,11 @@ where
                     } else if switch_dir.is_none() && p.parent() == armed_dir.as_deref() {
                         deeper = true;
                     }
+                    // Tomorrow's folder, or one on the way to it, was made: the day turned.
+                    let day_turned = coming.as_ref().is_some_and(|(made, next)| {
+                        p.parent() == Some(made.as_path()) && next.starts_with(&p)
+                    });
+                    look |= day_turned;
                 }
                 Ok(Change::All) | Err(broadcast::error::RecvError::Lagged(_)) => {
                     if grown(&found.log, after) {
@@ -531,11 +555,31 @@ fn nearest(dir: &Path) -> PathBuf {
         .to_owned()
 }
 
+/// What a wait watches: the log's folder, then the switch folder or its nearest parent, and for
+/// Codex the nearest parent of tomorrow's folder.
+fn targets(log_dir: &Path, switch: &Switch) -> Vec<PathBuf> {
+    let mut folders = vec![log_dir.to_owned(), nearest(switch.folder())];
+    folders.extend(switch.next().map(nearest));
+    folders
+}
+
+/// Where `folder`, which doesn't exist yet, will be made: its nearest parent that does, and the
+/// folder itself as events will name it. None once it exists.
+fn made_in(folder: &Path) -> Option<(PathBuf, PathBuf)> {
+    let parent = nearest(folder);
+    if parent == folder {
+        return None;
+    }
+    let made = std::fs::canonicalize(&parent).ok()?;
+    let rest = folder.strip_prefix(&parent).ok()?;
+    Some((made.clone(), made.join(rest)))
+}
+
 /// Watches `folders` for a wait. A setup stuck behind a stalled stream restart mustn't hold the
 /// wait past its deadline.
 async fn setup(
     watch: &Arc<LogWatch>,
-    folders: [PathBuf; 2],
+    folders: Vec<PathBuf>,
     deadline: Instant,
 ) -> Option<Watching> {
     let watch = watch.clone();

@@ -552,7 +552,8 @@ impl Sessions {
                     Some(Found {
                         log: transcript::find_codex_log(&sessions, Path::new(&cwd))?,
                         switch: Switch::Codex {
-                            day: logwatch::codex_day(&sessions),
+                            day: logwatch::codex_day(&sessions, 0),
+                            next: logwatch::codex_day(&sessions, 1),
                         },
                     })
                 })

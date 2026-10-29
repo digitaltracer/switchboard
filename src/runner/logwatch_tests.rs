@@ -284,14 +284,17 @@ async fn another_claudes_record_updating_its_status_looks_for_nothing() {
 async fn a_new_codex_log_in_todays_folder_ends_the_wait() {
     let _turn = TIMED.lock().await;
     let dir = tempfile::tempdir().unwrap();
-    let day = codex_day(dir.path());
+    let day = codex_day(dir.path(), 0);
     std::fs::create_dir_all(&day).unwrap();
     let log = day.join("rollout-2026-10-29T10-00-00-old.jsonl");
     let new = day.join("rollout-2026-10-29T10-05-00-new.jsonl");
     std::fs::write(&log, "{}\n").unwrap();
     let found = |log: &Path| Found {
         log: log.to_owned(),
-        switch: Switch::Codex { day: day.clone() },
+        switch: Switch::Codex {
+            day: day.clone(),
+            next: codex_day(dir.path(), 1),
+        },
     };
     let runs = Arc::new(AtomicUsize::new(0));
     let (n, next) = (runs.clone(), found(&new));
@@ -544,7 +547,10 @@ async fn the_first_codex_log_of_a_day_ends_the_wait_before_its_folder_existed() 
     let new = day.join("rollout-2030-01-01T00-01-00-new.jsonl");
     let found = |log: &Path| Found {
         log: log.to_owned(),
-        switch: Switch::Codex { day: day.clone() },
+        switch: Switch::Codex {
+            day: day.clone(),
+            next: sessions.join("2030/01/02"),
+        },
     };
     let runs = Arc::new(AtomicUsize::new(0));
     let (n, path, old) = (runs.clone(), new.clone(), log.clone());
@@ -559,6 +565,7 @@ async fn the_first_codex_log_of_a_day_ends_the_wait_before_its_folder_existed() 
             log,
             switch: Switch::Codex {
                 day: path.parent().unwrap().to_owned(),
+                next: path.parent().unwrap().with_file_name("02"),
             },
         }))
     };
@@ -639,4 +646,68 @@ async fn a_restart_that_fails_moves_every_running_wait_to_checking_each_second()
         watch.watch(&[project]).is_none(),
         "later waits check each second"
     );
+}
+
+#[test]
+fn tomorrows_codex_folder_is_the_next_calendar_day() {
+    let sessions = Path::new("/s");
+    let (today, next) = (codex_day(sessions, 0), codex_day(sessions, 1));
+    assert_ne!(today, next);
+    assert_eq!(today.components().count(), 5, "{today:?}");
+    assert_eq!(next.components().count(), 5, "{next:?}");
+    assert!(next > today, "{today:?} {next:?}");
+}
+
+#[tokio::test]
+async fn a_wait_that_spans_midnight_sees_the_new_days_first_codex_log() {
+    let _turn = TIMED.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let sessions = dir.path().join("sessions");
+    let today = sessions.join("2026/10/29");
+    std::fs::create_dir_all(&today).unwrap();
+    let log = today.join("rollout-2026-10-29T23-59-00-old.jsonl");
+    std::fs::write(&log, "{}\n").unwrap();
+    // After midnight Codex makes tomorrow's folder for its next session.
+    let tomorrow = sessions.join("2026/10/30");
+    let new = tomorrow.join("rollout-2026-10-30T00-00-30-new.jsonl");
+    let runs = Arc::new(AtomicUsize::new(0));
+    let (n, path, old, before, after) = (
+        runs.clone(),
+        new.clone(),
+        log.clone(),
+        today.clone(),
+        tomorrow.clone(),
+    );
+    // As the lookup does once the date has changed.
+    let lookup = move || {
+        n.fetch_add(1, Ordering::SeqCst);
+        let (log, day, next) = if path.exists() {
+            (path.clone(), after.clone(), after.with_file_name("31"))
+        } else {
+            (old.clone(), before.clone(), after.clone())
+        };
+        std::future::ready(Some(Found {
+            log,
+            switch: Switch::Codex { day, next },
+        }))
+    };
+    let (made, file) = (tomorrow.clone(), new.clone());
+    later(Duration::from_millis(1500), move || {
+        std::fs::create_dir_all(&made).unwrap();
+        std::fs::write(&file, "{}\n").unwrap();
+    });
+    let found = Found {
+        log: log.clone(),
+        switch: Switch::Codex {
+            day: today.clone(),
+            next: tomorrow.clone(),
+        },
+    };
+    let watch = watcher();
+    let start = Instant::now();
+    let got = wait(&watch, None, "codex", 3, start + MAX_WAIT, found, lookup).await;
+    assert_eq!(got, new);
+    let took = start.elapsed();
+    assert!(took < Duration::from_millis(2500), "{took:?}");
+    assert_eq!(released(&watch).await, 0);
 }
