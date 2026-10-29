@@ -1,8 +1,11 @@
 //! Version-pinned recogniser for the Codex screens Switchboard may answer with keys.
-//! Built from Codex 0.163.0 captures in `tests/fixtures/codex-0.163.0/`. It only ever yields
-//! the "Open restricted" startup key and the permission dialog's deny key; nothing approves.
+//! Built from the Codex 0.163.0 captures in `tests/fixtures/codex-0.163.0/` and the 0.165.0 ones
+//! in `tests/fixtures/dialogs/codex-0.165.0/`, whose layout is the same. `classify` only ever
+//! yields the "Open restricted" startup key and the permission dialog's deny key; `recognise`
+//! lists a permission dialog's options for the owner's signed choice.
 
 use super::SUPPORTED_VERSIONS;
+use crate::agents::dialog::{self, Dialog, DialogOption, Recognised};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
@@ -127,6 +130,58 @@ fn folder_access(lines: &[&str]) -> Screen {
     }
 }
 
+const MARKER: char = '›';
+
+/// A permission dialog as options, for an answer by keys. Row 2 grants a standing approval, so
+/// it is shown but not offered. Anything else is only parsed read-only.
+pub fn recognise(version: &str, text: &str) -> Recognised {
+    if !SUPPORTED_VERSIONS.contains(&version) {
+        return dialog::generic(text, MARKER);
+    }
+    let lines = dialog::lines(text);
+    let Some(footer) = lines.len().checked_sub(1) else {
+        return Recognised::Unknown;
+    };
+    if lines[footer] != DIALOG_FOOTER || lines.contains(&HOOKS_REVIEW) {
+        return Recognised::Unknown;
+    }
+    let Some(r) = dialog::rows(&lines, footer, MARKER) else {
+        return Recognised::Unknown;
+    };
+    let labels: Vec<&str> = r.rows.iter().map(|r| r.1).collect();
+    let [yes, _, no] = labels[..] else {
+        return Recognised::Unknown;
+    };
+    if format!("1. {yes}") != DIALOG_YES || format!("3. {no}") != DIALOG_NO {
+        return Recognised::Unknown;
+    }
+    let floor = r.first.saturating_sub(DIALOG_SPAN);
+    let Some(title_at) = (floor..r.first)
+        .rev()
+        .find(|&i| lines[i] == COMMAND_TITLE || lines[i] == EDITS_TITLE)
+    else {
+        return Recognised::Unknown;
+    };
+    let options = r
+        .rows
+        .iter()
+        .map(|&(number, label)| DialogOption {
+            number,
+            label: label.to_owned(),
+            is_deny: number == 3,
+            excluded: number == 2,
+        })
+        .collect();
+    Recognised::Dialog(Dialog {
+        kind: dialog::DialogKind::Permission,
+        prompt: lines[title_at..r.first].join("\n"),
+        options,
+        selected: r.selected,
+        region: lines[title_at..].join("\n"),
+        actionable: true,
+    })
+}
+
 /// Enter, only while "Open restricted" is the selected option.
 pub fn startup_keys(screen: Screen) -> Option<Keys> {
     match screen {
@@ -231,6 +286,91 @@ mod tests {
         let trailing = format!("{base}\n  extra line\n");
         assert_eq!(classify(V, &trailing), Screen::Unknown);
         assert_eq!(classify(V, ""), Screen::Unknown);
+    }
+
+    fn fixture_165(name: &str) -> String {
+        let path = format!(
+            "{}/tests/fixtures/dialogs/codex-0.165.0/{name}.txt",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        std::fs::read_to_string(path).unwrap()
+    }
+
+    fn dialog_165(text: &str) -> Dialog {
+        match recognise("0.165.0", text) {
+            Recognised::Dialog(d) => d,
+            Recognised::Unknown => panic!("not recognised:\n{text}"),
+        }
+    }
+
+    #[test]
+    fn classifies_0_165_0_screens() {
+        let v = "0.165.0";
+        assert_eq!(
+            classify(v, &fixture_165("folder-access")),
+            Screen::FolderAccess {
+                open_restricted_selected: true
+            }
+        );
+        assert_eq!(classify(v, &fixture_165("ready")), Screen::Ready);
+        assert_eq!(classify(v, &fixture_165("question-queued")), Screen::Ready);
+        assert_eq!(
+            classify(v, &fixture_165("permission-command")),
+            Screen::PermissionDialog(DialogKind::Command)
+        );
+        assert_eq!(
+            classify(v, &fixture_165("permission-edit")),
+            Screen::PermissionDialog(DialogKind::Edits)
+        );
+        assert_eq!(
+            classify(v, &fixture_165("after-deny-command")),
+            Screen::Ready
+        );
+        assert_eq!(classify(v, &fixture_165("after-allow-edit")), Screen::Ready);
+    }
+
+    #[test]
+    fn recognises_permission_options() {
+        let d = dialog_165(&fixture_165("permission-command"));
+        assert_eq!(d.kind, dialog::DialogKind::Permission);
+        assert!(d.actionable);
+        assert_eq!(d.selected, 0);
+        let offered: Vec<_> = d.options.iter().filter(|o| !o.excluded).collect();
+        assert_eq!(offered.len(), 2);
+        assert_eq!(offered[0].label, "Yes, proceed (y)");
+        assert!(offered[1].is_deny);
+        assert!(d.prompt.starts_with(COMMAND_TITLE));
+        assert!(d.prompt.contains("$ touch made-by-codex.txt"));
+        assert_eq!(
+            dialog_165(&fixture_165("permission-command-no-selected")).selected,
+            2
+        );
+        let e = dialog_165(&fixture_165("permission-edit"));
+        assert!(e.prompt.starts_with(EDITS_TITLE));
+        assert_eq!(dialog_165(&fixture("permission-edit")).options.len(), 3);
+    }
+
+    #[test]
+    fn altered_or_unpinned_dialogs_get_no_actionable_options() {
+        let base = fixture_165("permission-command");
+        let cases = [
+            base.replace(DIALOG_NO, "3. No, deny (n)"),
+            base.replace(COMMAND_TITLE, "Something else?"),
+            base.replace("› 1. Yes", "  1. Yes"),
+            format!("{base}\n› Ask Codex to do anything\n  ? for shortcuts\n"),
+            fixture_165("question-queued"),
+            fixture_165("ready"),
+        ];
+        for (i, text) in cases.iter().enumerate() {
+            assert!(
+                !matches!(recognise("0.165.0", text), Recognised::Dialog(d) if d.actionable),
+                "case {i}"
+            );
+        }
+        assert!(matches!(
+            recognise("0.164.0", &base),
+            Recognised::Dialog(d) if !d.actionable
+        ));
     }
 
     #[test]

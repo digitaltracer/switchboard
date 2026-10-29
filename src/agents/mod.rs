@@ -2,6 +2,7 @@
 
 pub mod claude;
 pub mod codex;
+pub mod dialog;
 
 use std::path::Path;
 use std::time::Duration;

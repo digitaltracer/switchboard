@@ -8,7 +8,7 @@ use std::path::Path;
 use super::HOOK_TIMEOUT_SECS;
 
 /// Versions whose startup and permission screens the adapter was built from.
-pub const SUPPORTED_VERSIONS: &[&str] = &["0.163.0"];
+pub const SUPPORTED_VERSIONS: &[&str] = &["0.163.0", "0.165.0"];
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("codex {0:?} is not a supported version ({supported})", supported = SUPPORTED_VERSIONS.join(", "))]
@@ -80,6 +80,7 @@ mod tests {
         assert_eq!(parse_version("codex 0.163.0"), None);
         assert_eq!(parse_version("codex-cli "), None);
         assert!(check_version("0.163.0").is_ok());
+        assert!(check_version("0.165.0").is_ok());
         assert_eq!(
             check_version("0.164.0"),
             Err(UnsupportedVersion("0.164.0".into()))
