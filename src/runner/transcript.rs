@@ -20,7 +20,8 @@ use crate::proto::{TranscriptItem, TranscriptPage};
 const WINDOW: u64 = 1 << 20;
 /// The most items one page returns; the oldest are dropped.
 const MAX_ITEMS: usize = 300;
-const MAX_TEXT: usize = 16_000;
+/// The most of a message's text kept; a longer one is cut there and ends in "…".
+pub const MAX_TEXT: usize = 16_000;
 const MAX_INPUT: usize = 2_000;
 const MAX_OUTPUT: usize = 4_000;
 

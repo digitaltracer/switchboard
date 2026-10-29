@@ -13,7 +13,7 @@ use super::command::{self, Command, Reuse, Target as Mute};
 use super::limits::{Debouncer, Notify, Outbox, Outgoing};
 use super::route::{self, Live, Route, Target};
 use super::selfchat::SelfChat;
-use super::text::{fit_one, overfetch, split, tail};
+use super::text::{fit_one, head, overfetch, split, tail};
 use super::transport::{Inbound, Transport, jid_phone};
 use super::watchlist::{SWITCHBOARD_PREFIX, WatchState};
 use crate::herdr::check_agent_name;
@@ -27,8 +27,10 @@ use crate::redact::redact_str;
 use crate::store::{Decision, Delivery};
 
 const EXCERPT_LINES: usize = 20;
-/// The end of a long reply.
+/// The end of a long reply, or the start of one the runner cut short.
 const FINISHED_LINES: usize = 20;
+/// How much shorter than the runner's limit a cut reply can be once its secrets are masked.
+const CLIPPED_SLACK: usize = 1024;
 const MAX_INPUT_CHARS: usize = 1500;
 const TICK: Duration = Duration::from_millis(500);
 const FOREIGN_DIALOG: &str =
@@ -712,10 +714,16 @@ impl Relay {
                         .await
                         .map(|p| last_reply(&p.items))
                         .unwrap_or_default();
-                    format!(
-                        "{label} finished:\n\n{}",
-                        tail(&redact_str(&reply), FINISHED_LINES)
-                    )
+                    let reply = redact_str(&reply);
+                    // The runner keeps only the start of a long reply, so its end isn't there.
+                    let clipped = reply.ends_with('…')
+                        && reply.len() + CLIPPED_SLACK >= crate::runner::transcript::MAX_TEXT;
+                    let excerpt = if clipped {
+                        head(&reply, FINISHED_LINES)
+                    } else {
+                        tail(&reply, FINISHED_LINES)
+                    };
+                    format!("{label} finished:\n\n{excerpt}")
                 }
             };
             out.extend(self.to_everyone(fit_one(&text), Some(agent)));

@@ -781,7 +781,15 @@ async fn notifications_follow_watch_state_and_skip_blocks_that_have_an_approval(
 #[tokio::test]
 async fn the_finished_notice_quotes_the_reply_from_the_log_and_never_reads_the_terminal() {
     let rig = Rig::new().await;
-    for a in ["nolog", "later", "noted", "ended", "quiet", "unanswered"] {
+    for a in [
+        "nolog",
+        "later",
+        "noted",
+        "ended",
+        "quiet",
+        "unanswered",
+        "long",
+    ] {
         rig.script.agent(a, "idle");
         rig.script
             .output
@@ -818,6 +826,11 @@ async fn the_finished_notice_quotes_the_reply_from_the_log_and_never_reads_the_t
     );
     rig.script
         .said("quiet", &[("user", "go", false), ("assistant", "hi", true)]);
+    // A reply longer than the runner keeps, cut as it cuts one.
+    let long: String = (0..3000).map(|n| format!("line {n}\n")).collect();
+    let cut = format!("{}…", &long[..crate::runner::transcript::MAX_TEXT]);
+    rig.script
+        .said("long", &[("user", "go", false), ("assistant", &cut, true)]);
     // The latest turn ended in an API error with no reply: the turn before isn't quoted.
     rig.script.said(
         "unanswered",
@@ -829,7 +842,15 @@ async fn the_finished_notice_quotes_the_reply_from_the_log_and_never_reads_the_t
         ],
     );
     let mut r = rig.relay();
-    for a in ["nolog", "later", "noted", "ended", "quiet", "unanswered"] {
+    for a in [
+        "nolog",
+        "later",
+        "noted",
+        "ended",
+        "quiet",
+        "unanswered",
+        "long",
+    ] {
         reply(&mut r, &format!("watch {a}")).await;
     }
     let finished = async |r: &mut Relay, a: &str| {
@@ -851,6 +872,12 @@ async fn the_finished_notice_quotes_the_reply_from_the_log_and_never_reads_the_t
     assert_eq!(
         finished(&mut r, "unanswered").await,
         ["unanswered finished:\n\n"]
+    );
+    let start: Vec<String> = (0..20).map(|n| format!("line {n}")).collect();
+    assert_eq!(
+        finished(&mut r, "long").await,
+        [format!("long finished:\n\n{}", start.join("\n"))],
+        "a cut reply is quoted from its start"
     );
 
     reply(&mut r, "mute quiet").await;

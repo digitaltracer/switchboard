@@ -65,6 +65,23 @@ pub fn tail(text: &str, n: usize) -> String {
     lines[end.saturating_sub(n)..end].join("\n")
 }
 
+/// The first `n` lines, cleaned as `tail` cleans them.
+pub fn head(text: &str, n: usize) -> String {
+    let clean = strip_ansi(text);
+    let mut lines: Vec<&str> = clean
+        .lines()
+        .map(str::trim_end)
+        .filter(|l| !is_rule(l))
+        .skip_while(|l| l.is_empty())
+        .collect();
+    lines.dedup_by(|a, b| a.is_empty() && b.is_empty());
+    lines.truncate(n);
+    while lines.last().is_some_and(|l| l.is_empty()) {
+        lines.pop();
+    }
+    lines.join("\n")
+}
+
 /// Splits on line boundaries into at most `MAX_MESSAGES` chunks of `MAX_MESSAGE_CHARS`,
 /// keeping the newest text when it doesn't fit.
 pub fn split(text: &str) -> Vec<String> {
