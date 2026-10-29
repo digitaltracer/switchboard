@@ -1098,8 +1098,9 @@ impl SessionService {
         Ok(result)
     }
 
-    /// The last `lines` of the agent's terminal, ANSI stripped by Herdr. Untrusted text.
-    pub async fn read(&self, session_id: &str, lines: u32) -> Result<ReadResult, HubError> {
+    /// The last `lines` of the agent's terminal, ANSI stripped by Herdr. Untrusted text. Reading
+    /// past the screen scrolls a full-screen agent, so this is only for reads a person asks for.
+    pub async fn read_history(&self, session_id: &str, lines: u32) -> Result<ReadResult, HubError> {
         let s = self.session(session_id).await?;
         let op = Op::Read {
             session_id: session_id.to_owned(),
@@ -1324,15 +1325,20 @@ impl SessionService {
             .map_err(|e| HubError::BadRequest(format!("runner agent list: {e}")))
     }
 
-    /// A named agent's last `lines`, or its visible screen. Untrusted text.
-    pub async fn read_agent(
+    /// A named agent's visible screen, which shows any dialog. Untrusted text.
+    pub async fn read_agent(&self, machine: &str, agent: &str) -> Result<ReadResult, HubError> {
+        self.read_agent_op(machine, agent, 0, true, false).await
+    }
+
+    /// A named agent's last `lines`. Untrusted text. As with `read_history`, only for reads a
+    /// person asks for.
+    pub async fn read_agent_history(
         &self,
         machine: &str,
         agent: &str,
         lines: u32,
-        visible: bool,
     ) -> Result<ReadResult, HubError> {
-        self.read_agent_with(machine, agent, lines, visible, false)
+        self.read_agent_op(machine, agent, lines, false, false)
             .await
     }
 
@@ -1348,11 +1354,11 @@ impl SessionService {
         let Ok(_permit) = self.screen_reads.try_acquire() else {
             return Err(HubError::Busy);
         };
-        self.read_agent_with(machine, agent, 0, true, colours).await
+        self.read_agent_op(machine, agent, 0, true, colours).await
     }
 
-    /// `read_agent`, and with `colours` the visible screen with its colours too.
-    pub async fn read_agent_with(
+    /// With `colours`, the visible screen comes with its colours too.
+    async fn read_agent_op(
         &self,
         machine: &str,
         agent: &str,

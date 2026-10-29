@@ -272,7 +272,7 @@ async fn claude_through_the_hub_allow_deny_prompt_and_stop() {
             !worktree.join("denied.txt").exists(),
             "denied command must not run"
         );
-        let tail = svc.read(&id, 40).await.unwrap();
+        let tail = svc.read_history(&id, 40).await.unwrap();
         eprintln!("tail:\n{}", tail.text);
         assert!(
             tail.text.contains("Denied by PermissionRequest hook") || tail.text.contains("DENIED")

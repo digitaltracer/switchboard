@@ -431,7 +431,7 @@ pub async fn get_output(
         st.svc.read_screen(&id, q.ansi).await?
     } else {
         st.svc
-            .read(&id, q.lines.unwrap_or(DEFAULT_OUTPUT_LINES))
+            .read_history(&id, q.lines.unwrap_or(DEFAULT_OUTPUT_LINES))
             .await?
     };
     Ok(Json(Output {
@@ -851,12 +851,10 @@ pub async fn get_agent_output(
             .await?
     } else {
         st.svc
-            .read_agent_with(
+            .read_agent_history(
                 &q.machine_id,
                 &q.agent,
                 q.lines.unwrap_or(DEFAULT_OUTPUT_LINES),
-                false,
-                false,
             )
             .await?
     };

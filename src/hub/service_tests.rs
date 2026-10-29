@@ -607,7 +607,7 @@ async fn stale_generation_replies_and_events_are_ignored() {
     let sid = running(&r, &mut old).await;
     let svc = r.svc.clone();
     let s2 = sid.clone();
-    let prompt = tokio::spawn(async move { svc.read(&s2, 10).await });
+    let prompt = tokio::spawn(async move { svc.read_history(&s2, 10).await });
     let req = old.req().await;
     let new = connect(&r.svc, "vps", vec![owned(&sid, "idle")]).await;
     // The old connection's reply is dropped; the read already failed when the new one attached.
@@ -1487,7 +1487,7 @@ async fn a_token_in_a_command_or_terminal_output_never_reaches_callers_or_the_da
     assert!(view.contains("Bearer [redacted]"), "{view}");
 
     let (svc, s2) = (r.svc.clone(), sid.clone());
-    let read = tokio::spawn(async move { svc.read(&s2, 20).await });
+    let read = tokio::spawn(async move { svc.read_history(&s2, 20).await });
     let req = vps.req().await;
     vps.ok(
         req.id,
@@ -1846,7 +1846,7 @@ async fn app_screen_reads_of_sessions_and_agents_share_the_cap_and_whatsapps_sta
 
     // WhatsApp's blocked notice reads the screen while the apps hold every permit.
     let svc = r.svc.clone();
-    let whatsapp = tokio::spawn(async move { svc.read_agent("vps", "reviewer", 0, true).await });
+    let whatsapp = tokio::spawn(async move { svc.read_agent("vps", "reviewer").await });
     let req = vps.req().await;
     assert!(
         matches!(req.op, Op::ReadAgent { visible: true, .. }),

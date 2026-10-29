@@ -913,6 +913,70 @@ async fn the_blocked_notice_reads_the_screen_while_the_apps_hold_every_screen_re
     }
 }
 
+/// Reads past the visible screen: Herdr scrolls a full-screen agent to collect them.
+fn history_reads(ops: &[String]) -> Vec<String> {
+    ops.iter()
+        .filter(|op| {
+            op.starts_with("Read {")
+                || (op.starts_with("ReadAgent") && op.contains("visible: false"))
+        })
+        .cloned()
+        .collect()
+}
+
+#[tokio::test]
+async fn nothing_switchboard_does_on_its_own_reads_past_the_visible_screen() {
+    let rig = Rig::new().await;
+    rig.script.agent("switchboard-impl", "idle");
+    rig.script.said(
+        "switchboard-impl",
+        &[("user", "go", false), ("assistant", "done", true)],
+    );
+    rig.script
+        .screens
+        .lock()
+        .unwrap()
+        .insert("switchboard-impl".into(), "Allow edit?\n".into());
+    let mut r = rig.relay();
+    reply(&mut r, "watch switchboard-impl").await;
+
+    // The finished and blocked notices.
+    let agent = "switchboard-impl";
+    transition(&mut r, agent, AgentStatus::Working, AgentStatus::Idle).await;
+    transition(&mut r, agent, AgentStatus::Working, AgentStatus::Blocked).await;
+    // A message to a session at a dialog is refused with its screen.
+    let id = start_from_chat(&mut r, "in hub, go").await;
+    rig.script.blocked.lock().unwrap().push(id.clone());
+    assert!(
+        reply(&mut r, "are you there?")
+            .await
+            .contains("waiting at a dialog")
+    );
+    // What a phone following the conversation and its screen sends.
+    let _ = rig.svc.transcript(&id, Some(0), None, Some(20_000)).await;
+    let _ = rig
+        .svc
+        .agent_transcript("mac", agent, Some(0), None, Some(20_000))
+        .await;
+    let _ = rig.svc.read_screen(&id, true).await;
+    let _ = rig.svc.read_agent_screen("mac", agent, true).await;
+
+    let ops = rig.script.ops.lock().unwrap().clone();
+    assert_eq!(history_reads(&ops), Vec::<String>::new());
+    assert!(
+        ops.iter().filter(|op| op.starts_with("Transcript")).count() >= 3,
+        "{ops:?}"
+    );
+    assert!(
+        ops.iter().filter(|op| op.starts_with("ReadAgent")).count() >= 4,
+        "{ops:?}"
+    );
+
+    // Only a person asking reads further back, which is what the guard catches.
+    reply(&mut r, "read 10").await;
+    assert_eq!(history_reads(&rig.script.ops.lock().unwrap()).len(), 1);
+}
+
 #[tokio::test]
 async fn stop_keeps_the_worktree_and_refuses_agents_switchboard_didnt_start() {
     let rig = Rig::new().await;

@@ -450,7 +450,7 @@ async fn full_flow(w: World) {
         .await
         .unwrap();
     assert_eq!(p.agent_status.as_deref(), Some("working"));
-    let tail = w.svc().read(&sid, 20).await.unwrap();
+    let tail = w.svc().read_history(&sid, 20).await.unwrap();
     assert_eq!((tail.text.as_str(), tail.untrusted), ("all done\n", true));
 
     let replay = w.start("build the thing", "rq-1").await.unwrap();
@@ -711,7 +711,7 @@ async fn tokens_stay_masked(w: World) {
         serde_json::to_string(&w.svc().get(&sid, None, Duration::ZERO).await.unwrap()).unwrap();
     assert!(!view.contains(TOKEN), "{view}");
     assert!(view.contains("--with-token [redacted]"), "{view}");
-    let tail = w.svc().read(&sid, 20).await.unwrap();
+    let tail = w.svc().read_history(&sid, 20).await.unwrap();
     assert!(!tail.text.contains(TOKEN), "{}", tail.text);
     w.svc()
         .decide(&w.bot, &sid, &approval, false, None)

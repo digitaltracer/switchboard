@@ -534,7 +534,7 @@ impl Relay {
         let screen = match &view.agent_name {
             Some(agent) => self
                 .svc
-                .read_agent(&view.machine_id, agent, 0, true)
+                .read_agent(&view.machine_id, agent)
                 .await
                 .map(|r| r.text)
                 .unwrap_or_default(),
@@ -551,10 +551,10 @@ impl Relay {
             return vec!["No session is current. Send sessions, then use <n>.".into()];
         };
         let read = match target {
-            Target::Session { id, .. } => self.svc.read(id, overfetch(n)).await,
+            Target::Session { id, .. } => self.svc.read_history(id, overfetch(n)).await,
             Target::Agent { machine, name } => {
                 self.svc
-                    .read_agent(machine, name, overfetch(n), false)
+                    .read_agent_history(machine, name, overfetch(n))
                     .await
             }
         };
@@ -690,7 +690,7 @@ impl Relay {
                     }
                     let screen = self
                         .svc
-                        .read_agent(&machine, &agent, 0, true)
+                        .read_agent(&machine, &agent)
                         .await
                         .map(|r| r.text)
                         .unwrap_or_default();
