@@ -585,3 +585,58 @@ async fn the_first_codex_log_of_a_day_ends_the_wait_before_its_folder_existed() 
     assert!(took < Duration::from_millis(2500), "{took:?}");
     assert_eq!(released(&watch).await, 0);
 }
+
+/// Folder watches only, as on Linux, where no file watch backs them up.
+fn folders_only() -> Arc<LogWatch> {
+    Arc::new(LogWatch {
+        watcher: Mutex::new(State::NotYet),
+        folders: Mutex::default(),
+        linger: Duration::ZERO,
+        off: true,
+        fail_start: Default::default(),
+        changes: broadcast::channel(1024).0,
+    })
+}
+
+#[tokio::test]
+async fn a_restart_that_fails_moves_every_running_wait_to_checking_each_second() {
+    let _turn = TIMED.lock().await;
+    let w = World::new();
+    let watch = folders_only();
+    let (breaker, log, other) = (watch.clone(), w.log.clone(), w.claude.join("projects"));
+    tokio::spawn(async move {
+        while breaker.folders() == 0 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        // Another wait's folder restarts the stream, and the restart fails.
+        breaker
+            .fail_start
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let b = breaker.clone();
+        let started = tokio::task::spawn_blocking(move || b.watch(&[other]).is_some());
+        assert!(!started.await.unwrap());
+        assert_eq!(breaker.folders(), 0, "no folder counts as watched");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        append(&log, "{\"n\":2}\n");
+    });
+    let runs = Arc::new(AtomicUsize::new(0));
+    let start = Instant::now();
+    let got = wait(
+        &watch,
+        None,
+        AGENT,
+        w.len(),
+        start + MAX_WAIT,
+        w.found(&w.log, "aaaa"),
+        w.lookup(&runs),
+    )
+    .await;
+    assert_eq!(got, w.log);
+    let took = start.elapsed();
+    assert!(took < Duration::from_secs(4), "{took:?}");
+    let project = w.log.parent().unwrap().to_owned();
+    assert!(
+        watch.watch(&[project]).is_none(),
+        "later waits check each second"
+    );
+}

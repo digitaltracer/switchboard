@@ -34,6 +34,8 @@ pub enum Change {
     Path(PathBuf),
     /// Changes may have been missed, as when the watch was set up again.
     All,
+    /// The watch stopped working; waits check each second instead.
+    Broken,
 }
 
 enum State {
@@ -155,19 +157,28 @@ impl LogWatch {
                     failed.push(f.clone());
                 }
             }
-            let started = paths.commit();
             #[cfg(test)]
             let started = match self.fail_start.load(std::sync::atomic::Ordering::SeqCst) {
-                true => Err(notify::Error::generic("refused for the test")),
-                false => started,
+                // Left stopped, as a failed restart leaves it.
+                true => {
+                    drop(paths);
+                    Err(notify::Error::generic("refused for the test"))
+                }
+                false => paths.commit(),
             };
-            // Other waits' events may have been dropped while the stream restarted.
-            let _ = self.changes.send(Change::All);
+            #[cfg(not(test))]
+            let started = paths.commit();
             if let Err(e) = started {
-                // Nothing is held, so this wait and later ones check each second instead.
-                tracing::warn!(error = %e, "can't start watching conversation logs");
+                // The stream is down for every folder, not only these: nothing is held any more,
+                // and every wait checks each second instead.
+                tracing::warn!(error = %e, "can't start watching conversation logs; checking each second instead");
+                *state = State::Failed;
+                self.folders.lock().unwrap().clear();
+                let _ = self.changes.send(Change::Broken);
                 return None;
             }
+            // Other waits' events may have been dropped while the stream restarted.
+            let _ = self.changes.send(Change::All);
         }
         let held: Vec<PathBuf> = canonical
             .iter()
@@ -499,7 +510,7 @@ where
                         return found.log;
                     }
                 }
-                Err(broadcast::error::RecvError::Closed) => {
+                Ok(Change::Broken) | Err(broadcast::error::RecvError::Closed) => {
                     fallback = Some(tokio::time::interval(FALLBACK_EVERY));
                 }
             },
