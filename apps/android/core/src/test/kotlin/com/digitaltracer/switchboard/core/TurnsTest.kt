@@ -39,6 +39,21 @@ class TurnsTest {
     }
 
     @Test
+    fun aReplyThatEndedItsTurnStaysTheAnswerWhenUnseenWorkFollows() {
+        val list = items(
+            """
+            [{"id":"u1","kind":"user","text":"review it","done":false,"failed":false},
+             {"id":"a1","kind":"assistant","text":"No defects.","done":false,"failed":false,"ends_turn":true},
+             {"id":"t1","kind":"tool","tool":"Bash","text":"Ran git log","done":true,"failed":false},
+             {"id":"a2","kind":"assistant","text":"The task finished.","done":false,"failed":false,"ends_turn":true},
+             {"id":"n1","kind":"note","text":"/compact","done":false,"failed":false},
+             {"id":"a3","kind":"assistant","text":"Compacted.","done":false,"failed":false}]
+            """,
+        )
+        assertEquals(listOf("User", "Reply", "Work", "Reply", "Note", "Reply"), Turns.entries(list).map { it::class.simpleName })
+    }
+
+    @Test
     fun stepsBetweenMessagesFoldIntoWorkThatSaysWhatCameOfIt() {
         val list = items(
             """

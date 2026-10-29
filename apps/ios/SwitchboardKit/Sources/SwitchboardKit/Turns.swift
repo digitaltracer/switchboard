@@ -51,14 +51,15 @@ public enum Turns {
             }
         }
         flush()
-        // A reply with work or another reply after it, before your next message, was on the way.
+        // A reply with work or another reply after it, before your next message or a command, was on
+        // the way, unless the log says it ended the turn: then something unseen started that work.
         var followed = false
         for i in out.indices.reversed() {
             switch out[i] {
-            case .user: followed = false
+            case .user, .note: followed = false
             case .work: followed = true
             case .reply(let item):
-                if followed { out[i] = .progress(item) } else { followed = true }
+                if followed && item.endsTurn != true { out[i] = .progress(item) } else { followed = true }
             default: break
             }
         }

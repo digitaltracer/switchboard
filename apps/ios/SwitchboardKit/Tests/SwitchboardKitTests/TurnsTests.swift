@@ -76,3 +76,24 @@ private func items(_ json: String) throws -> [Conversation.Item] {
     }
     #expect(kinds == ["user", "work", "progress", "work", "progress", "reply", "user", "progress", "work"])
 }
+
+@Test func aReplyThatEndedItsTurnStaysTheAnswerWhenUnseenWorkFollows() throws {
+    let list = try items(#"""
+    [{"id":"u1","kind":"user","text":"review it","done":false,"failed":false},
+     {"id":"a1","kind":"assistant","text":"No defects.","done":false,"failed":false,"ends_turn":true},
+     {"id":"t1","kind":"tool","tool":"Bash","text":"Ran git log","done":true,"failed":false},
+     {"id":"a2","kind":"assistant","text":"The task finished.","done":false,"failed":false,"ends_turn":true},
+     {"id":"n1","kind":"note","text":"/compact","done":false,"failed":false},
+     {"id":"a3","kind":"assistant","text":"Compacted.","done":false,"failed":false}]
+    """#)
+    let kinds = Turns.entries(list).map { e -> String in
+        switch e {
+        case .user: "user"
+        case .reply: "reply"
+        case .progress: "progress"
+        case .work: "work"
+        case .note: "note"
+        }
+    }
+    #expect(kinds == ["user", "reply", "work", "reply", "note", "reply"])
+}

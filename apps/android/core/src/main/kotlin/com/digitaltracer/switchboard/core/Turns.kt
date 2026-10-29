@@ -48,13 +48,14 @@ object Turns {
             }
         }
         flush()
-        // A reply with work or another reply after it, before your next message, was on the way.
+        // A reply with work or another reply after it, before your next message or a command, was on
+        // the way, unless the log says it ended the turn: then something unseen started that work.
         var followed = false
         for (i in out.indices.reversed()) {
             when (val e = out[i]) {
-                is Entry.User -> followed = false
+                is Entry.User, is Entry.Note -> followed = false
                 is Entry.Work -> followed = true
-                is Entry.Reply -> if (followed) out[i] = Entry.Progress(e.item) else followed = true
+                is Entry.Reply -> if (followed && e.item.endsTurn != true) out[i] = Entry.Progress(e.item) else followed = true
                 else -> {}
             }
         }
