@@ -542,7 +542,10 @@ fn migration_8_keeps_outbox_deliveries_and_challenges() {
          VALUES ('n1', 'd1', 'approval', 'a1', 1, 2);",
     )
     .unwrap();
-    assert_eq!(migrate::run(&mut conn, None).unwrap(), 8);
+    assert_eq!(
+        migrate::run_with(&mut conn, None, &MIGRATIONS[..8]).unwrap(),
+        8
+    );
     let row: (i64, String, String, Option<String>) = conn
         .query_row(
             "SELECT id, dedupe_key, kind, attention_id FROM outbox",

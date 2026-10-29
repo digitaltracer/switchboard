@@ -60,7 +60,7 @@ use super::types::*;
         AgentView, Agents, EndedAgent, ChangedFile, Changes, MessagePreviewRequest, MessagePreview,
         DeleteResponse, Transcript, TranscriptItem, Skills, Skill, ApprovalQuestion, ApprovalOption,
         Dialog, DialogOption, AgentDialog, DialogChallengeRequest, DialogChallenge,
-        DialogAnswerRequest, DialogAnswerResponse, Attention,
+        DialogAnswerRequest, DialogAnswerResponse, Attention, PushProviderKind,
     )),
     modifiers(&DeviceToken),
 )]

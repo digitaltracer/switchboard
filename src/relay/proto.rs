@@ -70,6 +70,9 @@ pub struct RelayPush {
     pub approval_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attention_id: Option<String>,
+    /// `apns` (when absent) or `fcm`; the token is checked against it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
     pub collapse_id: String,
     pub expires_at: i64,
 }

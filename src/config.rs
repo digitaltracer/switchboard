@@ -138,6 +138,8 @@ pub struct PushConfig {
     /// The app's bundle id, the APNs topic.
     pub bundle_id: String,
     pub apns: Option<ApnsConfig>,
+    /// Firebase Cloud Messaging for Android devices, alongside the sender above.
+    pub fcm: Option<FcmConfig>,
     /// The simulator for `simctl`: a UDID or `booted`.
     #[serde(default = "booted")]
     pub simulator: String,
@@ -156,8 +158,33 @@ pub struct ApnsConfig {
     pub team_id: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FcmConfig {
+    /// The Firebase service-account key (JSON), mode 0600, kept outside any repo.
+    pub key_file: PathBuf,
+}
+
+impl FcmConfig {
+    fn validate(&self) -> Result<(), ConfigError> {
+        if !self.key_file.is_absolute() {
+            return Err(invalid("push.fcm.key_file must be an absolute path"));
+        }
+        if let Some(repo) = enclosing_git_tree(&self.key_file) {
+            return Err(invalid(format!(
+                "push.fcm.key_file is inside the git working tree {}; keep the FCM key outside any repo",
+                repo.display()
+            )));
+        }
+        Ok(())
+    }
+}
+
 impl PushConfig {
     fn validate(&self) -> Result<(), ConfigError> {
+        if let Some(f) = &self.fcm {
+            f.validate()?;
+        }
         let id_ok = !self.bundle_id.is_empty()
             && self.bundle_id.contains('.')
             && self
@@ -957,6 +984,23 @@ vps = "/srv/sb"
         );
         std::fs::create_dir(dir.path().join(".git")).unwrap();
         assert!(err(&hub_toml(&apns)).contains("outside any repo"));
+    }
+
+    #[test]
+    fn an_fcm_key_must_be_absolute_and_outside_any_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        let fcm = |path: &str| {
+            format!(
+                "\n[push]\nsender = \"log\"\nbundle_id = \"dev.example.switchboard\"\n[push.fcm]\nkey_file = \"{path}\"\n"
+            )
+        };
+        let key = dir.path().join("fcm.json");
+        let ok = fcm(&key.display().to_string());
+        let cfg = HubConfig::parse(&hub_toml(&ok)).unwrap().push.unwrap();
+        assert_eq!(cfg.fcm.unwrap().key_file, key);
+        assert!(err(&hub_toml(&fcm("fcm.json"))).contains("absolute"));
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+        assert!(err(&hub_toml(&ok)).contains("push.fcm.key_file is inside the git working tree"));
     }
 
     #[test]

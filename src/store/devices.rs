@@ -22,6 +22,11 @@ str_enum!(PushEnv, "push_env" {
     Production => "production",
 });
 
+str_enum!(PushProvider, "push_provider" {
+    Apns => "apns",
+    Fcm => "fcm",
+});
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct DeviceRecord {
     pub id: String,
@@ -38,6 +43,8 @@ pub struct DeviceRecord {
     pub last_seen_at: Option<i64>,
     pub push_token: Option<String>,
     pub push_env: Option<PushEnv>,
+    /// Unset means Apple's.
+    pub push_provider: Option<PushProvider>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -274,12 +281,30 @@ impl Store {
         env: Option<PushEnv>,
         now: i64,
     ) -> Result<bool> {
+        self.set_push_registration(device_id, token, env, PushProvider::Apns, now)
+            .await
+    }
+
+    pub async fn set_push_registration(
+        &self,
+        device_id: &str,
+        token: Option<&str>,
+        env: Option<PushEnv>,
+        provider: PushProvider,
+        now: i64,
+    ) -> Result<bool> {
         let (device_id, token) = (device_id.to_owned(), token.map(str::to_owned));
         self.call(move |c| {
             Ok(c.execute(
-                "UPDATE devices SET push_token = ?2, push_env = ?3, push_token_at = ?4
-                 WHERE id = ?1 AND state = 'active'",
-                params![device_id, token, env.map(PushEnv::as_str), now],
+                "UPDATE devices SET push_token = ?2, push_env = ?3, push_token_at = ?4,
+                 push_provider = ?5 WHERE id = ?1 AND state = 'active'",
+                params![
+                    device_id,
+                    token,
+                    env.map(PushEnv::as_str),
+                    now,
+                    provider.as_str()
+                ],
             )? == 1)
         })
         .await
@@ -420,7 +445,7 @@ pub(super) fn use_challenge(
     Ok(n == 1)
 }
 
-struct RawDevice(DeviceRecord, String, Option<String>);
+struct RawDevice(DeviceRecord, String, Option<String>, Option<String>);
 
 fn raw_device(r: &Row<'_>) -> rusqlite::Result<RawDevice> {
     Ok(RawDevice(
@@ -438,9 +463,11 @@ fn raw_device(r: &Row<'_>) -> rusqlite::Result<RawDevice> {
             last_seen_at: r.get("last_seen_at")?,
             push_token: r.get("push_token")?,
             push_env: None,
+            push_provider: None,
         },
         r.get("state")?,
         r.get("push_env")?,
+        r.get("push_provider")?,
     ))
 }
 
@@ -449,6 +476,7 @@ impl RawDevice {
         Ok(DeviceRecord {
             state: DeviceState::parse(self.1)?,
             push_env: self.2.map(PushEnv::parse).transpose()?,
+            push_provider: self.3.map(PushProvider::parse).transpose()?,
             ..self.0
         })
     }

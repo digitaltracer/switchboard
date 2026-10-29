@@ -3172,6 +3172,13 @@
           "production"
         ]
       },
+      "PushProviderKind": {
+        "type": "string",
+        "enum": [
+          "apns",
+          "fcm"
+        ]
+      },
       "PushTokenRequest": {
         "type": "object",
         "required": [
@@ -3183,10 +3190,22 @@
               "string",
               "null"
             ],
-            "description": "The APNs device token as hex; null turns push off for this device."
+            "description": "The APNs device token as hex, or the FCM registration token; null turns push off for\nthis device."
           },
           "environment": {
-            "$ref": "#/components/schemas/PushEnvironment"
+            "$ref": "#/components/schemas/PushEnvironment",
+            "description": "For APNs; an FCM token ignores it."
+          },
+          "provider": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PushProviderKind",
+                "description": "Which service the token is for; Apple's when absent."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },

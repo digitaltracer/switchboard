@@ -26,6 +26,7 @@ use crate::relay::proto::{HubFrame, PushOutcome, RelayFrame, RelayPush};
 use crate::relay::seal::{
     HubKeys, PlainResponse, ReplayGuard, RequestEnvelope, VERSION, registration_message,
 };
+use crate::store::PushProvider;
 
 const PING: Duration = Duration::from_secs(20);
 const HANDSHAKE: Duration = Duration::from_secs(10);
@@ -259,6 +260,8 @@ impl RelayLink {
                 session_id: push.session_id.clone(),
                 approval_id: push.approval_id.clone(),
                 attention_id: push.attention_id.clone(),
+                provider: (push.provider != PushProvider::Apns)
+                    .then(|| push.provider.as_str().to_owned()),
                 collapse_id: push.collapse_id.clone(),
                 expires_at: push.expires_at,
             },

@@ -1026,10 +1026,22 @@ pub enum PushEnvironment {
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct PushTokenRequest {
-    /// The APNs device token as hex; null turns push off for this device.
+    /// The APNs device token as hex, or the FCM registration token; null turns push off for
+    /// this device.
     #[serde(default)]
     pub token: Option<String>,
+    /// For APNs; an FCM token ignores it.
     pub environment: PushEnvironment,
+    /// Which service the token is for; Apple's when absent.
+    #[serde(default)]
+    pub provider: Option<PushProviderKind>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum PushProviderKind {
+    Apns,
+    Fcm,
 }
 
 fn enum_str<T: Serialize>(v: &T) -> String {

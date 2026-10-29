@@ -68,7 +68,7 @@ pub use attention::AttentionRecord;
 
 pub use devices::{
     AnswerProof, ApprovalProof, Challenge, ChallengePurpose, Claim, DeviceRecord, DeviceState,
-    NewDevice, PushEnv,
+    NewDevice, PushEnv, PushProvider,
 };
 pub use push::{DeliveryUpdate, DueDelivery};
 

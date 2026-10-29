@@ -2,7 +2,7 @@
 
 use tokio_rusqlite::rusqlite::{self, params};
 
-use super::{DeviceState, OutboxKind, PushEnv, Result, Store};
+use super::{DeviceState, OutboxKind, PushEnv, PushProvider, Result, Store};
 
 /// A delivery that is due, with what sending it needs.
 #[derive(Debug, Clone, PartialEq)]
@@ -18,6 +18,7 @@ pub struct DueDelivery {
     pub device_state: DeviceState,
     pub push_token: Option<String>,
     pub push_env: Option<PushEnv>,
+    pub push_provider: PushProvider,
     /// For an approval: whether it is still undecided.
     pub approval_open: bool,
     pub attention_id: Option<String>,
@@ -44,7 +45,8 @@ impl Store {
                     (SELECT 1 FROM approvals a WHERE a.id = o.approval_id AND a.outcome IS NULL)),
                  o.attention_id,
                  (o.attention_id IS NOT NULL AND EXISTS
-                    (SELECT 1 FROM attention t WHERE t.id = o.attention_id AND t.resolved_at IS NULL))
+                    (SELECT 1 FROM attention t WHERE t.id = o.attention_id AND t.resolved_at IS NULL)),
+                 v.push_provider
                  FROM outbox_deliveries d
                  JOIN outbox o ON o.id = d.outbox_id
                  JOIN devices v ON v.id = d.device_id
@@ -67,6 +69,7 @@ impl Store {
                     r.get::<_, bool>(11)?,
                     r.get::<_, Option<String>>(12)?,
                     r.get::<_, bool>(13)?,
+                    r.get::<_, Option<String>>(14)?,
                 ))
             })?;
             let raws = rows.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -87,6 +90,7 @@ impl Store {
                         approval_open,
                         attention_id,
                         attention_open,
+                        push_provider,
                     )| {
                         Ok(DueDelivery {
                             outbox_id,
@@ -100,6 +104,10 @@ impl Store {
                             device_state: DeviceState::parse(state)?,
                             push_token,
                             push_env: push_env.map(PushEnv::parse).transpose()?,
+                            push_provider: push_provider
+                                .map(PushProvider::parse)
+                                .transpose()?
+                                .unwrap_or(PushProvider::Apns),
                             approval_open,
                             attention_id,
                             attention_open,

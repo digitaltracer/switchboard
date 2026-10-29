@@ -2720,6 +2720,7 @@ dependencies = [
  "p256",
  "qrcode",
  "regex",
+ "ring",
  "rustls",
  "serde",
  "serde_json",

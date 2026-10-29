@@ -16,7 +16,7 @@ use crate::auth::device::{MESSAGE_VERSION, token_message};
 use crate::config::HubConfig;
 use crate::hub::relay_link::{RelayLink, RelaySender};
 use crate::hub::service::{Clock, SessionService};
-use crate::push::{AnySender, LogSender, Push, SendOutcome, Sender};
+use crate::push::{AnySender, LogSender, Push, SendOutcome, Sender, Senders};
 use crate::store::{OutboxKind, PushEnv, Store};
 
 fn hub_config() -> HubConfig {
@@ -53,6 +53,10 @@ async fn start_link(
 }
 
 async fn rig_with(push: Option<AnySender>) -> Rig {
+    rig_senders(push.map(|apple| Senders { apple, fcm: None })).await
+}
+
+async fn rig_senders(push: Option<Senders>) -> Rig {
     let relay = Relay::new(push);
     let (relay_addr, _) = serve(
         relay.clone(),
@@ -360,6 +364,7 @@ fn push(kind: OutboxKind) -> Push {
         attention_id: None,
         token: Some("ab12".into()),
         env: PushEnv::Sandbox,
+        provider: crate::store::PushProvider::Apns,
         payload: json!({"ignored": "the relay writes its own"}),
         collapse_id: "a1".into(),
         expires_at: 0,
@@ -568,4 +573,45 @@ async fn a_waiting_push_goes_out_with_its_attention_id_only_if_well_formed() {
         ..waiting
     };
     assert!(matches!(sender.send(&bad).await, SendOutcome::Failed(e) if e.contains("malformed")));
+}
+
+#[tokio::test]
+async fn an_android_push_is_checked_as_an_fcm_token_and_goes_through_fcm() {
+    let Some(pem) = crate::push::fcm::tests::test_key() else {
+        eprintln!("skipped: no openssl to make a test key");
+        return;
+    };
+    let (fcm, mock) = crate::push::fcm::tests::mock(&pem).await;
+    let r = rig_senders(Some(Senders {
+        apple: AnySender::Log(LogSender),
+        fcm: Some(fcm),
+    }))
+    .await;
+    let sender = RelaySender(r.link.clone());
+    let android = crate::push::fcm::tests::android(OutboxKind::Waiting);
+    assert_eq!(sender.send(&android).await, SendOutcome::Sent);
+    assert_eq!(mock.sends.lock().unwrap().len(), 1);
+    let sent = mock.sends.lock().unwrap()[0].1["message"].clone();
+    assert_eq!(sent["data"]["attention_id"], "att1");
+
+    // An FCM token isn't hex, so as an Apple one it's refused; a malformed one is refused too.
+    let as_apple = Push {
+        provider: crate::store::PushProvider::Apns,
+        ..android.clone()
+    };
+    assert!(
+        matches!(sender.send(&as_apple).await, SendOutcome::Failed(e) if e.contains("malformed"))
+    );
+    let bad = Push {
+        token: Some("not a token".into()),
+        ..android.clone()
+    };
+    assert!(matches!(sender.send(&bad).await, SendOutcome::Failed(e) if e.contains("malformed")));
+    assert_eq!(mock.sends.lock().unwrap().len(), 1);
+
+    // A relay without FCM fails an Android push and still sends Apple's.
+    let apple_only = rig_with(Some(AnySender::Log(LogSender))).await;
+    let s = RelaySender(apple_only.link.clone());
+    assert!(matches!(s.send(&android).await, SendOutcome::Failed(e) if e.contains("push.fcm")));
+    assert_eq!(s.send(&push(OutboxKind::Approval)).await, SendOutcome::Sent);
 }

@@ -4,6 +4,7 @@
 //! nothing from an agent; the app fetches the real state from the hub.
 
 pub mod apns;
+pub mod fcm;
 pub mod simctl;
 
 use std::future::Future;
@@ -17,7 +18,7 @@ use crate::config::{PushConfig, PushSenderKind};
 use crate::hub::service::Clock;
 use crate::redact::redact;
 use crate::store::{
-    DeliveryUpdate, DeviceState, DueDelivery, OutboxKind, PushEnv, Store, StoreError,
+    DeliveryUpdate, DeviceState, DueDelivery, OutboxKind, PushEnv, PushProvider, Store, StoreError,
 };
 
 pub const TICK: Duration = Duration::from_secs(1);
@@ -37,6 +38,8 @@ pub struct Push {
     pub attention_id: Option<String>,
     pub token: Option<String>,
     pub env: PushEnv,
+    /// Apple's push service, or Firebase's for Android.
+    pub provider: PushProvider,
     /// The APNs payload: `aps` plus ids.
     pub payload: Value,
     /// Replaces an earlier notification with the same id on the phone.
@@ -167,6 +170,7 @@ impl<S: Sender> Dispatcher<S> {
             attention_id: d.attention_id.clone(),
             token: d.push_token.clone(),
             env: d.push_env.unwrap_or(PushEnv::Production),
+            provider: d.push_provider,
             payload: payload(d),
             collapse_id: d
                 .approval_id
@@ -260,9 +264,45 @@ impl Sender for AnySender {
     }
 }
 
-/// Starts the configured sender over the hub's outbox.
+/// The configured sender for Apple devices, and FCM for Android ones when `[push.fcm]` is set.
+pub struct Senders {
+    pub apple: AnySender,
+    pub fcm: Option<fcm::Fcm>,
+}
+
+impl Senders {
+    pub fn from_config(cfg: &PushConfig) -> anyhow::Result<Self> {
+        Ok(Self {
+            apple: AnySender::from_config(cfg)?,
+            fcm: cfg.fcm.as_ref().map(fcm::Fcm::new).transpose()?,
+        })
+    }
+
+    pub fn needs_token_for(&self, provider: PushProvider) -> bool {
+        match provider {
+            PushProvider::Apns => self.apple.needs_token(),
+            PushProvider::Fcm => true,
+        }
+    }
+}
+
+impl Sender for Senders {
+    fn needs_token(&self) -> bool {
+        self.apple.needs_token()
+    }
+
+    async fn send(&self, push: &Push) -> SendOutcome {
+        match (push.provider, &self.fcm) {
+            (PushProvider::Apns, _) => self.apple.send(push).await,
+            (PushProvider::Fcm, Some(f)) => f.send(push).await,
+            (PushProvider::Fcm, None) => SendOutcome::Failed("no [push.fcm] sender".into()),
+        }
+    }
+}
+
+/// Starts the configured senders over the hub's outbox.
 pub fn start(cfg: &PushConfig, store: Store, clock: Clock) -> anyhow::Result<JoinHandle<()>> {
-    Ok(Dispatcher::new(store, clock, AnySender::from_config(cfg)?).spawn())
+    Ok(Dispatcher::new(store, clock, Senders::from_config(cfg)?).spawn())
 }
 
 #[cfg(test)]

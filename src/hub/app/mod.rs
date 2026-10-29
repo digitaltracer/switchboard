@@ -27,7 +27,7 @@ use crate::auth::device::{
 use crate::cli::Agent;
 use crate::proto::auth::bearer;
 use crate::proto::{AgentPromptOutcome, ErrorCode};
-use crate::store::{AnswerProof, DeviceRecord, DeviceState, PushEnv};
+use crate::store::{AnswerProof, DeviceRecord, DeviceState, PushEnv, PushProvider};
 use types::*;
 
 pub const PREFIX: &str = "/app/v1";
@@ -1059,19 +1059,29 @@ pub async fn set_push_token(
     d: DeviceAuth,
     Json(req): Json<PushTokenRequest>,
 ) -> Result<StatusCode, AppError> {
-    if let Some(t) = &req.token
-        && (t.is_empty() || t.len() > 200 || !t.bytes().all(|b| b.is_ascii_hexdigit()))
-    {
-        return Err(bad("the push token must be hex"));
-    }
-    let env = match req.environment {
-        PushEnvironment::Sandbox => PushEnv::Sandbox,
-        PushEnvironment::Production => PushEnv::Production,
+    let provider = match req.provider {
+        Some(PushProviderKind::Fcm) => PushProvider::Fcm,
+        _ => PushProvider::Apns,
     };
-    let token = req.token.as_deref().map(str::to_ascii_lowercase);
+    let token = match (&req.token, provider) {
+        (Some(t), PushProvider::Apns)
+            if t.is_empty() || t.len() > 200 || !t.bytes().all(|b| b.is_ascii_hexdigit()) =>
+        {
+            return Err(bad("the push token must be hex"));
+        }
+        (Some(t), PushProvider::Fcm) if !crate::push::fcm::valid_token(t) => {
+            return Err(bad("the FCM token is malformed"));
+        }
+        (Some(t), PushProvider::Apns) => Some(t.to_ascii_lowercase()),
+        (t, _) => t.clone(),
+    };
+    let env = match (provider, req.environment) {
+        (PushProvider::Fcm, _) | (_, PushEnvironment::Production) => PushEnv::Production,
+        (_, PushEnvironment::Sandbox) => PushEnv::Sandbox,
+    };
     st.svc
         .store()
-        .set_push_token(&d.0.id, token.as_deref(), Some(env), st.svc.now())
+        .set_push_registration(&d.0.id, token.as_deref(), Some(env), provider, st.svc.now())
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }

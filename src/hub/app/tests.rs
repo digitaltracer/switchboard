@@ -15,7 +15,7 @@ use crate::proto::auth::hash_token;
 use crate::proto::{
     ErrorCode, Event, Frame, Hello, Op, Outcome, PROTOCOL_VERSION, ProtoError, Resp,
 };
-use crate::store::Store;
+use crate::store::{PushEnv, PushProvider, Store};
 
 const SPEC: &str = "api/openapi.json";
 
@@ -1663,4 +1663,36 @@ async fn an_attention_opens_only_while_its_agent_shows_that_occurrence() {
     assert_eq!(expired.body["state"], "expired");
     let missing = r.call("GET", "/attention/nope", Some(&token), None).await;
     assert_eq!(missing.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn an_android_device_registers_its_fcm_token() {
+    let r = rig().await;
+    let (device, token) = r.pair(&Phone::new()).await;
+    let t = Some(token.as_str());
+    let put = |body: Value| r.call("PUT", "/devices/self/push", t, Some(body));
+    let fcm = "dXk1:APA91bH-x_Yz";
+    let ok = put(json!({"token": fcm, "environment": "sandbox", "provider": "fcm"})).await;
+    assert_eq!(ok.status, StatusCode::NO_CONTENT);
+    let d = r.devices.device(&device).await.unwrap().unwrap();
+    assert_eq!(
+        (d.push_token.as_deref(), d.push_provider, d.push_env),
+        (
+            Some(fcm),
+            Some(PushProvider::Fcm),
+            Some(PushEnv::Production)
+        ),
+        "kept as sent, and FCM has no sandbox"
+    );
+    for bad in [
+        json!({"token": "has space", "environment": "production", "provider": "fcm"}),
+        json!({"token": fcm, "environment": "production"}),
+        json!({"token": fcm, "environment": "production", "provider": "gcm"}),
+    ] {
+        assert!(put(bad.clone()).await.status.is_client_error(), "{bad}");
+    }
+    let apple = put(json!({"token": "AB12", "environment": "sandbox"})).await;
+    assert_eq!(apple.status, StatusCode::NO_CONTENT);
+    let d = r.devices.device(&device).await.unwrap().unwrap();
+    assert_eq!(d.push_provider, Some(PushProvider::Apns));
 }

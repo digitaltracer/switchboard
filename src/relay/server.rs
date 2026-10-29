@@ -23,9 +23,9 @@ use super::proto::{HubFrame, MAX_FRAME_BYTES, PushOutcome, RelayFrame, RelayPush
 use super::seal::{RequestEnvelope, ResponseEnvelope, VERSION, registration_message, relay_id};
 use crate::auth::device::verify;
 use crate::config::RelayConfig;
-use crate::push::{AnySender, Push, SendOutcome, Sender, payload_for};
+use crate::push::{Push, SendOutcome, Sender, Senders, fcm, payload_for};
 use crate::runner::random_id;
-use crate::store::{OutboxKind, PushEnv};
+use crate::store::{OutboxKind, PushEnv, PushProvider};
 
 /// How long a phone waits for its hub; long-polls take up to 25 s.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
@@ -79,11 +79,11 @@ pub struct Relay {
     budgets: Mutex<Budgets>,
     connections: AtomicUsize,
     next: AtomicU64,
-    push: Option<AnySender>,
+    push: Option<Senders>,
 }
 
 impl Relay {
-    pub fn new(push: Option<AnySender>) -> Arc<Self> {
+    pub fn new(push: Option<Senders>) -> Arc<Self> {
         Arc::new(Self {
             hubs: Mutex::default(),
             budgets: Mutex::default(),
@@ -117,7 +117,7 @@ pub fn routes(relay: Arc<Relay>) -> Router {
 
 pub async fn run(cfg: RelayConfig) -> anyhow::Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
-    let push = cfg.push.as_ref().map(AnySender::from_config).transpose()?;
+    let push = cfg.push.as_ref().map(Senders::from_config).transpose()?;
     let relay = Relay::new(push);
     let listener = TcpListener::bind(cfg.listen).await?;
     tracing::info!(addr = %cfg.listen, push = cfg.push.is_some(), "relay listening");
@@ -489,10 +489,23 @@ fn push_for(
         "production" => Some(PushEnv::Production),
         _ => None,
     };
-    let hex = p.token.len() <= 200 && p.token.bytes().all(|b| b.is_ascii_hexdigit());
-    // The simulator sender needs no token; Apple's does.
+    let provider = match p.provider.as_deref() {
+        None | Some("apns") => Some(PushProvider::Apns),
+        Some("fcm") => Some(PushProvider::Fcm),
+        Some(_) => None,
+    };
+    // Each service's tokens look their own way; the simulator sender needs none.
+    let well_formed = match provider {
+        Some(PushProvider::Apns) => {
+            p.token.len() <= 200 && p.token.bytes().all(|b| b.is_ascii_hexdigit())
+        }
+        Some(PushProvider::Fcm) => fcm::valid_token(&p.token),
+        None => false,
+    };
     let has_token = !p.token.is_empty();
-    let token_ok = move |s: &AnySender| hex && (has_token || !s.needs_token());
+    let token_ok = move |s: &Senders| {
+        well_formed && (has_token || !s.needs_token_for(provider.unwrap_or(PushProvider::Apns)))
+    };
     let relay = relay.clone();
     tokio::spawn(async move {
         let frame = match (&relay.push, allowed, kind, env) {
@@ -516,6 +529,7 @@ fn push_for(
                     attention_id: p.attention_id.clone(),
                     token: (!p.token.is_empty()).then(|| p.token.clone()),
                     env,
+                    provider: provider.unwrap_or(PushProvider::Apns),
                     payload: payload_for(
                         kind,
                         p.session_id.as_deref(),
