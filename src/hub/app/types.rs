@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use utoipa::{IntoParams, ToSchema};
 
+use crate::agents::claude::answers;
 use crate::hub::route::Target;
 use crate::hub::service::{
     ApprovalView, ChangesResult, DecideResult, DeleteResult, MachineView, ProjectView,
@@ -167,20 +168,41 @@ impl Machine {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct Approval {
     pub id: String,
-    /// `permission`, `question` (Claude's AskUserQuestion) or `plan` (plan approval). Questions
-    /// and plans can't be answered from the app yet: approving one leaves the agent at a dialog.
+    /// `permission`, `question` (Claude's AskUserQuestion) or `plan` (plan approval). A question
+    /// is answered with the ids of its chosen options, a plan with its one option `allow`.
     pub kind: String,
     pub tool_name: String,
     /// The masked tool input as text: a shell command, or the input as JSON.
     pub input_text: String,
     /// For a question, each question's text.
     pub questions: Vec<String>,
+    /// For a question, each question with its options.
+    pub question_options: Vec<ApprovalQuestion>,
     /// For a plan, the plan.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plan: Option<String>,
     pub created_at: i64,
     /// Unix milliseconds; unanswered by then means denied.
     pub deadline: i64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ApprovalQuestion {
+    pub question: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub header: Option<String>,
+    /// More than one option may be chosen.
+    pub multi_select: bool,
+    pub options: Vec<ApprovalOption>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ApprovalOption {
+    /// Opaque; sent back in `choices`.
+    pub id: String,
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 /// Classifies an approval the way the app shows it.
@@ -209,7 +231,25 @@ impl From<ApprovalView> for Approval {
                     .collect()
             })
             .unwrap_or_default();
+        let question_options = answers::questions(input)
+            .into_iter()
+            .map(|q| ApprovalQuestion {
+                question: q.question,
+                header: q.header,
+                multi_select: q.multi_select,
+                options: q
+                    .options
+                    .into_iter()
+                    .map(|o| ApprovalOption {
+                        id: o.id,
+                        label: o.label,
+                        description: o.description,
+                    })
+                    .collect(),
+            })
+            .collect();
         Self {
+            question_options,
             kind: approval_kind(&a.tool_name).to_owned(),
             plan: input.get("plan").and_then(Value::as_str).map(str::to_owned),
             id: a.id,
@@ -898,14 +938,23 @@ pub struct DecisionRequest {
     #[serde(default)]
     pub nonce: Option<String>,
     /// Required to allow: DER ECDSA P-256 over SHA-256 of the approval message, base64url,
-    /// made with the approval key. The message is `switchboard-approval-v1`, then `hub=`,
-    /// `device=`, `approval=`, `decision=allow`, `nonce=`, `expires=` lines, joined by `\n`.
+    /// made with the approval key. For a permission (version 1) the message is
+    /// `switchboard-approval-v1`, then `hub=`, `device=`, `approval=`, `decision=allow`,
+    /// `nonce=`, `expires=` lines, joined by `\n`. For a question or plan (version 3) it is the
+    /// answer message: `switchboard-answer-v1`, then `hub=`, `device=`, `target=approval:<id>`,
+    /// `occurrence=<id>`, `option=` (the choices joined by `,`), `label=` (SHA-256 hex of the
+    /// chosen labels joined by `\n`), `request=`, `nonce=`, `expires=`.
     #[serde(default)]
     pub signature: Option<String>,
     #[serde(default)]
     pub message_version: Option<u32>,
+    /// Required for a signed answer.
     #[serde(default)]
     pub request_id: Option<String>,
+    /// For a question, the chosen option ids, one per question (several for a multi-select);
+    /// a plan's only option is `allow`.
+    #[serde(default)]
+    pub choices: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]

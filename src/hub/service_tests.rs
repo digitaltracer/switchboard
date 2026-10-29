@@ -706,7 +706,8 @@ async fn approve_then_replay_returns_the_recorded_outcome_without_resending() {
         Op::Decide {
             session_id: sid.clone(),
             approval_id: "a1".into(),
-            allow: true
+            allow: true,
+            choices: vec![],
         }
     );
     vps.ok(req.id, json!({"applied": true})).await;
@@ -870,7 +871,8 @@ async fn runner_loss_denies_pending_approvals_and_redelivers_on_reconnect() {
         Op::Decide {
             session_id: sid.clone(),
             approval_id: "a1".into(),
-            allow: false
+            allow: false,
+            choices: vec![],
         }
     );
     vps.ok(req.id, json!({})).await;
@@ -2022,7 +2024,10 @@ mod signed {
         proof: ApprovalProof,
     ) -> JoinHandle<Result<DecideResult, HubError>> {
         let (svc, caller, sid) = (r.svc.clone(), Caller::app(device), sid.to_owned());
-        tokio::spawn(async move { svc.decide_signed(&caller, &sid, "a1", proof, None).await })
+        tokio::spawn(async move {
+            svc.decide_signed(&caller, &sid, "a1", proof, &[], None)
+                .await
+        })
     }
 
     #[tokio::test]
@@ -2049,7 +2054,7 @@ mod signed {
         // The same nonce again: used.
         let again = r
             .svc
-            .decide_signed(&Caller::app(&dev), &sid, "a1", proof, None)
+            .decide_signed(&Caller::app(&dev), &sid, "a1", proof, &[], None)
             .await;
         assert_eq!(again.unwrap_err().code(), "invalid_challenge");
         assert_eq!(
@@ -2120,7 +2125,7 @@ mod signed {
         assert!(a.d.revoke(&dev, "admin").await.unwrap());
         let err = r
             .svc
-            .decide_signed(&Caller::app(&dev), &sid, "a1", proof, Some("rq-1"))
+            .decide_signed(&Caller::app(&dev), &sid, "a1", proof, &[], Some("rq-1"))
             .await
             .unwrap_err();
         assert_eq!(err.code(), "invalid_challenge");
@@ -2194,13 +2199,13 @@ mod signed {
         let proof = a.proof(&dev, "a1", &nonce, &sig).await.unwrap();
         let err = r
             .svc
-            .decide_signed(&Caller::app(&dev), &sid, "a1", proof.clone(), None)
+            .decide_signed(&Caller::app(&dev), &sid, "a1", proof.clone(), &[], None)
             .await
             .unwrap_err();
         assert_eq!(err.code(), "approve_not_allowed");
         let err = r
             .svc
-            .decide_signed(&Caller::xai(), &sid, "a1", proof, None)
+            .decide_signed(&Caller::xai(), &sid, "a1", proof, &[], None)
             .await
             .unwrap_err();
         assert_eq!(
@@ -2392,4 +2397,69 @@ async fn a_signed_answer_with_a_bad_challenge_sends_nothing() {
         .await
         .unwrap_err();
     assert_eq!(err.code(), "approve_not_allowed");
+}
+
+#[tokio::test]
+async fn a_question_is_allowed_with_valid_choices_and_a_plan_with_its_one_option() {
+    let r = rig().await;
+    let mut vps = connect(&r.svc, "vps", vec![]).await;
+    let sid = running(&r, &mut vps).await;
+    let question = json!({"questions": [{"question": "Size?", "multiSelect": false,
+        "options": [{"label": "Small"}, {"label": "Large"}]}]});
+    vps.event(Event::ApprovalRequested {
+        session_id: sid.clone(),
+        approval_id: "q1".into(),
+        tool_name: "AskUserQuestion".into(),
+        tool_input: question,
+        deadline_ms: 280_000,
+    })
+    .await;
+    for bad in [
+        vec![],
+        vec!["0.2".to_string()],
+        vec!["0.0".into(), "0.1".into()],
+    ] {
+        let err = r
+            .svc
+            .decide_choices(&r.bot, &sid, "q1", &bad, None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "bad_request", "{bad:?}");
+    }
+    vps.no_req().await;
+    let (svc, bot, sid2) = (r.svc.clone(), r.bot.clone(), sid.clone());
+    let task = tokio::spawn(async move {
+        svc.decide_choices(&bot, &sid2, "q1", &["0.1".into()], Some("rq-q"))
+            .await
+    });
+    let req = vps.req().await;
+    assert_eq!(
+        req.op,
+        Op::Decide {
+            session_id: sid.clone(),
+            approval_id: "q1".into(),
+            allow: true,
+            choices: vec!["0.1".into()],
+        }
+    );
+    vps.ok(req.id, json!({"applied": true})).await;
+    assert_eq!(task.await.unwrap().unwrap().outcome, Decision::Allow);
+    let audit = r.svc.audit_log(Some(&sid), 50).await.unwrap();
+    let d = audit.iter().find(|e| e.kind == "decision").unwrap();
+    assert_eq!(d.detail["answers"], json!(["Large"]));
+
+    vps.event(Event::ApprovalRequested {
+        session_id: sid.clone(),
+        approval_id: "p1".into(),
+        tool_name: "ExitPlanMode".into(),
+        tool_input: json!({"plan": "1. do it"}),
+        deadline_ms: 280_000,
+    })
+    .await;
+    let (svc, bot, sid2) = (r.svc.clone(), r.bot.clone(), sid.clone());
+    let task = tokio::spawn(async move { svc.decide(&bot, &sid2, "p1", true, None).await });
+    let req = vps.req().await;
+    assert!(matches!(req.op, Op::Decide { allow: true, ref choices, .. } if choices.is_empty()));
+    vps.ok(req.id, json!({"applied": true})).await;
+    assert_eq!(task.await.unwrap().unwrap().outcome, Decision::Allow);
 }

@@ -365,7 +365,8 @@ impl Sessions {
                 session_id,
                 approval_id,
                 allow,
-            } => self.decide(&session_id, &approval_id, allow),
+                choices,
+            } => self.decide(&session_id, &approval_id, allow, &choices),
             Op::Answer { .. } => Err(err(
                 ErrorCode::BadRequest,
                 "screen dialog answers are not supported yet",
@@ -958,10 +959,12 @@ impl Sessions {
         session_id: &str,
         approval_id: &str,
         allow: bool,
+        choices: &[String],
     ) -> Result<Value, ProtoError> {
         self.hooks
-            .decide(session_id, approval_id, allow)
+            .decide(session_id, approval_id, allow, choices)
             .map_err(|e| match e {
+                DecideError::BadChoices(why) => err(ErrorCode::BadRequest, why),
                 DecideError::UnknownSession => {
                     err(ErrorCode::NotFound, format!("no session {session_id}"))
                 }

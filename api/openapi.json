@@ -1764,6 +1764,7 @@
           "tool_name",
           "input_text",
           "questions",
+          "question_options",
           "created_at",
           "deadline"
         ],
@@ -1773,7 +1774,7 @@
           },
           "kind": {
             "type": "string",
-            "description": "`permission`, `question` (Claude's AskUserQuestion) or `plan` (plan approval). Questions\nand plans can't be answered from the app yet: approving one leaves the agent at a dialog."
+            "description": "`permission`, `question` (Claude's AskUserQuestion) or `plan` (plan approval). A question\nis answered with the ids of its chosen options, a plan with its one option `allow`."
           },
           "tool_name": {
             "type": "string"
@@ -1788,6 +1789,13 @@
               "type": "string"
             },
             "description": "For a question, each question's text."
+          },
+          "question_options": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ApprovalQuestion"
+            },
+            "description": "For a question, each question with its options."
           },
           "plan": {
             "type": [
@@ -1838,6 +1846,57 @@
           },
           "approval_id": {
             "type": "string"
+          }
+        }
+      },
+      "ApprovalOption": {
+        "type": "object",
+        "required": [
+          "id",
+          "label"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Opaque; sent back in `choices`."
+          },
+          "label": {
+            "type": "string"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ApprovalQuestion": {
+        "type": "object",
+        "required": [
+          "question",
+          "multi_select",
+          "options"
+        ],
+        "properties": {
+          "question": {
+            "type": "string"
+          },
+          "header": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "multi_select": {
+            "type": "boolean",
+            "description": "More than one option may be chosen."
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ApprovalOption"
+            }
           }
         }
       },
@@ -1943,7 +2002,7 @@
               "string",
               "null"
             ],
-            "description": "Required to allow: DER ECDSA P-256 over SHA-256 of the approval message, base64url,\nmade with the approval key. The message is `switchboard-approval-v1`, then `hub=`,\n`device=`, `approval=`, `decision=allow`, `nonce=`, `expires=` lines, joined by `\\n`."
+            "description": "Required to allow: DER ECDSA P-256 over SHA-256 of the approval message, base64url,\nmade with the approval key. For a permission (version 1) the message is\n`switchboard-approval-v1`, then `hub=`, `device=`, `approval=`, `decision=allow`,\n`nonce=`, `expires=` lines, joined by `\\n`. For a question or plan (version 3) it is the\nanswer message: `switchboard-answer-v1`, then `hub=`, `device=`, `target=approval:<id>`,\n`occurrence=<id>`, `option=` (the choices joined by `,`), `label=` (SHA-256 hex of the\nchosen labels joined by `\\n`), `request=`, `nonce=`, `expires=`."
           },
           "message_version": {
             "type": [
@@ -1957,7 +2016,18 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "Required for a signed answer."
+          },
+          "choices": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "For a question, the chosen option ids, one per question (several for a multi-select);\na plan's only option is `allow`."
           }
         }
       },

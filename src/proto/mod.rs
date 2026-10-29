@@ -73,6 +73,9 @@ pub enum Op {
         session_id: String,
         approval_id: String,
         allow: bool,
+        /// For an allowed question, the chosen option ids; see `agents::claude::answers`.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        choices: Vec<String>,
     },
     /// Picks one listed option of the dialog on an agent's screen, by keys. `occurrence` and
     /// `option` are the opaque ids `Dialog` gave; `label_sha256` is the masked label's hash.

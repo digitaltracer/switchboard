@@ -15,6 +15,7 @@ use tokio::time::Instant;
 
 use super::route::{self, Live, Reuse, Route, Target};
 use super::runners::{Readiness, RunnerInfo, Runners};
+use crate::agents::claude::answers;
 use crate::cli::Agent;
 use crate::config::{HubConfig, ProjectConfig};
 use crate::proto::{
@@ -1751,8 +1752,40 @@ impl SessionService {
         if allow && !self.may_approve(caller) {
             return Err(HubError::ApproveNotAllowed(caller.door.as_str()));
         }
-        self.decide_with(caller, session_id, approval_id, allow, request_id, None)
-            .await
+        self.decide_with(
+            caller,
+            session_id,
+            approval_id,
+            allow,
+            &[],
+            request_id,
+            None,
+        )
+        .await
+    }
+
+    /// Allows a question with the chosen option ids, or a plan; see `agents::claude::answers`.
+    pub async fn decide_choices(
+        self: &Arc<Self>,
+        caller: &Caller,
+        session_id: &str,
+        approval_id: &str,
+        choices: &[String],
+        request_id: Option<&str>,
+    ) -> Result<DecideResult, HubError> {
+        if !self.may_approve(caller) {
+            return Err(HubError::ApproveNotAllowed(caller.door.as_str()));
+        }
+        self.decide_with(
+            caller,
+            session_id,
+            approval_id,
+            true,
+            choices,
+            request_id,
+            None,
+        )
+        .await
     }
 
     /// An app approval with a verified device signature. The decision uses the signed nonce in
@@ -1763,6 +1796,7 @@ impl SessionService {
         session_id: &str,
         approval_id: &str,
         proof: ApprovalProof,
+        choices: &[String],
         request_id: Option<&str>,
     ) -> Result<DecideResult, HubError> {
         if caller.door != Door::App || !self.cfg.approve.app {
@@ -1773,24 +1807,32 @@ impl SessionService {
             session_id,
             approval_id,
             true,
+            choices,
             request_id,
             Some(proof),
         )
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn decide_with(
         self: &Arc<Self>,
         caller: &Caller,
         session_id: &str,
         approval_id: &str,
         allow: bool,
+        choices: &[String],
         request_id: Option<&str>,
         proof: Option<ApprovalProof>,
     ) -> Result<DecideResult, HubError> {
-        let fp = fingerprint(&json!({
+        let choices = if allow { choices } else { &[] };
+        let mut args = json!({
             "session_id": session_id, "approval_id": approval_id, "allow": allow,
-        }));
+        });
+        if !choices.is_empty() {
+            args["choices"] = json!(choices);
+        }
+        let fp = fingerprint(&args);
         if let Some(v) = self.replayed(request_id, KIND_DECIDE, &fp).await? {
             let mut r: DecideResult = from_recorded(v)?;
             r.replayed = true;
@@ -1803,6 +1845,13 @@ impl SessionService {
             .await?
             .filter(|a| a.session_id == session_id)
             .ok_or_else(|| HubError::UnknownApproval(approval_id.to_owned()))?;
+        // The masked input has the same shape as the raw one the runner answers from.
+        let labels = if allow {
+            answers::chosen_labels(&approval.tool_name, &approval.tool_input, choices)
+                .map_err(HubError::BadRequest)?
+        } else {
+            Vec::new()
+        };
         let op_id = match self
             .begin(request_id, KIND_DECIDE, &fp, Some(session_id))
             .await?
@@ -1850,7 +1899,7 @@ impl SessionService {
                 .await?;
                 self.notify_next(&approval).await?;
                 let a = self
-                    .deliver(&s.machine_id, session_id, approval_id, false)
+                    .deliver(&s.machine_id, session_id, approval_id, false, &[])
                     .await?;
                 DecideResult::of(&a, false)
             }
@@ -1862,12 +1911,20 @@ impl SessionService {
                     json!({
                         "approval_id": approval_id, "tool_name": approval.tool_name,
                         "tool_input": approval.tool_input, "decision": d.as_str(),
+                        "answers": labels,
                     }),
                 )
                 .await?;
                 self.notify_next(&approval).await?;
+                let allowed = d == Decision::Allow;
                 let a = self
-                    .deliver(&s.machine_id, session_id, approval_id, d == Decision::Allow)
+                    .deliver(
+                        &s.machine_id,
+                        session_id,
+                        approval_id,
+                        allowed,
+                        if allowed { choices } else { &[] },
+                    )
                     .await?;
                 DecideResult::of(&a, false)
             }
@@ -1911,11 +1968,13 @@ impl SessionService {
         session_id: &str,
         approval_id: &str,
         allow: bool,
+        choices: &[String],
     ) -> Result<ApprovalRecord, HubError> {
         let op = Op::Decide {
             session_id: session_id.to_owned(),
             approval_id: approval_id.to_owned(),
             allow,
+            choices: choices.to_vec(),
         };
         let delivery = match self.runners.call(machine, op, CALL_TIMEOUT).await {
             Ok(_) => Delivery::Delivered,
@@ -1948,7 +2007,7 @@ impl SessionService {
             a.id.clone(),
         );
         tokio::spawn(async move {
-            if let Err(e) = svc.deliver(&machine, &session_id, &id, false).await {
+            if let Err(e) = svc.deliver(&machine, &session_id, &id, false, &[]).await {
                 tracing::warn!(error = %e, approval_id = %id, "delivering a deny");
             }
         });
@@ -2867,6 +2926,7 @@ impl SessionService {
                             session_id,
                             approval_id,
                             allow: false,
+                            choices: Vec::new(),
                         };
                         let _ = svc.runners.call(&machine, op, CALL_TIMEOUT).await;
                     });

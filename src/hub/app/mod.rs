@@ -19,7 +19,11 @@ use tokio::time::Instant;
 
 use super::route::{self, Route, Target};
 use super::service::{self, Caller, HubError, MAX_WAIT, SessionService};
-use crate::auth::device::{AuthError, ClaimRequest, Devices, MESSAGE_VERSION};
+use crate::agents::claude::answers;
+use crate::auth::device::{
+    ANSWER_MESSAGE_VERSION, AnswerFields, AuthError, ClaimRequest, Devices, MESSAGE_VERSION,
+    label_sha256,
+};
 use crate::cli::Agent;
 use crate::proto::auth::bearer;
 use crate::proto::{AgentPromptOutcome, ErrorCode};
@@ -918,7 +922,8 @@ pub async fn approval_challenge(
     d: DeviceAuth,
     Path(id): Path<String>,
 ) -> ApiResult<ApprovalChallenge> {
-    st.svc
+    let a = st
+        .svc
         .store()
         .get_approval(&id)
         .await?
@@ -927,7 +932,12 @@ pub async fn approval_challenge(
     Ok(Json(ApprovalChallenge {
         nonce: ch.nonce,
         expires_at: ch.expires_at,
-        message_version: MESSAGE_VERSION,
+        // A question or plan signs the answer message, which names the chosen options.
+        message_version: if approval_kind(&a.tool_name) == "permission" {
+            MESSAGE_VERSION
+        } else {
+            ANSWER_MESSAGE_VERSION
+        },
         hub_id: st.devices.hub_id().await?,
         device_id: ch.device_id,
         approval_id: id,
@@ -959,26 +969,48 @@ pub async fn decide_approval(
                 .await?
         }
         DecisionKind::Allow => {
-            if approval_kind(&a.tool_name) != "permission" {
-                return Err(AppError::new(
-                    StatusCode::CONFLICT,
-                    "answer_in_herdr",
-                    "questions and plans can't be answered from the app yet; answer it in Herdr",
-                ));
-            }
             let (Some(nonce), Some(sig)) = (&req.nonce, &req.signature) else {
                 return Err(bad(
                     "an approve needs the challenge nonce and the device's signature",
                 ));
             };
             let version = req.message_version.unwrap_or(0);
-            let proof = st
-                .devices
-                .verify_approval(&d.0, &id, nonce, sig, version)
-                .await?;
-            st.svc
-                .decide_signed(&d.caller(), &a.session_id, &id, proof, rid)
-                .await?
+            if approval_kind(&a.tool_name) == "permission" {
+                let proof = st
+                    .devices
+                    .verify_approval(&d.0, &id, nonce, sig, version)
+                    .await?;
+                st.svc
+                    .decide_signed(&d.caller(), &a.session_id, &id, proof, &[], rid)
+                    .await?
+            } else {
+                // A question or plan signs the chosen options, version 3.
+                let choices = match &req.choices {
+                    Some(c) => c.clone(),
+                    None if a.tool_name == "ExitPlanMode" => vec![answers::PLAN_OPTION.into()],
+                    None => return Err(bad("a question needs the chosen option ids")),
+                };
+                let Some(rid) = rid else {
+                    return Err(bad("a signed answer needs a request id"));
+                };
+                let labels = answers::chosen_labels(&a.tool_name, &a.tool_input, &choices)
+                    .map_err(HubError::BadRequest)?;
+                let target = format!("approval:{id}");
+                let fields = AnswerFields {
+                    target: &target,
+                    occurrence: &id,
+                    option: &choices.join(","),
+                    label: &label_sha256(&labels),
+                    request_id: rid,
+                };
+                let proof = st
+                    .devices
+                    .verify_answer(&d.0, &fields, nonce, sig, version)
+                    .await?;
+                st.svc
+                    .decide_signed(&d.caller(), &a.session_id, &id, proof, &choices, Some(rid))
+                    .await?
+            }
         }
     };
     Ok(Json(r.into()))

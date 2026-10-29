@@ -54,7 +54,7 @@ use super::types::*;
         ApprovalChallenge, DecisionRequest, DecisionResponse, Device, PushEnvironment,
         PushTokenRequest, TargetRef, TargetView, MessageRequest, MessageChoice, MessageResponse,
         AgentView, Agents, EndedAgent, ChangedFile, Changes, MessagePreviewRequest, MessagePreview,
-        DeleteResponse, Transcript, TranscriptItem, Skills, Skill,
+        DeleteResponse, Transcript, TranscriptItem, Skills, Skill, ApprovalQuestion, ApprovalOption,
     )),
     modifiers(&DeviceToken),
 )]

@@ -296,9 +296,13 @@ impl World {
 
     /// Stands in for the agent: its hook helper asks the runner and blocks for the answer.
     fn ask_permission(&self, session_id: &str, command: &str) -> JoinHandle<HookReply> {
+        self.ask_tool(session_id, "Bash", json!({"command": command}))
+    }
+
+    fn ask_tool(&self, session_id: &str, tool: &str, input: Value) -> JoinHandle<HookReply> {
         let secret = self.secret(session_id);
-        let payload = json!({"hook_event_name": "PermissionRequest", "tool_name": "Bash",
-                             "tool_input": {"command": command}});
+        let payload = json!({"hook_event_name": "PermissionRequest", "tool_name": tool,
+                             "tool_input": input});
         tokio::task::spawn_blocking(move || {
             ask_runner(
                 &secret,
@@ -490,6 +494,48 @@ async fn full_flow(w: World) {
             "{kind} missing from {kinds:?}"
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_question_and_a_plan_are_answered_through_the_hook() {
+    let w = World::new().await;
+    let sid = w.start("ask me", "rq-q").await.unwrap().session_id;
+    let question = json!({"questions": [{"question": "Which token?", "multiSelect": false,
+        "options": [{"label": "ghp_0123456789abcdefghijAAAAAAAAAA"},
+                    {"label": "ghp_0123456789abcdefghijBBBBBBBBBB"}]}]});
+    let helper = w.ask_tool(&sid, "AskUserQuestion", question.clone());
+    let approval = w.pending_approval(&sid).await;
+    let out = w
+        .svc()
+        .decide_choices(&w.bot, &sid, &approval, &["0.1".into()], Some("rq-qa"))
+        .await
+        .unwrap();
+    assert_eq!(out.delivery, Some(Delivery::Delivered));
+    let HookReply::Allow {
+        updated_input: Some(updated),
+    } = helper.await.unwrap()
+    else {
+        panic!("expected answers");
+    };
+    // The hub only held the masked labels; the runner answered with the raw one.
+    assert_eq!(
+        updated["answers"],
+        json!({"Which token?": "ghp_0123456789abcdefghijBBBBBBBBBB"})
+    );
+
+    let plan = json!({"plan": "1. do it", "planFilePath": "/p.md"});
+    let helper = w.ask_tool(&sid, "ExitPlanMode", plan.clone());
+    let approval = w.pending_approval(&sid).await;
+    w.svc()
+        .decide(&w.bot, &sid, &approval, true, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        helper.await.unwrap(),
+        HookReply::Allow {
+            updated_input: Some(plan)
+        }
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

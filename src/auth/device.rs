@@ -27,6 +27,8 @@ pub const CHALLENGE_TTL: Duration = Duration::from_secs(60);
 pub const TOKEN_TTL: Duration = Duration::from_secs(15 * 60);
 /// The signed message format; anything else is refused.
 pub const MESSAGE_VERSION: u32 = 1;
+/// Version 3 is `switchboard-answer-v1`: a chosen option of a question, plan or screen dialog.
+pub const ANSWER_MESSAGE_VERSION: u32 = 3;
 /// Failed pairing claims allowed per window, across all callers.
 pub const PAIR_ATTEMPTS: usize = 5;
 pub const PAIR_WINDOW: Duration = Duration::from_secs(10 * 60);
@@ -93,6 +95,34 @@ pub fn approval_message(
     format!(
         "switchboard-approval-v{MESSAGE_VERSION}\nhub={hub_id}\ndevice={device_id}\napproval={approval_id}\ndecision={decision}\nnonce={nonce}\nexpires={expires_at}"
     )
+}
+
+/// One chosen option. `target` is `approval:<id>` for a hook question or plan, else
+/// `agent:<machine>/<agent>`; `label` is SHA-256 hex of the chosen masked labels joined by `\n`.
+pub struct AnswerFields<'a> {
+    pub target: &'a str,
+    pub occurrence: &'a str,
+    pub option: &'a str,
+    pub label: &'a str,
+    pub request_id: &'a str,
+}
+
+pub fn answer_message(
+    hub_id: &str,
+    device_id: &str,
+    f: &AnswerFields<'_>,
+    nonce: &str,
+    expires_at: i64,
+) -> String {
+    format!(
+        "switchboard-answer-v1\nhub={hub_id}\ndevice={device_id}\ntarget={}\noccurrence={}\noption={}\nlabel={}\nrequest={}\nnonce={nonce}\nexpires={expires_at}",
+        f.target, f.occurrence, f.option, f.label, f.request_id
+    )
+}
+
+/// SHA-256 hex of the labels a choice picks, as `answer_message` signs them.
+pub fn label_sha256(labels: &[String]) -> String {
+    hex::encode(Sha256::digest(labels.join("\n").as_bytes()))
 }
 
 /// What the phone and the admin terminal both show: SHA-256 over the hub and both keys, as six
@@ -462,6 +492,73 @@ impl Devices {
                 &format!("app:{}", device.id),
                 "approval_signature_refused",
                 json!({ "approval_id": approval_id }),
+            )
+            .await?;
+            return Err(AuthError::BadSignature);
+        }
+        Ok(ApprovalProof {
+            device_id: device.id.clone(),
+            nonce: nonce.to_owned(),
+        })
+    }
+
+    pub async fn answer_challenge(
+        &self,
+        device_id: &str,
+        occurrence: &str,
+    ) -> Result<Challenge, AuthError> {
+        self.active(device_id).await?;
+        self.challenge(device_id, ChallengePurpose::Answer, Some(occurrence))
+            .await
+    }
+
+    /// Checks a signed choice. For a hook question or plan the challenge is the approval's; for
+    /// a screen dialog, the occurrence's. The nonce is used when the answer is recorded, so a
+    /// screen answer turns the proof into an `AnswerProof` for that occurrence.
+    pub async fn verify_answer(
+        &self,
+        device: &DeviceRecord,
+        f: &AnswerFields<'_>,
+        nonce: &str,
+        signature: &str,
+        version: u32,
+    ) -> Result<ApprovalProof, AuthError> {
+        if version != ANSWER_MESSAGE_VERSION {
+            return Err(AuthError::UnsupportedVersion(version));
+        }
+        let fields = [f.target, f.occurrence, f.option, f.label, f.request_id];
+        if fields.iter().any(|v| v.is_empty() || v.contains('\n')) {
+            return Err(AuthError::BadRequest(
+                "an answer field is empty or has a newline".into(),
+            ));
+        }
+        let (purpose, bound) = match f.target.strip_prefix("approval:") {
+            Some(id) if id == f.occurrence => (ChallengePurpose::Approval, id),
+            Some(_) => {
+                return Err(AuthError::BadRequest(
+                    "the occurrence must be the approval".into(),
+                ));
+            }
+            None => (ChallengePurpose::Answer, f.occurrence),
+        };
+        let ch = self
+            .store
+            .challenge(nonce)
+            .await?
+            .filter(|c| {
+                c.device_id == device.id
+                    && c.purpose == purpose
+                    && c.approval_id.as_deref() == Some(bound)
+                    && c.used_at.is_none()
+                    && c.expires_at > self.now()
+            })
+            .ok_or(AuthError::InvalidChallenge)?;
+        let message = answer_message(&self.hub_id().await?, &device.id, f, nonce, ch.expires_at);
+        if !verify(&device.approval_key, &message, signature) {
+            self.audit(
+                &format!("app:{}", device.id),
+                "answer_signature_refused",
+                json!({ "target": f.target, "occurrence": f.occurrence }),
             )
             .await?;
             return Err(AuthError::BadSignature);

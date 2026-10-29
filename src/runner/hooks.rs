@@ -11,6 +11,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 
+use crate::agents::claude::answers;
 use crate::cli::Agent;
 use crate::hook::wire::{HookReply, HookRequest, MAX_LINE};
 use crate::proto::Event;
@@ -37,14 +38,23 @@ struct SessionHooks {
     agent: Agent,
     deny_patterns: Vec<String>,
     state: HookState,
-    pending: HashMap<String, oneshot::Sender<HookReply>>,
+    pending: HashMap<String, Pending>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A hook call waiting for the hub, with the raw request a question's answers are built from.
+struct Pending {
+    tx: oneshot::Sender<HookReply>,
+    tool_name: String,
+    tool_input: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DecideError {
     UnknownSession,
     /// Already decided, expired, or the helper went away.
     NotPending,
+    /// The chosen options don't answer the call; it stays pending.
+    BadChoices(String),
 }
 
 pub struct HookHub {
@@ -105,28 +115,37 @@ impl HookHub {
         }
     }
 
+    /// An allow carries `updatedInput` for questions and plans, built from the raw request.
     pub fn decide(
         &self,
         session_id: &str,
         approval_id: &str,
         allow: bool,
+        choices: &[String],
     ) -> Result<(), DecideError> {
         let mut sessions = self.sessions.lock().unwrap();
         let s = sessions
             .get_mut(session_id)
             .ok_or(DecideError::UnknownSession)?;
-        let tx = s
-            .pending
-            .remove(approval_id)
-            .ok_or(DecideError::NotPending)?;
+        let p = s.pending.get(approval_id).ok_or(DecideError::NotPending)?;
         let reply = if allow {
-            HookReply::Allow {
-                updated_input: None,
-            }
+            let updated_input = match s.agent {
+                Agent::Claude => answers::updated_input(&p.tool_name, &p.tool_input, choices)
+                    .map_err(DecideError::BadChoices)?,
+                // Codex fails closed on updatedInput and has no hooked questions.
+                Agent::Codex if choices.is_empty() => None,
+                Agent::Codex => {
+                    return Err(DecideError::BadChoices(
+                        "codex approvals take no options".into(),
+                    ));
+                }
+            };
+            HookReply::Allow { updated_input }
         } else {
             HookReply::deny("denied via switchboard")
         };
-        tx.send(reply).map_err(|_| DecideError::NotPending)
+        let p = s.pending.remove(approval_id).expect("looked up above");
+        p.tx.send(reply).map_err(|_| DecideError::NotPending)
     }
 
     fn emit(&self, event: Event) {
@@ -249,7 +268,12 @@ impl HookHub {
 
         let approval_id = super::random_id();
         let (tx, rx) = oneshot::channel();
-        self.with(&sid, |s| s.pending.insert(approval_id.clone(), tx))?;
+        let pending = Pending {
+            tx,
+            tool_name: tool_name.clone(),
+            tool_input: tool_input.clone(),
+        };
+        self.with(&sid, |s| s.pending.insert(approval_id.clone(), pending))?;
         self.emit(Event::ApprovalRequested {
             session_id: sid.clone(),
             approval_id: approval_id.clone(),

@@ -6,7 +6,9 @@ use tower::ServiceExt;
 
 use super::*;
 use crate::auth::device::tests::Phone;
-use crate::auth::device::{approval_message, token_message};
+use crate::auth::device::{
+    AnswerFields, answer_message, approval_message, label_sha256, token_message,
+};
 use crate::config::HubConfig;
 use crate::hub::service::Clock;
 use crate::proto::auth::hash_token;
@@ -680,18 +682,44 @@ async fn deny_needs_only_a_token_but_approve_needs_the_approval_keys_signature()
     assert_eq!(deny.await.unwrap()["outcome"], "deny");
 }
 
+fn spawn_post(
+    app: &Router,
+    path: &str,
+    token: &str,
+    body: Value,
+) -> tokio::task::JoinHandle<Value> {
+    let (app, path, token) = (app.clone(), path.to_owned(), token.to_owned());
+    tokio::spawn(async move {
+        let req = HttpRequest::builder()
+            .method("POST")
+            .uri(format!("{PREFIX}{path}"))
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        serde_json::from_slice::<Value>(
+            &axum::body::to_bytes(resp.into_body(), 1 << 20)
+                .await
+                .unwrap(),
+        )
+        .unwrap()
+    })
+}
+
 #[tokio::test]
-async fn questions_and_plans_are_labelled_and_cant_be_approved_from_the_app() {
+async fn questions_and_plans_are_answered_with_a_signed_choice() {
     let mut r = rig().await;
     let phone = Phone::new();
-    let (_device, token) = r.pair(&phone).await;
+    let (device, token) = r.pair(&phone).await;
     let t = Some(token.as_str());
     let sid = r.start(&token, "rq-3").await;
     r.approval(
         &sid,
         "q1",
         "AskUserQuestion",
-        json!({"questions": [{"question": "Red or blue?", "options": []}]}),
+        json!({"questions": [{"question": "Red or blue?", "header": "Colour",
+            "options": [{"label": "Red"}, {"label": "Blue", "description": "the sky"}]}]}),
     )
     .await;
     r.approval(&sid, "p1", "ExitPlanMode", json!({"plan": "1. do it"}))
@@ -700,17 +728,93 @@ async fn questions_and_plans_are_labelled_and_cant_be_approved_from_the_app() {
     let pending = s.body["pending_approvals"].as_array().unwrap();
     assert_eq!(pending[0]["kind"], "question");
     assert_eq!(pending[0]["questions"], json!(["Red or blue?"]));
+    let q = &pending[0]["question_options"][0];
+    assert_eq!(
+        (q["header"].as_str(), q["multi_select"].as_bool()),
+        (Some("Colour"), Some(false))
+    );
+    assert_eq!(
+        q["options"][1],
+        json!({"id": "0.1", "label": "Blue", "description": "the sky"})
+    );
     assert_eq!(
         (pending[1]["kind"].as_str(), pending[1]["plan"].as_str()),
         (Some("plan"), Some("1. do it"))
     );
-    for id in ["q1", "p1"] {
-        let reply = r
-            .call("POST", &format!("/approvals/{id}/decision"), t,
-                  Some(json!({"decision": "allow", "nonce": "n", "signature": "s", "message_version": 1})))
-            .await;
-        assert_eq!(reply.body["error"]["code"], "answer_in_herdr", "{id}");
-    }
+
+    let ch = r
+        .call("POST", "/approvals/q1/challenge", t, None)
+        .await
+        .body;
+    assert_eq!(ch["message_version"], 3);
+    let label = label_sha256(&["Blue".into()]);
+    let msg = answer_message(
+        ch["hub_id"].as_str().unwrap(),
+        &device,
+        &AnswerFields {
+            target: "approval:q1",
+            occurrence: "q1",
+            option: "0.1",
+            label: &label,
+            request_id: "rq-a1",
+        },
+        ch["nonce"].as_str().unwrap(),
+        ch["expires_at"].as_i64().unwrap(),
+    );
+    // A signature over another choice doesn't verify.
+    let wrong = r
+        .call("POST", "/approvals/q1/decision", t,
+              Some(json!({"decision": "allow", "nonce": ch["nonce"], "signature": phone.approval.sign(&msg),
+                          "message_version": 3, "request_id": "rq-a1", "choices": ["0.0"]})))
+        .await;
+    assert_eq!(wrong.body["error"]["code"], "bad_signature");
+    let v1 = r
+        .call("POST", "/approvals/q1/decision", t,
+              Some(json!({"decision": "allow", "nonce": ch["nonce"], "signature": phone.approval.sign(&msg),
+                          "message_version": 1, "request_id": "rq-a1", "choices": ["0.1"]})))
+        .await;
+    assert_eq!(v1.body["error"]["code"], "unsupported_version");
+    let decide = spawn_post(
+        &r.app,
+        "/approvals/q1/decision",
+        &token,
+        json!({"decision": "allow", "nonce": ch["nonce"], "signature": phone.approval.sign(&msg),
+               "message_version": 3, "request_id": "rq-a1", "choices": ["0.1"]}),
+    );
+    let req = r.req().await;
+    assert!(matches!(req.op, Op::Decide { allow: true, ref choices, .. } if choices == &["0.1"]));
+    r.ok(req.id, json!({})).await;
+    assert_eq!(decide.await.unwrap()["outcome"], "allow");
+
+    let ch = r
+        .call("POST", "/approvals/p1/challenge", t, None)
+        .await
+        .body;
+    let plan_label = label_sha256(&["Approve".into()]);
+    let msg = answer_message(
+        ch["hub_id"].as_str().unwrap(),
+        &device,
+        &AnswerFields {
+            target: "approval:p1",
+            occurrence: "p1",
+            option: "allow",
+            label: &plan_label,
+            request_id: "rq-p1",
+        },
+        ch["nonce"].as_str().unwrap(),
+        ch["expires_at"].as_i64().unwrap(),
+    );
+    let decide = spawn_post(
+        &r.app,
+        "/approvals/p1/decision",
+        &token,
+        json!({"decision": "allow", "nonce": ch["nonce"], "signature": phone.approval.sign(&msg),
+               "message_version": 3, "request_id": "rq-p1"}),
+    );
+    let req = r.req().await;
+    assert!(matches!(req.op, Op::Decide { allow: true, .. }));
+    r.ok(req.id, json!({})).await;
+    assert_eq!(decide.await.unwrap()["outcome"], "allow");
 }
 
 #[tokio::test]

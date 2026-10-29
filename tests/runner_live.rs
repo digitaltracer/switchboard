@@ -266,6 +266,7 @@ async fn codex_body(
             session_id: id.clone(),
             approval_id: approval,
             allow: false,
+            choices: vec![],
         })
         .await
         .unwrap();
@@ -351,6 +352,7 @@ async fn claude_liveness_allow_and_fail_closed_on_killed_helper() {
                 session_id: id.clone(),
                 approval_id: approval,
                 allow: true,
+                choices: vec![],
             })
             .await
             .unwrap();

@@ -125,7 +125,7 @@ async fn approval_reaches_hub_and_decision_returns_once() {
     let state = r.hub.state("s1").unwrap();
     assert_eq!((state.pending, state.open_calls), (1, 1));
 
-    r.hub.decide("s1", &approval_id, true).unwrap();
+    r.hub.decide("s1", &approval_id, true, &[]).unwrap();
     assert_eq!(
         call.await.unwrap().unwrap(),
         HookReply::Allow {
@@ -133,11 +133,11 @@ async fn approval_reaches_hub_and_decision_returns_once() {
         }
     );
     assert_eq!(
-        r.hub.decide("s1", &approval_id, false),
+        r.hub.decide("s1", &approval_id, false, &[]),
         Err(DecideError::NotPending)
     );
     assert_eq!(
-        r.hub.decide("nope", &approval_id, false),
+        r.hub.decide("nope", &approval_id, false, &[]),
         Err(DecideError::UnknownSession)
     );
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -220,7 +220,7 @@ async fn unanswered_approval_expires_to_deny() {
     };
     assert_eq!(reason, "expired");
     assert_eq!(
-        r.hub.decide("s1", &approval_id, true),
+        r.hub.decide("s1", &approval_id, true, &[]),
         Err(DecideError::NotPending)
     );
 }
@@ -244,7 +244,7 @@ async fn helper_that_goes_away_is_recorded_as_a_failure() {
     assert_eq!((state.pending, state.open_calls), (0, 0));
     assert!(state.last_failure.is_some());
     assert_eq!(
-        r.hub.decide("s1", &approval_id, true),
+        r.hub.decide("s1", &approval_id, true, &[]),
         Err(DecideError::NotPending)
     );
 }
@@ -289,4 +289,83 @@ fn deny_patterns_match_name_command_or_input() {
         matching_deny_pattern(&p, "Bash", &json!({"command": "ls"})),
         None
     );
+}
+
+#[tokio::test]
+async fn a_question_is_answered_from_the_raw_request_by_option_id() {
+    let (tx, mut events) = mpsc::channel(64);
+    let hub = HookHub::new(tx, Duration::from_secs(5));
+    hub.register("s1", "good-token", Agent::Claude, vec![]);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(hub.clone().serve(listener));
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("secret");
+    SecretFile {
+        addr,
+        session_id: "s1".into(),
+        token: "good-token".into(),
+    }
+    .write(&path)
+    .unwrap();
+    // Both labels mask to the same text, so only the id tells them apart.
+    let (a, b) = (
+        "use ghp_0123456789abcdefghijAAAAAAAAAA",
+        "use ghp_0123456789abcdefghijBBBBBBBBBB",
+    );
+    assert_eq!(crate::redact::redact_str(a), crate::redact::redact_str(b));
+    let input = json!({"questions": [{"question": "Which token?", "multiSelect": false,
+        "options": [{"label": a}, {"label": b}]}]});
+    let payload = json!({"hook_event_name": "PermissionRequest", "tool_name": "AskUserQuestion",
+        "tool_input": input});
+    let call = tokio::task::spawn_blocking(move || {
+        ask_runner(
+            &path,
+            Agent::Claude,
+            "PermissionRequest",
+            &payload,
+            Duration::from_secs(10),
+        )
+    });
+    let Event::ApprovalRequested { approval_id, .. } =
+        tokio::time::timeout(Duration::from_secs(5), events.recv())
+            .await
+            .unwrap()
+            .unwrap()
+    else {
+        panic!("expected approval request");
+    };
+    assert!(matches!(
+        hub.decide("s1", &approval_id, true, &["0.5".into()]),
+        Err(DecideError::BadChoices(_))
+    ));
+    assert_eq!(hub.state("s1").unwrap().pending, 1, "a bad choice keeps it");
+    hub.decide("s1", &approval_id, true, &["0.1".into()])
+        .unwrap();
+    let HookReply::Allow {
+        updated_input: Some(updated),
+    } = call.await.unwrap().unwrap()
+    else {
+        panic!("expected an allow with answers");
+    };
+    assert_eq!(updated["answers"], json!({ "Which token?": b }));
+    assert_eq!(updated["questions"], input["questions"]);
+}
+
+#[tokio::test]
+async fn codex_approvals_take_no_options() {
+    let mut r = rig(Duration::from_secs(5)).await;
+    let call = r.ask("good-token", Agent::Codex, "PermissionRequest", bash("ls"));
+    let Event::ApprovalRequested { approval_id, .. } = r.next_event().await else {
+        panic!("expected approval request");
+    };
+    assert!(matches!(
+        r.hub.decide("s1", &approval_id, true, &["0.0".into()]),
+        Err(DecideError::BadChoices(_))
+    ));
+    r.hub.decide("s1", &approval_id, false, &[]).unwrap();
+    assert!(matches!(
+        call.await.unwrap().unwrap(),
+        HookReply::Deny { .. }
+    ));
 }

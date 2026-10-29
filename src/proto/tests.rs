@@ -56,6 +56,7 @@ fn every_frame_round_trips() {
                 session_id: "s1".into(),
                 approval_id: "a1".into(),
                 allow: false,
+                choices: vec![],
             },
         }),
         Frame::Resp(Resp {
@@ -301,6 +302,7 @@ async fn deadlines_expire_with_paused_clock() {
                 session_id: "s1".into(),
                 approval_id: "a1".into(),
                 allow: true,
+                choices: vec![],
             },
             Duration::from_secs(2),
             t0,

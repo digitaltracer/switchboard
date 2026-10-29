@@ -1,5 +1,6 @@
 //! Claude Code profile. Verified against 2.1.302 (spike-findings.md).
 
+pub mod answers;
 pub mod screen;
 
 use std::io;
