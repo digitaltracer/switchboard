@@ -47,6 +47,13 @@ import com.digitaltracer.switchboard.api.models.StartRequest
 import com.digitaltracer.switchboard.api.models.StartResponse
 import com.digitaltracer.switchboard.api.models.StopRequest
 import com.digitaltracer.switchboard.api.models.StopResponse
+import com.digitaltracer.switchboard.api.models.Approval
+import com.digitaltracer.switchboard.api.models.Attention
+import com.digitaltracer.switchboard.api.models.Dialog
+import com.digitaltracer.switchboard.api.models.DialogAnswerRequest
+import com.digitaltracer.switchboard.api.models.DialogAnswerResponse
+import com.digitaltracer.switchboard.api.models.DialogChallengeRequest
+import com.digitaltracer.switchboard.api.models.DialogOption
 import com.digitaltracer.switchboard.api.models.TargetRef
 import com.digitaltracer.switchboard.api.models.TargetView
 import com.digitaltracer.switchboard.api.models.TokenChallengeRequest
@@ -369,6 +376,50 @@ class Hub private constructor(
             ))
         }
     }
+
+    /** Answers a question with the chosen option ids, or approves a plan, signed over the answer message. */
+    suspend fun answer(approval: Approval, choices: List<String>, reason: String, requestId: String): DecisionResponse {
+        val pairing = pairing ?: throw HubError.NotPaired
+        val ch = authed { approvals.approvalChallenge(approval.id) }
+        val plan = approval.kind == "plan"
+        // In the order of [choices], as the hub reads them.
+        val byId = approval.questionOptions.flatMap { it.options }.associate { it.id to it.label }
+        val labels = if (plan) listOf("Approve") else choices.mapNotNull { byId[it] }
+        val message = SignedMessage.answer(
+            ch.hubId, pairing.deviceId, "approval:${approval.id}", approval.id,
+            if (plan) "allow" else choices.joinToString(","), SignedMessage.labelSha256(labels), requestId, ch.nonce, ch.expiresAt,
+        )
+        val signature = keys.sign(message, KeyRole.Approval, reason)
+        return authed {
+            approvals.decideApproval(approval.id, DecisionRequest(
+                DecisionKind.allow, ch.nonce, signature.base64Url, SignedMessage.ANSWER_VERSION, requestId,
+                if (plan) null else choices,
+            ))
+        }
+    }
+
+    // Dialogs on an agent's screen.
+
+    /** The dialog on any agent's screen; null when none is recognised. */
+    suspend fun dialog(machine: String, agent: String): Dialog? = authed { agentsApi.getAgentDialog(machine, agent).dialog }
+
+    /** Picks one offered option: the deny unsigned, any other option signed with the approval key. */
+    suspend fun answer(machine: String, agent: String, dialog: Dialog, option: DialogOption, reason: String, requestId: String): DialogAnswerResponse {
+        var body = DialogAnswerRequest(machine, agent, dialog.occurrenceId, option.id, option.labelSha256, requestId)
+        if (!option.isDeny) {
+            val pairing = pairing ?: throw HubError.NotPaired
+            val ch = authed { agentsApi.dialogChallenge(DialogChallengeRequest(machine, agent, dialog.occurrenceId)) }
+            val message = SignedMessage.answer(
+                ch.hubId, pairing.deviceId, ch.target, dialog.occurrenceId, option.id, option.labelSha256, requestId, ch.nonce, ch.expiresAt,
+            )
+            val signature = keys.sign(message, KeyRole.Approval, reason)
+            body = body.copy(nonce = ch.nonce, signature = signature.base64Url, messageVersion = SignedMessage.ANSWER_VERSION)
+        }
+        return authed { agentsApi.answerDialog(body) }
+    }
+
+    /** What a `waiting` push names, if it still shows. */
+    suspend fun attention(id: String): Attention = authed { agentsApi.getAttention(id) }
 
     // Devices.
 

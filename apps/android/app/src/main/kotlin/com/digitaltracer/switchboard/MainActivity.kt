@@ -66,6 +66,7 @@ class MainActivity : ComponentActivity() {
 
     /** A `switchboard://pair` link fills in the pairing screen; nothing pairs without a tap. */
     private fun opened(intent: Intent) {
+        Push.target(intent)?.let(model::openPush)
         val data = intent.data ?: return
         if (data.scheme == "switchboard" && data.host == "pair" && model.phase != AppModel.Phase.Paired) {
             model.openedLink = data.toString()

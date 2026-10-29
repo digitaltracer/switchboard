@@ -175,15 +175,16 @@ fun ListRow(
 }
 
 /**
- * A pending approval as a card, with its countdown. A permission can be approved with a
- * fingerprint or the screen lock, or denied; a question or plan can only be denied here, since
- * approving would leave the agent at a dialog nobody can answer from the phone.
+ * A pending approval as a card, with its countdown. A permission or plan is approved with a
+ * fingerprint or the screen lock, or denied; a question is answered by picking its options, then
+ * sending them the same way.
  */
 @Composable
 fun ApprovalCard(model: AppModel, approval: Approval, session: Session, open: (() -> Unit)? = null, decided: suspend () -> Unit = {}) {
     val scope = rememberCoroutineScope()
     var busy by remember { mutableStateOf(false) }
     var result by remember { mutableStateOf<String?>(null) }
+    var picked by remember { mutableStateOf<Map<Int, Set<String>>>(emptyMap()) }
     var now by remember { mutableLongStateOf(Countdown.nowMs()) }
     LaunchedEffect(approval.id) {
         while (true) {
@@ -236,14 +237,13 @@ fun ApprovalCard(model: AppModel, approval: Approval, session: Session, open: ((
             if (open != null) Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, Modifier.size(22.dp), tint = palette.tertiary)
         }
         when (approval.kind) {
-            "question" -> {
-                approval.questions.forEach { Text(it, style = Type.body, color = palette.label) }
-                Text("Answer questions in Herdr for now.", style = Type.footnote, color = palette.secondary)
+            "question" -> approval.questionOptions.forEachIndexed { i, q ->
+                OptionList(q.question, q.options.map { OptionItem(it.id, it.label, it.description) }, picked[i].orEmpty(), !busy) { o ->
+                    val now = picked[i].orEmpty()
+                    picked = picked + (i to if (q.multiSelect) (if (o.id in now) now - o.id else now + o.id) else setOf(o.id))
+                }
             }
-            "plan" -> {
-                Text(approval.plan.orEmpty(), style = Type.callout, color = palette.label)
-                Text("Approve plans in Herdr for now.", style = Type.footnote, color = palette.secondary)
-            }
+            "plan" -> Text(approval.plan.orEmpty(), style = Type.callout, color = palette.label)
             else -> SelectionContainer {
                 Text(
                     approval.inputText,
@@ -257,10 +257,20 @@ fun ApprovalCard(model: AppModel, approval: Approval, session: Session, open: ((
             BigButton("Deny", null, palette.fill, palette.label, !busy, Modifier.weight(1f).testTag("deny-${approval.id}")) {
                 model.hub?.let { hub -> decide { hub.deny(approval.id, UUID.randomUUID().toString()) } }
             }
-            if (approval.kind == "permission") {
-                BigButton("Approve", Icons.Filled.Fingerprint, palette.accent, Color.White, !busy, Modifier.weight(1f).testTag("approve-${approval.id}")) {
+            val answered = approval.questionOptions.indices.all { picked[it].orEmpty().isNotEmpty() }
+            if (approval.kind != "question" || answered) {
+                val text = if (approval.kind == "question") "Send" else "Approve"
+                BigButton(text, Icons.Filled.Fingerprint, palette.accent, Color.White, !busy, Modifier.weight(1f).testTag("approve-${approval.id}")) {
                     model.hub?.let { hub ->
-                        decide { hub.approve(approval.id, "Approve ${approval.toolName} in ${session.label}", UUID.randomUUID().toString()) }
+                        val reason = "Approve ${approval.toolName} in ${session.label}"
+                        val id = UUID.randomUUID().toString()
+                        decide {
+                            if (approval.kind == "permission") {
+                                hub.approve(approval.id, reason, id)
+                            } else {
+                                hub.answer(approval, picked.keys.sorted().flatMap { picked[it].orEmpty().sorted() }, reason, id)
+                            }
+                        }
                     }
                 }
             }

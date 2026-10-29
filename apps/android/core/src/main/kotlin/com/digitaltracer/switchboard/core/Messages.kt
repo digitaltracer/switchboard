@@ -25,6 +25,32 @@ object SignedMessage {
         "nonce=$nonce",
         "expires=$expiresAt",
     ).joinToString("\n")
+
+    /** `switchboard-answer-v1`: one chosen option of a question, plan or screen dialog. */
+    const val ANSWER_VERSION = 3
+
+    /**
+     * [target] is `approval:<id>` for a hook question or plan, else `agent:<machine>/<agent>`;
+     * [label] is [labelSha256] of the chosen labels.
+     */
+    fun answer(
+        hub: String, device: String, target: String, occurrence: String, option: String,
+        label: String, request: String, nonce: String, expiresAt: Long,
+    ): String = listOf(
+        "switchboard-answer-v1",
+        "hub=$hub",
+        "device=$device",
+        "target=$target",
+        "occurrence=$occurrence",
+        "option=$option",
+        "label=$label",
+        "request=$request",
+        "nonce=$nonce",
+        "expires=$expiresAt",
+    ).joinToString("\n")
+
+    /** SHA-256 hex of the chosen labels joined by newlines, as the hub shows them. */
+    fun labelSha256(labels: List<String>): String = sha256(labels.joinToString("\n").toByteArray()).hex()
 }
 
 /**

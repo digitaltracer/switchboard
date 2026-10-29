@@ -23,8 +23,8 @@ import com.digitaltracer.switchboard.core.agentTarget
 import com.digitaltracer.switchboard.core.displayName
 
 /**
- * A Herdr agent Switchboard didn't start: its latest turns, refreshed while on screen. It has no
- * permission hooks, so its dialogs are answered in Herdr.
+ * A Herdr agent Switchboard didn't start: its latest turns, refreshed while on screen. A dialog on
+ * its screen is answered from its card when Switchboard recognises it.
  */
 @Composable
 fun AgentScreen(model: AppModel, voice: Voice, listen: Listen, machine: String, name: String) {
@@ -56,13 +56,10 @@ fun AgentScreen(model: AppModel, voice: Voice, listen: Listen, machine: String, 
                 }
             }
             info?.title?.takeIf { it.isNotEmpty() }?.let { Text(it, style = Type.subheadline, fontWeight = FontWeight.SemiBold, color = palette.label) }
+            DialogCard(model, machine, name, label, info?.agentStatus)
             model.said[AppModel.saidKey(agentTarget(machine, name, label))]?.let { SaidBubble(it) }
             SummaryCard(convo) { model.path.add(Route.Conversation(ConversationSource.Agent(machine, name), label)) }
             ConversationLinks(model, ConversationSource.Agent(machine, name), label, hasConversation = convo.unavailable == null)
-            Text(
-                "This agent asks for approval in Herdr, on its machine, not here.",
-                Modifier.padding(horizontal = 4.dp), style = Type.footnote, color = palette.secondary,
-            )
         }
     }
 }

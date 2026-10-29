@@ -21,6 +21,7 @@ import com.digitaltracer.switchboard.core.HubError
 import com.digitaltracer.switchboard.core.KeyRole
 import com.digitaltracer.switchboard.core.Pairing
 import com.digitaltracer.switchboard.core.PairingLink
+import com.digitaltracer.switchboard.core.PushTarget
 import com.digitaltracer.switchboard.core.displayName
 import java.net.URI
 import kotlinx.coroutines.CancellationException
@@ -272,6 +273,27 @@ class AppModel(context: Context, val keys: DeviceKeys) {
     private fun sendPushToken() {
         val (hub, token) = (hub ?: return) to (pushToken ?: return)
         scope.launch { runCatching { hub.setFcmToken(token) } }
+    }
+
+    /**
+     * A tapped notification. A `waiting` one opens its agent only while that agent still waits
+     * there, so an expired or replaced one never leads anywhere; the others open their session.
+     */
+    fun openPush(t: PushTarget) {
+        scope.launch {
+            val hub = hub ?: return@launch
+            val route = when {
+                t.attentionId != null -> {
+                    val a = runCatching { hub.attention(t.attentionId!!) }.getOrNull() ?: return@launch
+                    if (a.state != "open") return@launch
+                    a.sessionId?.let { Route.SessionPage(it) } ?: Route.AgentPage(a.machineId, a.agent)
+                }
+                t.sessionId != null -> Route.SessionPage(t.sessionId!!)
+                else -> return@launch
+            }
+            path.clear()
+            path.add(route)
+        }
     }
 
     /** Nothing polls while the app isn't on screen; push tells it when an agent needs it. */

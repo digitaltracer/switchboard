@@ -4,6 +4,8 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonPrimitive
 
 class MessagesTest {
     @Test
@@ -18,6 +20,22 @@ class MessagesTest {
             SignedMessage.token("h1", "d1", "n1", 42),
         )
         assertEquals("a553-4998-583d-047b-1245-3ce8", pairingFingerprint("h1", "k1", "k2"))
+    }
+
+    @Test
+    fun theAnswerMessageMatchesTheSharedVector() {
+        // `tests/fixtures/app-v1/answer-message.json`, shared with the hub's and the iPhone's tests.
+        val f = Fixtures.json("answer-message.json")
+        fun labels(k: String) = f.getValue(k).jsonArray.map { it.jsonPrimitive.content }
+        assertEquals(f.str("label_sha256"), SignedMessage.labelSha256(labels("labels")))
+        assertEquals(f.str("label_sha256_two"), SignedMessage.labelSha256(labels("labels_two")))
+        assertEquals(
+            f.str("message"),
+            SignedMessage.answer(
+                f.str("hub"), f.str("device"), f.str("target"), f.str("occurrence"), f.str("option"),
+                f.str("label_sha256"), f.str("request"), f.str("nonce"), 42,
+            ),
+        )
     }
 
     @Test
