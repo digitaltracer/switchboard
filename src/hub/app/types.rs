@@ -1034,6 +1034,7 @@ pub struct PushTokenRequest {
     pub environment: PushEnvironment,
     /// Which service the token is for; Apple's when absent.
     #[serde(default)]
+    #[schema(nullable = false)]
     pub provider: Option<PushProviderKind>,
 }
 
@@ -1116,6 +1117,7 @@ pub struct AgentDialog {
     pub agent: String,
     /// None when the screen shows no dialog Switchboard recognises; show the screen instead.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
     pub dialog: Option<Dialog>,
 }
 
@@ -1181,5 +1183,6 @@ pub struct Attention {
     pub session_id: Option<String>,
     /// While open, the dialog it waits at, if one is recognised.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
     pub dialog: Option<Dialog>,
 }

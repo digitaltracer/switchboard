@@ -1947,15 +1947,8 @@
             "type": "string"
           },
           "dialog": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/Dialog",
-                "description": "None when the screen shows no dialog Switchboard recognises; show the screen instead."
-              },
-              {
-                "type": "null"
-              }
-            ]
+            "$ref": "#/components/schemas/Dialog",
+            "description": "None when the screen shows no dialog Switchboard recognises; show the screen instead."
           }
         }
       },
@@ -2207,15 +2200,8 @@
             ]
           },
           "dialog": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/Dialog",
-                "description": "While open, the dialog it waits at, if one is recognised."
-              },
-              {
-                "type": "null"
-              }
-            ]
+            "$ref": "#/components/schemas/Dialog",
+            "description": "While open, the dialog it waits at, if one is recognised."
           }
         }
       },
@@ -3197,15 +3183,8 @@
             "description": "For APNs; an FCM token ignores it."
           },
           "provider": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/PushProviderKind",
-                "description": "Which service the token is for; Apple's when absent."
-              },
-              {
-                "type": "null"
-              }
-            ]
+            "$ref": "#/components/schemas/PushProviderKind",
+            "description": "Which service the token is for; Apple's when absent."
           }
         }
       },
