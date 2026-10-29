@@ -59,6 +59,8 @@ pub enum Method {
     AgentSendKeys(AgentSendKeysParams),
     #[serde(rename = "agent.get")]
     AgentGet(AgentTarget),
+    #[serde(rename = "workspace.create")]
+    WorkspaceCreate(WorkspaceCreateParams),
     #[serde(rename = "pane.process_info")]
     PaneProcessInfo(PaneProcessInfoParams),
     #[serde(rename = "workspace.close")]
@@ -81,6 +83,7 @@ impl Method {
             Method::AgentRead(_) => "agent.read",
             Method::AgentSendKeys(_) => "agent.send_keys",
             Method::AgentGet(_) => "agent.get",
+            Method::WorkspaceCreate(_) => "workspace.create",
             Method::PaneProcessInfo(_) => "pane.process_info",
             Method::WorkspaceClose(_) => "workspace.close",
             Method::EventsSubscribe(_) => "events.subscribe",
@@ -202,6 +205,15 @@ pub struct AgentSendKeysParams {
 }
 
 /// Has no `close_group` field: Switchboard only closes its own linked workspaces.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct WorkspaceCreateParams {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    pub focus: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct WorkspaceCloseParams {
     pub workspace_id: String,
@@ -293,6 +305,10 @@ pub enum ResponseResult {
         workspace_id: String,
         path: String,
         forced: bool,
+    },
+    WorkspaceCreated {
+        workspace: WorkspaceInfo,
+        root_pane: PaneInfo,
     },
     AgentInfo {
         agent: AgentInfo,

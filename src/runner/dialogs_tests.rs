@@ -488,3 +488,20 @@ fn attempts_survive_a_restart() {
     assert!(!b.blocks("o2"));
     assert!(b.begin("o1").is_err());
 }
+
+#[test]
+fn whatsapp_never_reaches_the_key_path() {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src/whatsapp");
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        let text = std::fs::read_to_string(&path).unwrap();
+        for needle in [
+            concat!("agent_send", "_keys"),
+            concat!("Op::", "Answer"),
+            concat!("Answer", "Request"),
+            concat!("runner::", "dialogs"),
+        ] {
+            assert!(!text.contains(needle), "{} uses {needle}", path.display());
+        }
+    }
+}

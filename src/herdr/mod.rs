@@ -325,6 +325,14 @@ impl Client {
         }
     }
 
+    /// A plain workspace with one shell pane, returned as its root pane.
+    pub async fn workspace_create(&self, params: WorkspaceCreateParams) -> Result<PaneInfo> {
+        match self.call(Method::WorkspaceCreate(params), None).await? {
+            ResponseResult::WorkspaceCreated { root_pane, .. } => Ok(root_pane),
+            other => unexpected("workspace.create", other),
+        }
+    }
+
     pub async fn agent_get(&self, target: &str) -> Result<AgentInfo> {
         let params = AgentTarget {
             target: target.to_owned(),
