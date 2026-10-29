@@ -370,6 +370,7 @@ The user found the terminal tail unreadable on a phone. Claude draws for a termi
   - The output endpoints take `visible=true` for the screen as it is, which Herdr reads without scrolling. The apps' terminal reads only that.
   - The tiles take their line from the conversation.
   - WhatsApp's `read`, which the user asks for, still reads history.
+  - **As built 2026-10-29:** WhatsApp's finished notice no longer reads 80 lines of history 3 s after each turn, which was still scrolling full-screen agents. It quotes the turn's last reply from the conversation log instead. See `live-follow/plan.md`.
 - **Loading and empty states.** While the conversation loads, pulsing placeholder shapes; a status line only once it's loaded. The terminal says it's loading until the first read, and "The screen is blank" only after one. Errors show a line and keep retrying.
 - **The terminal, zoomable.** The screen is drawn like a photo of it: fitted to the phone's width at first, pinched to zoom up to 1.5×, double-tapped between fitted and full size. Text is laid out at full size, so it stays sharp. It uses a `UIScrollView` on iOS and a Compose canvas on Android.
 
