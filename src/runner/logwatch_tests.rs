@@ -480,3 +480,20 @@ async fn on_macos_an_append_to_a_log_held_open_ends_the_wait_within_a_second() {
         "{took:?}"
     );
 }
+
+#[tokio::test]
+async fn a_watch_that_fails_to_start_holds_nothing_so_the_wait_checks_each_second() {
+    let _turn = TIMED.lock().await;
+    let w = World::new();
+    let watch = watcher();
+    watch
+        .fail_start
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let project = w.log.parent().unwrap().to_owned();
+    assert!(watch.watch(&[project, w.claude.join("sessions")]).is_none());
+    assert_eq!(
+        watch.folders(),
+        0,
+        "a later wait would take the folders as watched"
+    );
+}

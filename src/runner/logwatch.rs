@@ -58,6 +58,9 @@ pub struct LogWatch {
     linger: Duration,
     /// No OS notifications at all, files included.
     off: bool,
+    /// Makes starting the watch fail.
+    #[cfg(test)]
+    fail_start: std::sync::atomic::AtomicBool,
     changes: broadcast::Sender<Change>,
 }
 
@@ -82,6 +85,8 @@ impl LogWatch {
             watcher: Mutex::new(state),
             folders: Mutex::default(),
             linger,
+            #[cfg(test)]
+            fail_start: Default::default(),
             changes: broadcast::channel(1024).0,
         })
     }
@@ -150,11 +155,19 @@ impl LogWatch {
                     failed.push(f.clone());
                 }
             }
-            if let Err(e) = paths.commit() {
-                tracing::warn!(error = %e, "can't start watching conversation logs");
-            }
+            let started = paths.commit();
+            #[cfg(test)]
+            let started = match self.fail_start.load(std::sync::atomic::Ordering::SeqCst) {
+                true => Err(notify::Error::generic("refused for the test")),
+                false => started,
+            };
             // Other waits' events may have been dropped while the stream restarted.
             let _ = self.changes.send(Change::All);
+            if let Err(e) = started {
+                // Nothing is held, so this wait and later ones check each second instead.
+                tracing::warn!(error = %e, "can't start watching conversation logs");
+                return None;
+            }
         }
         let held: Vec<PathBuf> = canonical
             .iter()
