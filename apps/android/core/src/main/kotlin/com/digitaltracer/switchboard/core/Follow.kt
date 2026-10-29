@@ -26,9 +26,12 @@ object Follow {
     /** After a failed request. */
     const val RETRY_MS = 3_000L
 
-    /** A page of the conversation; one that continues from [after] waits for more. */
-    suspend fun page(hub: Hub, source: ConversationSource, after: Long?, before: Long?): Transcript {
-        val wait = if (after != null && before == null) WAIT_MS else null
+    /**
+     * A page of the conversation. With [wait], one that continues from [after] waits for more;
+     * only following asks for that, since a refresh someone is waiting on mustn't hang.
+     */
+    suspend fun page(hub: Hub, source: ConversationSource, after: Long?, before: Long?, wait: Boolean = false): Transcript {
+        val wait = if (wait && after != null && before == null) WAIT_MS else null
         return when (source) {
             is ConversationSource.Session -> hub.transcript(source.id, after, before, wait)
             is ConversationSource.Agent -> hub.agentTranscript(source.machine, source.name, after, before, wait)

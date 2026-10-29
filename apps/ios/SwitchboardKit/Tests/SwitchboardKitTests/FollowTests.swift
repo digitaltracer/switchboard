@@ -17,15 +17,17 @@ private func query(_ fake: FakeHub, _ op: String) -> [String] {
     fake.requests.filter { $0.op == op }.map { $0.request.path?.split(separator: "?").dropFirst().joined() ?? "" }
 }
 
-@Test func transcriptRequestsAfterTheFirstLoadAskTheHubToWait() async throws {
+@Test func onlyFollowingAsksTheHubToWaitAndOnlyAfterTheFirstLoad() async throws {
     let (fake, hub) = following()
     for source in [ConversationSource.session("s1"), .agent(machine: "mac", name: "mono1/claude")] {
-        _ = try await Follow.page(hub, source, after: nil, before: nil)
+        _ = try await Follow.page(hub, source, after: nil, before: nil, wait: true)
+        _ = try await Follow.page(hub, source, after: 10, before: nil, wait: true)
+        _ = try await Follow.page(hub, source, after: nil, before: 10, wait: true)
+        // A refresh someone is waiting on, such as pull to refresh.
         _ = try await Follow.page(hub, source, after: 10, before: nil)
-        _ = try await Follow.page(hub, source, after: nil, before: 10)
     }
     let asked = query(fake, "get_transcript") + query(fake, "get_agent_transcript")
-    #expect(asked.count == 6)
+    #expect(asked.count == 8)
     #expect(asked.filter { $0.contains("wait_ms=20000") }.count == 2, "\(asked)")
     #expect(asked.filter { $0.contains("wait_ms") && !$0.contains("after=10") }.isEmpty, "only continuing reads wait")
 }

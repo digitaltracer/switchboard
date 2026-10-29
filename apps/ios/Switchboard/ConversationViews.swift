@@ -41,7 +41,7 @@ final class ConversationModel {
     }
 
     private func followConversation(_ model: AppModel) async {
-        await Follow.repeating(going: { model.active }) { await refresh(model.hub) }
+        await Follow.repeating(going: { model.active }) { await refresh(model.hub, wait: true) }
     }
 
     private func followScreen(_ model: AppModel) async {
@@ -53,12 +53,12 @@ final class ConversationModel {
 
     /// False when it should be tried again later rather than at once.
     @discardableResult
-    func refresh(_ hub: Hub?) async -> Bool {
+    func refresh(_ hub: Hub?, wait: Bool = false) async -> Bool {
         guard let hub else { return false }
         do {
             if conversation.isLoaded {
                 let after = conversation.end
-                conversation.append(try await Follow.page(hub, source, after: after, before: nil), askedAfter: after)
+                conversation.append(try await Follow.page(hub, source, after: after, before: nil, wait: wait), askedAfter: after)
             } else {
                 conversation.replace(with: try await Follow.page(hub, source, after: nil, before: nil))
             }

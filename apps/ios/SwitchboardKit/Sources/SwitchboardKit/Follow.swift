@@ -17,9 +17,10 @@ public enum Follow {
     /// After a failed request.
     public static let retry: Duration = .seconds(3)
 
-    /// A page of the conversation; one that continues from `after` waits for more.
-    public static func page(_ hub: Hub, _ source: ConversationSource, after: Int64?, before: Int64?) async throws -> Schemas.Transcript {
-        let wait = after != nil && before == nil ? waitMs : nil
+    /// A page of the conversation. With `wait`, one that continues from `after` waits for more;
+    /// only following asks for that, since a refresh someone is waiting on mustn't hang.
+    public static func page(_ hub: Hub, _ source: ConversationSource, after: Int64?, before: Int64?, wait: Bool = false) async throws -> Schemas.Transcript {
+        let wait = wait && after != nil && before == nil ? waitMs : nil
         return switch source {
         case .session(let id): try await hub.transcript(id, after: after, before: before, waitMs: wait)
         case .agent(let machine, let name): try await hub.agentTranscript(machine: machine, agent: name, after: after, before: before, waitMs: wait)

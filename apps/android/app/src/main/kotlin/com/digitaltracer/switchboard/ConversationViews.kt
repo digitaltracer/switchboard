@@ -156,7 +156,7 @@ class ConversationModel(val source: ConversationSource) {
      */
     suspend fun follow(model: AppModel) {
         coroutineScope {
-            launch { Follow.repeating(going = { model.foreground }) { model.hub?.let { refresh(it) } ?: false } }
+            launch { Follow.repeating(going = { model.foreground }) { model.hub?.let { refresh(it, wait = true) } ?: false } }
             launch {
                 Follow.repeating(going = { model.foreground }) {
                     if (!wantsTerminal && unavailable == null) true else model.hub?.let { loadTerminal(it) } ?: false
@@ -166,11 +166,11 @@ class ConversationModel(val source: ConversationSource) {
     }
 
     /** False when it should be tried again later rather than at once. */
-    suspend fun refresh(hub: Hub): Boolean {
+    suspend fun refresh(hub: Hub, wait: Boolean = false): Boolean {
         try {
             conversation = if (conversation.isLoaded) {
                 val after = conversation.end
-                conversation.append(Follow.page(hub, source, after, null), askedAfter = after)
+                conversation.append(Follow.page(hub, source, after, null, wait), askedAfter = after)
             } else {
                 Conversation.of(Follow.page(hub, source, null, null))
             }

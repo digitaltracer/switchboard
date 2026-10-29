@@ -38,15 +38,17 @@ class FollowTest {
         fake.requests.filter { it.op.endsWith(suffix) }.map { it.request.url.query.orEmpty() }
 
     @Test
-    fun transcriptRequestsAfterTheFirstLoadAskTheHubToWait() = runTest {
+    fun onlyFollowingAsksTheHubToWaitAndOnlyAfterTheFirstLoad() = runTest {
         val (fake, hub) = following()
         for (source in listOf(ConversationSource.Session("s1"), ConversationSource.Agent("mac", "mono1/claude"))) {
-            Follow.page(hub, source, null, null)
+            Follow.page(hub, source, null, null, wait = true)
+            Follow.page(hub, source, 10, null, wait = true)
+            Follow.page(hub, source, null, 10, wait = true)
+            // A refresh someone is waiting on, such as after an approval.
             Follow.page(hub, source, 10, null)
-            Follow.page(hub, source, null, 10)
         }
         val queries = asked(fake, "/transcript")
-        assertEquals(6, queries.size)
+        assertEquals(8, queries.size)
         assertEquals(2, queries.count { "wait_ms=20000" in it }, "$queries")
         assertTrue(queries.none { "wait_ms" in it && "after=10" !in it }, "only continuing reads wait")
     }
