@@ -533,8 +533,9 @@ fn codex_output(o: Option<&Value>) -> String {
     }
 }
 
-/// What a user line shows: a prompt, a `!` command or a slash command. Other tagged lines
-/// (command output, reminders, notifications) are Claude's own and shown nowhere.
+/// What a user line shows: a prompt, a `!` command or a slash command, all the person's own
+/// messages. Other tagged lines (command output, reminders, notifications) are Claude's own and
+/// shown nowhere.
 fn said(text: &str) -> Option<(&'static str, String)> {
     let text = text.trim();
     if text.is_empty() {
@@ -549,11 +550,11 @@ fn said(text: &str) -> Option<(&'static str, String)> {
         Some(rest[..rest.find(&format!("</{name}>"))?].trim().to_owned())
     };
     if let Some(cmd) = tag("bash-input") {
-        return Some(("note", format!("! {cmd}")));
+        return Some(("user", format!("! {cmd}")));
     }
     let name = tag("command-name")?;
     let args = tag("command-args").unwrap_or_default();
-    Some(("note", format!("{name} {args}").trim().to_owned()))
+    Some(("user", format!("{name} {args}").trim().to_owned()))
 }
 
 fn result_text(content: Option<&Value>) -> String {

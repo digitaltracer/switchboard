@@ -42,6 +42,7 @@ fn conversation() -> String {
         line(json!({"type": "assistant", "uuid": "side", "isSidechain": true,
                     "message": {"content": [{"type": "text", "text": "a subagent's own turn"}]}})),
         user("b1", json!("<bash-input>git status</bash-input>")),
+        user("s1", json!("<command-message>council</command-message>\n<command-name>/council</command-name>\n<command-args>plan the relay</command-args>")),
         line(json!({"type": "system", "uuid": "c1", "subtype": "compact_boundary"})),
         assistant("a4", json!([{"type": "text", "text": "No errors in the last 12 hours."}])),
     ]
@@ -74,7 +75,8 @@ fn a_log_reads_as_a_conversation_without_the_noise() {
             s("assistant", "I'll look at the logs."),
             s("tool", "Ran cargo test -p core"),
             s("tool", "Used elasticsearch-app-mcp-server · esql"),
-            s("note", "! git status"),
+            s("user", "! git status"),
+            s("user", "/council plan the relay"),
             s("note", "Earlier messages were compacted."),
             s("assistant", "No errors in the last 12 hours."),
         ]
@@ -160,7 +162,7 @@ fn a_big_log_is_read_from_its_end_starting_on_a_whole_line() {
         b'\n',
         "starts on a line"
     );
-    assert_eq!(page.items.len(), 7);
+    assert_eq!(page.items.len(), 8);
     let back = read_page(&path, None, Some(page.start)).unwrap();
     assert!(back.items.is_empty() && back.end == page.start);
 }
