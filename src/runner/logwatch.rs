@@ -423,26 +423,17 @@ where
     let mut changes = watch.subscribe();
     let mut file = watch.watch_file(&found.log);
     let mut known = inodes(&found.switch);
-    let folders = [
-        found.log.parent().unwrap_or(Path::new("/")).to_owned(),
-        found.switch.folder().to_owned(),
-    ];
-    // A setup stuck behind a stalled stream restart mustn't hold the wait past its deadline.
-    let watching = {
-        let (watch, folders) = (watch.clone(), folders.clone());
-        let setup = tokio::task::spawn_blocking(move || watch.watch(&folders));
-        tokio::time::timeout_at(deadline, setup)
-            .await
-            .ok()
-            .and_then(Result::ok)
-            .flatten()
-    };
+    let log_dir = found.log.parent().unwrap_or(Path::new("/")).to_owned();
+    // Today's Codex folder may not exist yet: its nearest parent shows it being made.
+    let mut armed = nearest(found.switch.folder());
+    let mut watching = setup(watch, [log_dir.clone(), armed.clone()], deadline).await;
     let canonical = |p: &Path| {
         let dir = p.parent().and_then(|d| std::fs::canonicalize(d).ok());
         dir.zip(p.file_name()).map(|(d, n)| d.join(n))
     };
     let mut log = canonical(&found.log);
     let mut switch_dir = std::fs::canonicalize(found.switch.folder()).ok();
+    let mut armed_dir = std::fs::canonicalize(&armed).ok();
     if grown(&found.log, after) {
         return found.log;
     }
@@ -450,7 +441,19 @@ where
         .is_none()
         .then(|| tokio::time::interval_at(Instant::now() + FALLBACK_EVERY, FALLBACK_EVERY));
     let mut look = moved(&found.switch, &mut known);
+    let mut deeper = false;
     loop {
+        if std::mem::take(&mut deeper) {
+            armed = nearest(found.switch.folder());
+            if let Some(w) = setup(watch, [log_dir.clone(), armed.clone()], deadline).await {
+                // The old watch is released once the new one holds.
+                watching.replace(w);
+            }
+            armed_dir = std::fs::canonicalize(&armed).ok();
+            switch_dir = std::fs::canonicalize(found.switch.folder()).ok();
+            // A log made in the new folder before its watch was set up still counts.
+            look = moved(&found.switch, &mut known);
+        }
         if std::mem::take(&mut look) {
             match tokio::time::timeout_at(deadline, lookup()).await {
                 Ok(Some(now)) if now.log != found.log => return now.log,
@@ -487,6 +490,8 @@ where
                         }
                     } else if p.parent().is_some() && p.parent() == switch_dir.as_deref() {
                         look = switched(&found.switch, &mut known, &p);
+                    } else if switch_dir.is_none() && p.parent() == armed_dir.as_deref() {
+                        deeper = true;
                     }
                 }
                 Ok(Change::All) | Err(broadcast::error::RecvError::Lagged(_)) => {
@@ -505,6 +510,30 @@ where
             },
         }
     }
+}
+
+/// `dir`, or its nearest parent that exists.
+fn nearest(dir: &Path) -> PathBuf {
+    dir.ancestors()
+        .find(|d| d.is_dir())
+        .unwrap_or(dir)
+        .to_owned()
+}
+
+/// Watches `folders` for a wait. A setup stuck behind a stalled stream restart mustn't hold the
+/// wait past its deadline.
+async fn setup(
+    watch: &Arc<LogWatch>,
+    folders: [PathBuf; 2],
+    deadline: Instant,
+) -> Option<Watching> {
+    let watch = watch.clone();
+    let started = tokio::task::spawn_blocking(move || watch.watch(&folders));
+    tokio::time::timeout_at(deadline, started)
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .flatten()
 }
 
 /// A kqueue watch on one file, for writes FSEvents holds back until the file is closed.

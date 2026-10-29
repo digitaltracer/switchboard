@@ -529,3 +529,59 @@ async fn a_setup_stuck_behind_a_stalled_restart_still_answers_by_the_deadline() 
     assert!(took < Duration::from_millis(900), "{took:?}");
     sweep.join().unwrap();
 }
+
+#[tokio::test]
+async fn the_first_codex_log_of_a_day_ends_the_wait_before_its_folder_existed() {
+    let _turn = TIMED.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let sessions = dir.path().join("sessions");
+    let yesterday = sessions.join("2026/10/29");
+    std::fs::create_dir_all(&yesterday).unwrap();
+    let log = yesterday.join("rollout-2026-10-29T23-50-00-old.jsonl");
+    std::fs::write(&log, "{}\n").unwrap();
+    // Not made until Codex starts its first session of the day.
+    let day = sessions.join("2030/01/01");
+    let new = day.join("rollout-2030-01-01T00-01-00-new.jsonl");
+    let found = |log: &Path| Found {
+        log: log.to_owned(),
+        switch: Switch::Codex { day: day.clone() },
+    };
+    let runs = Arc::new(AtomicUsize::new(0));
+    let (n, path, old) = (runs.clone(), new.clone(), log.clone());
+    let lookup = move || {
+        n.fetch_add(1, Ordering::SeqCst);
+        let log = if path.exists() {
+            path.clone()
+        } else {
+            old.clone()
+        };
+        std::future::ready(Some(Found {
+            log,
+            switch: Switch::Codex {
+                day: path.parent().unwrap().to_owned(),
+            },
+        }))
+    };
+    let (made, file) = (day.clone(), new.clone());
+    // Well after the watch is set up, which a missing folder is otherwise noticed by.
+    later(Duration::from_millis(1500), move || {
+        std::fs::create_dir_all(&made).unwrap();
+        std::fs::write(&file, "{}\n").unwrap();
+    });
+    let watch = watcher();
+    let start = Instant::now();
+    let got = wait(
+        &watch,
+        None,
+        "codex",
+        3,
+        start + MAX_WAIT,
+        found(&log),
+        lookup,
+    )
+    .await;
+    assert_eq!(got, new);
+    let took = start.elapsed();
+    assert!(took < Duration::from_millis(2500), "{took:?}");
+    assert_eq!(released(&watch).await, 0);
+}
