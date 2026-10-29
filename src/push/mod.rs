@@ -33,6 +33,8 @@ pub struct Push {
     pub kind: OutboxKind,
     pub session_id: Option<String>,
     pub approval_id: Option<String>,
+    /// For a `waiting` push, what the app looks up to find the dialog.
+    pub attention_id: Option<String>,
     pub token: Option<String>,
     pub env: PushEnv,
     /// The APNs payload: `aps` plus ids.
@@ -77,20 +79,34 @@ pub fn text(kind: OutboxKind) -> (&'static str, &'static str) {
 
 /// The whole notification: generic text for its kind plus ids. A relay builds it the same way,
 /// so a hub can't put its own text on someone's lock screen.
-pub fn payload_for(kind: OutboxKind, session_id: Option<&str>, approval_id: Option<&str>) -> Value {
+pub fn payload_for(
+    kind: OutboxKind,
+    session_id: Option<&str>,
+    approval_id: Option<&str>,
+    attention_id: Option<&str>,
+) -> Value {
     let (title, body) = text(kind);
     let thread = session_id.unwrap_or("switchboard");
     // Ids only; masked anyway, like everything that leaves the machine.
-    redact(&json!({
+    let mut p = json!({
         "aps": { "alert": { "title": title, "body": body }, "sound": "default", "thread-id": thread },
         "kind": kind.as_str(),
         "session_id": session_id,
         "approval_id": approval_id,
-    }))
+    });
+    if let Some(id) = attention_id {
+        p["attention_id"] = json!(id);
+    }
+    redact(&p)
 }
 
 pub fn payload(d: &DueDelivery) -> Value {
-    payload_for(d.kind, d.session_id.as_deref(), d.approval_id.as_deref())
+    payload_for(
+        d.kind,
+        d.session_id.as_deref(),
+        d.approval_id.as_deref(),
+        d.attention_id.as_deref(),
+    )
 }
 
 fn backoff(attempts: i64) -> Duration {
@@ -137,6 +153,9 @@ impl<S: Sender> Dispatcher<S> {
         if d.kind == OutboxKind::Approval && !d.approval_open {
             return drop("already decided");
         }
+        if d.kind == OutboxKind::Waiting && !d.attention_open {
+            return drop("no longer waiting");
+        }
         if self.sender.needs_token() && d.push_token.is_none() {
             return drop("no push token");
         }
@@ -145,6 +164,7 @@ impl<S: Sender> Dispatcher<S> {
             kind: d.kind,
             session_id: d.session_id.clone(),
             approval_id: d.approval_id.clone(),
+            attention_id: d.attention_id.clone(),
             token: d.push_token.clone(),
             env: d.push_env.unwrap_or(PushEnv::Production),
             payload: payload(d),

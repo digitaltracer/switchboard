@@ -606,3 +606,90 @@ fn migration_8_keeps_outbox_deliveries_and_challenges() {
         .is_err()
     );
 }
+
+fn waiting(id: &str, agent: &str, occurrence: &str, session: Option<&str>) -> AttentionRecord {
+    AttentionRecord {
+        id: id.into(),
+        machine_id: "mac".into(),
+        herdr_session: None,
+        agent: agent.into(),
+        terminal_id: "term_1".into(),
+        session_id: session.map(str::to_owned),
+        occurrence: occurrence.into(),
+        created_at: 10,
+        expires_at: 1_000,
+        resolved_at: None,
+        resolution: None,
+    }
+}
+
+async fn waiting_keys(store: &Store) -> Vec<String> {
+    store
+        .outbox_after(0, 100)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.kind == OutboxKind::Waiting)
+        .map(|e| e.dedupe_key)
+        .collect()
+}
+
+#[tokio::test]
+async fn a_waiting_push_is_queued_once_per_occurrence() {
+    let store = Store::open_in_memory().await.unwrap();
+    let (a, queued) = store
+        .create_waiting(waiting("at1", "w/cx", "occ1", None))
+        .await
+        .unwrap();
+    assert!(queued);
+    let (again, queued) = store
+        .create_waiting(waiting("at2", "w/cx", "occ1", None))
+        .await
+        .unwrap();
+    assert_eq!(
+        (again.id.as_str(), queued),
+        ("at1", false),
+        "the first one is kept"
+    );
+    store
+        .create_waiting(waiting("at3", "w/cx", "occ2", None))
+        .await
+        .unwrap();
+    assert_eq!(waiting_keys(&store).await, ["waiting:at1", "waiting:at3"]);
+    let e = &store.outbox_after(0, 10).await.unwrap()[0];
+    assert_eq!(e.attention_id.as_deref(), Some(a.id.as_str()));
+}
+
+#[tokio::test]
+async fn a_waiting_push_follows_agent_session_and_global_mutes() {
+    let store = Store::open_in_memory().await.unwrap();
+    store
+        .set_notify_agent("w/quiet", None, Some(true), 1)
+        .await
+        .unwrap();
+    let (_, queued) = store
+        .create_waiting(waiting("at1", "w/quiet", "occ1", None))
+        .await
+        .unwrap();
+    assert!(!queued, "a muted agent");
+    let mut s = session("s1", 1);
+    s.muted = true;
+    store.insert_session(s).await.unwrap();
+    store
+        .create_waiting(waiting("at2", "sb-s1", "occ2", Some("s1")))
+        .await
+        .unwrap();
+    store.set_mute_all(true).await.unwrap();
+    let (_, queued) = store
+        .create_waiting(waiting("at3", "w/loud", "occ3", None))
+        .await
+        .unwrap();
+    assert!(!queued, "mute-all");
+    assert!(waiting_keys(&store).await.is_empty());
+    store.set_mute_all(false).await.unwrap();
+    store
+        .create_waiting(waiting("at4", "w/loud", "occ4", None))
+        .await
+        .unwrap();
+    assert_eq!(waiting_keys(&store).await, ["waiting:at4"]);
+}

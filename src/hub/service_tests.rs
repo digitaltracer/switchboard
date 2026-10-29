@@ -2463,3 +2463,51 @@ async fn a_question_is_allowed_with_valid_choices_and_a_plan_with_its_one_option
     vps.ok(req.id, json!({"applied": true})).await;
     assert_eq!(task.await.unwrap().unwrap().outcome, Decision::Allow);
 }
+
+fn waiting_event(agent: &str, occurrence: &str, session_id: Option<&str>) -> Event {
+    Event::Waiting {
+        agent_name: agent.into(),
+        occurrence: occurrence.into(),
+        terminal_id: "term_1".into(),
+        herdr_session: None,
+        session_id: session_id.map(str::to_owned),
+    }
+}
+
+#[tokio::test]
+async fn a_waiting_agent_is_pushed_once_unless_a_hook_approval_already_was() {
+    let r = rig().await;
+    let mut vps = connect(&r.svc, "vps", vec![]).await;
+    vps.event(waiting_event("w/cx", "o1", None)).await;
+    vps.event(waiting_event("w/cx", "o1", None)).await;
+    let waiting: Vec<String> = outbox(&r)
+        .await
+        .into_iter()
+        .filter(|(k, _)| *k == crate::store::OutboxKind::Waiting)
+        .map(|(_, key)| key)
+        .collect();
+    assert_eq!(waiting.len(), 1);
+
+    let sid = running(&r, &mut vps).await;
+    approval_requested(&vps, &sid, "a1", json!({"command": "ls"})).await;
+    vps.event(waiting_event("sb-x", "o2", Some(&sid))).await;
+    let kinds: Vec<_> = outbox(&r).await.into_iter().map(|(k, _)| k).collect();
+    assert_eq!(
+        kinds
+            .iter()
+            .filter(|k| **k == crate::store::OutboxKind::Waiting)
+            .count(),
+        1,
+        "the approval push covers it"
+    );
+
+    // An agent that moves on no longer waits.
+    let id = waiting[0].trim_start_matches("waiting:").to_owned();
+    vps.event(Event::NamedAgentStatus {
+        agent_name: "w/cx".into(),
+        agent_status: "working".into(),
+    })
+    .await;
+    let a = r.svc.store().get_attention(&id).await.unwrap().unwrap();
+    assert_eq!(a.resolution.as_deref(), Some("gone"));
+}

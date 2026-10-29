@@ -101,7 +101,13 @@ pub struct Sessions {
     answered: Arc<Answered>,
     /// Each CLI's version as `--version` last said, for agents Switchboard didn't start.
     versions: Mutex<HashMap<&'static str, (Option<String>, Instant)>>,
+    /// Occurrences already reported as waiting.
+    waited: Mutex<std::collections::VecDeque<String>>,
 }
+
+/// How long an agent stays blocked before its owner's phones are told it's waiting.
+pub const WAITING_HOLD: Duration = Duration::from_secs(3);
+const KEEP_WAITED: usize = 500;
 
 /// How long a CLI's `--version` answer is reused.
 const VERSION_TTL: Duration = Duration::from_secs(60);
@@ -174,6 +180,7 @@ impl Sessions {
             pane_locks: PaneLocks::default(),
             answered: Answered::load(cfg.state_dir.join("dialog-answers.json")),
             versions: Mutex::default(),
+            waited: Mutex::default(),
             cfg,
         })
     }
@@ -698,6 +705,54 @@ impl Sessions {
             self.audit(&s.session_id, "dialog_answer", detail);
         }
         result.map(|()| json!({ "answered": true }))
+    }
+
+    /// Once `agent` has just become blocked: if it is still blocked by the same state after the
+    /// hold, and no hook call is pending (its approval notifies instead), reports it waiting.
+    pub(crate) fn hold_waiting(self: &Arc<Self>, agent: String) {
+        let sessions = self.clone();
+        tokio::spawn(async move {
+            if let Err(e) = sessions.check_waiting(&agent).await {
+                tracing::debug!(agent, error = %e, "no waiting check");
+            }
+        });
+    }
+
+    async fn check_waiting(&self, agent: &str) -> Result<(), ProtoError> {
+        let p = self.dialog_pane(agent).await?;
+        let before = dialogs::DialogIo::process(&p.io)
+            .await
+            .map_err(|e| err(ErrorCode::Herdr, e))?;
+        tokio::time::sleep(WAITING_HOLD).await;
+        let seen = dialogs::look(&p.io, p.version.as_deref()).await?;
+        let held = seen.process.blocked
+            && seen.process.state_change_seq == before.state_change_seq
+            && seen.process.terminal_id == before.terminal_id;
+        let hooked = p.owned.as_ref().is_some_and(|s| {
+            let h = self.hooks.state(&s.session_id).unwrap_or_default();
+            h.pending > 0 || h.open_calls > 0
+        });
+        if !held || hooked {
+            return Ok(());
+        }
+        {
+            let mut waited = self.waited.lock().unwrap();
+            if waited.contains(&seen.occurrence) {
+                return Ok(());
+            }
+            waited.push_back(seen.occurrence.clone());
+            if waited.len() > KEEP_WAITED {
+                waited.pop_front();
+            }
+        }
+        self.emit(Event::Waiting {
+            agent_name: agent.to_owned(),
+            occurrence: seen.occurrence,
+            terminal_id: seen.process.terminal_id.unwrap_or_default(),
+            herdr_session: p.server,
+            session_id: p.owned.map(|s| s.session_id),
+        });
+        Ok(())
     }
 
     /// A CLI's version from `--version`, cached for a minute; `None` if it can't be read.

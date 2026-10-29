@@ -20,6 +20,9 @@ pub struct DueDelivery {
     pub push_env: Option<PushEnv>,
     /// For an approval: whether it is still undecided.
     pub approval_open: bool,
+    pub attention_id: Option<String>,
+    /// For a `waiting` push: whether its attention is still unresolved.
+    pub attention_open: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -38,7 +41,10 @@ impl Store {
                 "SELECT d.outbox_id, d.device_id, o.kind, o.dedupe_key, o.session_id, o.approval_id,
                  o.created_at, d.attempts, v.state, v.push_token, v.push_env,
                  (o.approval_id IS NOT NULL AND EXISTS
-                    (SELECT 1 FROM approvals a WHERE a.id = o.approval_id AND a.outcome IS NULL))
+                    (SELECT 1 FROM approvals a WHERE a.id = o.approval_id AND a.outcome IS NULL)),
+                 o.attention_id,
+                 (o.attention_id IS NOT NULL AND EXISTS
+                    (SELECT 1 FROM attention t WHERE t.id = o.attention_id AND t.resolved_at IS NULL))
                  FROM outbox_deliveries d
                  JOIN outbox o ON o.id = d.outbox_id
                  JOIN devices v ON v.id = d.device_id
@@ -59,6 +65,8 @@ impl Store {
                     r.get::<_, Option<String>>(9)?,
                     r.get::<_, Option<String>>(10)?,
                     r.get::<_, bool>(11)?,
+                    r.get::<_, Option<String>>(12)?,
+                    r.get::<_, bool>(13)?,
                 ))
             })?;
             let raws = rows.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -77,6 +85,8 @@ impl Store {
                         push_token,
                         push_env,
                         approval_open,
+                        attention_id,
+                        attention_open,
                     )| {
                         Ok(DueDelivery {
                             outbox_id,
@@ -91,6 +101,8 @@ impl Store {
                             push_token,
                             push_env: push_env.map(PushEnv::parse).transpose()?,
                             approval_open,
+                            attention_id,
+                            attention_open,
                         })
                     },
                 )

@@ -388,6 +388,18 @@ pub enum Event {
         agent_name: String,
         agent_status: String,
     },
+    /// An agent has been blocked for the hold, at `occurrence`, with no hook call pending; the
+    /// hub queues one `waiting` push for it. Sent once per occurrence.
+    Waiting {
+        agent_name: String,
+        occurrence: String,
+        /// The pane incarnation, so a push never resolves to a replacement agent.
+        terminal_id: String,
+        #[serde(default)]
+        herdr_session: Option<String>,
+        #[serde(default)]
+        session_id: Option<String>,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]

@@ -63,10 +63,13 @@ pub struct RelayPush {
     pub token: String,
     /// `sandbox` or `production`.
     pub env: String,
-    /// `approval`, `finished` or `device_paired`.
+    /// `approval`, `finished`, `device_paired` or `waiting`. A relay that doesn't know a kind
+    /// fails the push, which the hub drops.
     pub kind: String,
     pub session_id: Option<String>,
     pub approval_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attention_id: Option<String>,
     pub collapse_id: String,
     pub expires_at: i64,
 }

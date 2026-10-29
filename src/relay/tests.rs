@@ -357,6 +357,7 @@ fn push(kind: OutboxKind) -> Push {
         kind,
         session_id: Some("s1".into()),
         approval_id: Some("a1".into()),
+        attention_id: None,
         token: Some("ab12".into()),
         env: PushEnv::Sandbox,
         payload: json!({"ignored": "the relay writes its own"}),
@@ -549,4 +550,22 @@ async fn a_second_connection_for_the_same_hub_closes_the_first() {
         .await
         .expect("the replaced connection is told, not left hanging")
         .unwrap();
+}
+
+#[tokio::test]
+async fn a_waiting_push_goes_out_with_its_attention_id_only_if_well_formed() {
+    let r = rig_with(Some(AnySender::Log(LogSender))).await;
+    let sender = RelaySender(r.link.clone());
+    let waiting = Push {
+        approval_id: None,
+        attention_id: Some("0123abcd".into()),
+        collapse_id: "waiting:0123abcd".into(),
+        ..push(OutboxKind::Waiting)
+    };
+    assert_eq!(sender.send(&waiting).await, SendOutcome::Sent);
+    let bad = Push {
+        attention_id: Some("not an id!".into()),
+        ..waiting
+    };
+    assert!(matches!(sender.send(&bad).await, SendOutcome::Failed(e) if e.contains("malformed")));
 }

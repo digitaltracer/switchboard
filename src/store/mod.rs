@@ -1179,13 +1179,43 @@ fn queue(
     now: i64,
     except: Option<&str>,
 ) -> Result<()> {
+    queue_with(
+        c,
+        dedupe_key,
+        kind,
+        session_id,
+        approval_id,
+        None,
+        now,
+        except,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn queue_with(
+    c: &rusqlite::Connection,
+    dedupe_key: &str,
+    kind: OutboxKind,
+    session_id: Option<&str>,
+    approval_id: Option<&str>,
+    attention_id: Option<&str>,
+    now: i64,
+    except: Option<&str>,
+) -> Result<()> {
     let n = c.execute(
-        "INSERT INTO outbox (dedupe_key, kind, session_id, approval_id, created_at)
-         SELECT ?1, ?2, ?3, ?4, ?5
+        "INSERT INTO outbox (dedupe_key, kind, session_id, approval_id, created_at, attention_id)
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6
          WHERE ?3 IS NULL OR (NOT EXISTS (SELECT 1 FROM sessions WHERE id = ?3 AND muted)
          AND NOT (SELECT mute_all FROM notify_settings WHERE id = 1))
          ON CONFLICT (dedupe_key) DO NOTHING",
-        params![dedupe_key, kind.as_str(), session_id, approval_id, now],
+        params![
+            dedupe_key,
+            kind.as_str(),
+            session_id,
+            approval_id,
+            now,
+            attention_id
+        ],
     )?;
     if n == 1 {
         c.execute(

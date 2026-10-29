@@ -258,6 +258,7 @@ impl RelayLink {
                 kind: push.kind.as_str().into(),
                 session_id: push.session_id.clone(),
                 approval_id: push.approval_id.clone(),
+                attention_id: push.attention_id.clone(),
                 collapse_id: push.collapse_id.clone(),
                 expires_at: push.expires_at,
             },

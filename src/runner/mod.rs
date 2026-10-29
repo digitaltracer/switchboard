@@ -14,6 +14,7 @@ pub mod transcript;
 pub mod watch;
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
@@ -282,7 +283,7 @@ struct StatusForwarder {
 }
 
 impl StatusForwarder {
-    fn forward(&mut self, sessions: &Sessions, agent_name: String, agent_status: String) {
+    fn forward(&mut self, sessions: &Arc<Sessions>, agent_name: String, agent_status: String) {
         let now = tokio::time::Instant::now();
         if let Some((s, at)) = self.last.get(&agent_name)
             && *s == agent_status
@@ -296,6 +297,9 @@ impl StatusForwarder {
             .is_none_or(|(s, _)| *s != agent_status)
         {
             sessions.status_changed(&agent_name);
+            if agent_status == "blocked" {
+                sessions.hold_waiting(agent_name.clone());
+            }
         }
         self.last
             .insert(agent_name.clone(), (agent_status.clone(), now));

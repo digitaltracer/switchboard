@@ -2,7 +2,7 @@
 
 use tokio_rusqlite::rusqlite::{self, OptionalExtension, Row, params};
 
-use super::{Result, Store};
+use super::{OutboxKind, Result, Store, queue_with};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AttentionRecord {
@@ -68,6 +68,38 @@ impl Store {
             let kept = insert(&tx, &a)?;
             tx.commit()?;
             Ok(kept)
+        })
+        .await
+    }
+
+    /// Records an attention and queues its `waiting` push in the same transaction. Only a new
+    /// attention notifies, and not while its agent or session is muted or everything is.
+    /// Returns the attention kept and whether a push was queued.
+    pub async fn create_waiting(&self, a: AttentionRecord) -> Result<(AttentionRecord, bool)> {
+        self.call(move |c| {
+            let tx = c.transaction()?;
+            let kept = insert(&tx, &a)?;
+            let muted: bool = tx.query_row(
+                "SELECT (SELECT mute_all FROM notify_settings WHERE id = 1)
+                 OR EXISTS (SELECT 1 FROM notify_agents WHERE name = ?1 AND muted)",
+                [&a.agent],
+                |r| r.get(0),
+            )?;
+            let queued = kept.id == a.id && !muted;
+            if queued {
+                queue_with(
+                    &tx,
+                    &format!("waiting:{}", a.id),
+                    OutboxKind::Waiting,
+                    a.session_id.as_deref(),
+                    None,
+                    Some(&a.id),
+                    a.created_at,
+                    None,
+                )?;
+            }
+            tx.commit()?;
+            Ok((kept, queued))
         })
         .await
     }

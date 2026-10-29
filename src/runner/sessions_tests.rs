@@ -1115,3 +1115,30 @@ async fn a_claude_session_switchboard_started_never_gets_dialog_keys() {
     assert_eq!(e.code, ErrorCode::DialogChanged);
     assert!(!herdr.methods().contains(&"agent.send_keys".to_string()));
 }
+
+#[tokio::test]
+async fn an_agent_blocked_through_the_hold_is_reported_waiting_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let herdr = FakeHerdr::start(
+        dir.path(),
+        json!({}),
+        vec![dialog_screen("permission-command", 1)],
+    );
+    herdr.answer("agent.get", blocked_codex());
+    let mut r = rig_with(dir, &herdr.socket, "codex-cli 0.165.0");
+    r.sessions.check_waiting("cx").await.unwrap();
+    r.sessions.check_waiting("cx").await.unwrap();
+    let mut waiting = Vec::new();
+    while let Ok(ev) = r.events.try_recv() {
+        if let Event::Waiting {
+            agent_name,
+            terminal_id,
+            session_id,
+            ..
+        } = ev
+        {
+            waiting.push((agent_name, terminal_id, session_id));
+        }
+    }
+    assert_eq!(waiting, [("cx".to_string(), "t".to_string(), None)]);
+}

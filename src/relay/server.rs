@@ -481,6 +481,7 @@ fn push_for(
         "approval" => Some(OutboxKind::Approval),
         "finished" => Some(OutboxKind::Finished),
         "device_paired" => Some(OutboxKind::DevicePaired),
+        "waiting" => Some(OutboxKind::Waiting),
         _ => None,
     };
     let env = match p.env.as_str() {
@@ -504,16 +505,23 @@ fn push_for(
                 if token_ok(sender)
                     && valid_id(Some(&p.collapse_id))
                     && valid_id(p.session_id.as_deref())
-                    && valid_id(p.approval_id.as_deref()) =>
+                    && valid_id(p.approval_id.as_deref())
+                    && valid_id(p.attention_id.as_deref()) =>
             {
                 let push = Push {
                     device_id: String::new(),
                     kind,
                     session_id: p.session_id.clone(),
                     approval_id: p.approval_id.clone(),
+                    attention_id: p.attention_id.clone(),
                     token: (!p.token.is_empty()).then(|| p.token.clone()),
                     env,
-                    payload: payload_for(kind, p.session_id.as_deref(), p.approval_id.as_deref()),
+                    payload: payload_for(
+                        kind,
+                        p.session_id.as_deref(),
+                        p.approval_id.as_deref(),
+                        p.attention_id.as_deref(),
+                    ),
                     collapse_id: p.collapse_id.clone(),
                     expires_at: p.expires_at,
                 };

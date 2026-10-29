@@ -396,6 +396,7 @@ fn requests_go_to_the_devices_environment_with_apns_headers() {
         kind: OutboxKind::Approval,
         session_id: None,
         approval_id: None,
+        attention_id: None,
         token: Some("aa11".into()),
         env: PushEnv::Sandbox,
         payload: json!({"aps": {}}),
@@ -476,6 +477,7 @@ async fn apns_sandbox_is_reachable() {
         kind: OutboxKind::Approval,
         session_id: None,
         approval_id: None,
+        attention_id: None,
         token: Some("00".repeat(32)),
         env: PushEnv::Sandbox,
         payload: json!({"aps": {"alert": "test"}}),
@@ -514,6 +516,7 @@ async fn apns_key_is_accepted() {
                 kind: OutboxKind::Approval,
                 session_id: None,
                 approval_id: None,
+                attention_id: None,
                 token: Some("00".repeat(32)),
                 env,
                 payload: json!({"aps": {"alert": "test"}}),
@@ -527,4 +530,81 @@ async fn apns_key_is_accepted() {
             "{env:?}: Apple refused the provider token: {outcome:?}"
         );
     }
+}
+
+#[test]
+fn the_waiting_push_is_generic_with_ids_only() {
+    let p = payload_for(OutboxKind::Waiting, None, None, Some("att1"));
+    assert_eq!(p["aps"]["alert"]["title"], "Agent waiting");
+    assert_eq!(
+        p["aps"]["alert"]["body"],
+        "An agent is waiting for your answer."
+    );
+    assert_eq!(
+        (p["kind"].as_str(), p["attention_id"].as_str()),
+        (Some("waiting"), Some("att1"))
+    );
+    let mut keys: Vec<&String> = p.as_object().unwrap().keys().collect();
+    keys.sort();
+    assert_eq!(
+        keys,
+        ["approval_id", "aps", "attention_id", "kind", "session_id"]
+    );
+    assert!(
+        payload_for(OutboxKind::Approval, Some("s1"), Some("a1"), None)
+            .get("attention_id")
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn a_waiting_push_carries_its_attention_and_is_dropped_once_resolved() {
+    let r = Rig::new(Store::open_in_memory().await.unwrap()).await;
+    let device = r.device(Some("ab12")).await;
+    let attention = |id: &str, occurrence: &str| crate::store::AttentionRecord {
+        id: id.into(),
+        machine_id: "mac".into(),
+        herdr_session: None,
+        agent: "w/cx".into(),
+        terminal_id: "term_1".into(),
+        session_id: None,
+        occurrence: occurrence.into(),
+        created_at: T0,
+        expires_at: T0 + 60_000,
+        resolved_at: None,
+        resolution: None,
+    };
+    r.store
+        .create_waiting(attention("at1", "o1"))
+        .await
+        .unwrap();
+    r.store
+        .create_waiting(attention("at2", "o2"))
+        .await
+        .unwrap();
+    r.store
+        .resolve_attention("mac", "w/cx", Some("o2"), "gone", T0)
+        .await
+        .unwrap();
+    r.dispatcher().tick().await.unwrap();
+    let sent = r.sent();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(
+        (
+            sent[0].kind,
+            sent[0].attention_id.as_deref(),
+            sent[0].collapse_id.as_str()
+        ),
+        (OutboxKind::Waiting, Some("at1"), "waiting:at1")
+    );
+    assert_eq!(sent[0].payload["attention_id"], "at1");
+    let resolved = r
+        .store
+        .outbox_after(0, 10)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|e| e.dedupe_key == "waiting:at2")
+        .unwrap();
+    assert_eq!(r.state(resolved.id, &device).await, "dropped");
 }

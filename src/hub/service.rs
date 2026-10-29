@@ -52,6 +52,8 @@ const ENDED_WINDOW_MS: i64 = 24 * 60 * 60 * 1000;
 /// Visible-screen reads in flight at once, across every caller.
 pub const MAX_SCREEN_READS: usize = 4;
 const RECHECK_RETRY: Duration = Duration::from_secs(10);
+/// How long a `waiting` push's attention can be opened; as long as a push is worth sending.
+pub const ATTENTION_TTL: Duration = crate::push::STALE_AFTER;
 
 const KIND_START: &str = "session_start";
 const KIND_PROMPT: &str = "session_prompt";
@@ -3187,11 +3189,53 @@ impl SessionService {
                 agent_name,
                 agent_status,
             } => {
+                // An agent that moved on no longer waits; its pushes not yet sent are dropped.
+                if agent_status != "blocked" {
+                    self.store
+                        .resolve_attention(machine, &agent_name, None, "gone", self.now())
+                        .await?;
+                }
                 let _ = self.events.send(HubEvent::AgentStatus {
                     machine_id: machine.to_owned(),
                     agent_name,
                     agent_status,
                 });
+            }
+            Event::Waiting {
+                agent_name,
+                occurrence,
+                terminal_id,
+                herdr_session,
+                session_id,
+            } => {
+                let session = match &session_id {
+                    Some(id) => self.owned_by(machine, id).await?,
+                    None => None,
+                };
+                // A hook approval already notified; one push per occurrence.
+                if let Some(s) = &session
+                    && !self.store.pending_approvals(&s.id).await?.is_empty()
+                {
+                    return Ok(());
+                }
+                let now = self.now();
+                let (a, queued) = self
+                    .store
+                    .create_waiting(AttentionRecord {
+                        id: random_id(),
+                        machine_id: machine.to_owned(),
+                        herdr_session,
+                        agent: agent_name,
+                        terminal_id,
+                        session_id: session.map(|s| s.id),
+                        occurrence,
+                        created_at: now,
+                        expires_at: now + ATTENTION_TTL.as_millis() as i64,
+                        resolved_at: None,
+                        resolution: None,
+                    })
+                    .await?;
+                tracing::info!(attention = %a.id, queued, "agent waiting");
             }
             Event::Resynced { sessions } => {
                 for o in sessions {
