@@ -2215,3 +2215,181 @@ mod signed {
         assert_eq!(deny.await.unwrap().unwrap().outcome, Decision::Deny);
     }
 }
+
+fn answer_req(option: &str, request_id: Option<&str>) -> AnswerRequest {
+    AnswerRequest {
+        machine_id: "vps".into(),
+        agent: "work/cx".into(),
+        occurrence: "occ1".into(),
+        option: option.into(),
+        label_sha256: "ab".repeat(32),
+        request_id: request_id.map(str::to_owned),
+    }
+}
+
+fn spawn_answer(
+    r: &Rig,
+    caller: Caller,
+    req: AnswerRequest,
+    proof: Option<AnswerProof>,
+) -> JoinHandle<Result<AnswerResult, HubError>> {
+    let svc = r.svc.clone();
+    tokio::spawn(async move { svc.answer(&caller, &req, proof).await })
+}
+
+#[tokio::test]
+async fn an_answer_without_the_approve_right_may_only_deny() {
+    let cfg = config_with("[approve]\nxai = false\n");
+    let r = rig_cfg(cfg, Store::open_in_memory().await.unwrap());
+    let mut vps = connect(&r.svc, "vps", vec![]).await;
+
+    let task = spawn_answer(&r, Caller::xai(), answer_req("yes", None), None);
+    let req = vps.req().await;
+    assert!(matches!(
+        req.op,
+        Op::Answer {
+            deny_only: true,
+            ..
+        }
+    ));
+    vps.reply(
+        req.id,
+        Outcome::Err(ProtoError::new(
+            ErrorCode::ApproveNotAllowed,
+            "not the deny",
+        )),
+    )
+    .await;
+    assert_eq!(
+        task.await.unwrap().unwrap_err().code(),
+        "approve_not_allowed"
+    );
+
+    // The app's deny needs no signature; its approve without one is deny-only too.
+    let task = spawn_answer(&r, Caller::app("d1"), answer_req("no", None), None);
+    let req = vps.req().await;
+    let Op::Answer {
+        agent,
+        occurrence,
+        option,
+        deny_only,
+        ..
+    } = &req.op
+    else {
+        panic!("{:?}", req.op);
+    };
+    assert_eq!(
+        (
+            agent.as_str(),
+            occurrence.as_str(),
+            option.as_str(),
+            *deny_only
+        ),
+        ("work/cx", "occ1", "no", true)
+    );
+    vps.ok(req.id, json!({ "answered": true })).await;
+    assert_eq!(task.await.unwrap().unwrap().outcome, "answered");
+
+    let task = spawn_answer(&r, Caller::new("admin"), answer_req("yes", None), None);
+    let req = vps.req().await;
+    assert!(matches!(
+        req.op,
+        Op::Answer {
+            deny_only: false,
+            ..
+        }
+    ));
+    vps.ok(req.id, json!({ "answered": true })).await;
+    task.await.unwrap().unwrap();
+    let audit = r.svc.audit_log(None, 50).await.unwrap();
+    assert_eq!(
+        audit.iter().filter(|e| e.kind == "dialog_answer").count(),
+        3
+    );
+}
+
+#[tokio::test]
+async fn an_answer_replays_its_recorded_outcome_and_sends_nothing_again() {
+    let r = rig().await;
+    let mut vps = connect(&r.svc, "vps", vec![]).await;
+    let task = spawn_answer(
+        &r,
+        Caller::new("admin"),
+        answer_req("yes", Some("r1")),
+        None,
+    );
+    let req = vps.req().await;
+    vps.ok(req.id, json!({ "answered": true })).await;
+    let first = task.await.unwrap().unwrap();
+    assert!(!first.replayed);
+
+    let again = r
+        .svc
+        .answer(&Caller::new("admin"), &answer_req("yes", Some("r1")), None)
+        .await
+        .unwrap();
+    assert!(again.replayed);
+    assert_eq!(again.operation_id, first.operation_id);
+    vps.no_req().await;
+    let err = r
+        .svc
+        .answer(&Caller::new("admin"), &answer_req("no", Some("r1")), None)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), "request_id_reused");
+}
+
+#[tokio::test]
+async fn a_lost_answer_is_outcome_unknown_and_never_resent() {
+    let r = rig().await;
+    let mut vps = connect(&r.svc, "vps", vec![]).await;
+    let task = spawn_answer(
+        &r,
+        Caller::new("admin"),
+        answer_req("yes", Some("r2")),
+        None,
+    );
+    let req = vps.req().await;
+    vps.reply(
+        req.id,
+        Outcome::Err(ProtoError::new(ErrorCode::OutcomeUnknown, "lost")),
+    )
+    .await;
+    assert_eq!(task.await.unwrap().unwrap_err().code(), "outcome_unknown");
+    let err = r
+        .svc
+        .answer(&Caller::new("admin"), &answer_req("yes", Some("r2")), None)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), "outcome_unknown");
+    vps.no_req().await;
+}
+
+#[tokio::test]
+async fn a_signed_answer_with_a_bad_challenge_sends_nothing() {
+    let r = rig().await;
+    let mut vps = connect(&r.svc, "vps", vec![]).await;
+    let proof = AnswerProof {
+        device_id: "d1".into(),
+        nonce: "never-issued".into(),
+        occurrence: "occ1".into(),
+    };
+    let err = r
+        .svc
+        .answer(
+            &Caller::app("d1"),
+            &answer_req("yes", Some("r3")),
+            Some(proof.clone()),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), "invalid_challenge");
+    vps.no_req().await;
+    // A proof from any other door is refused outright.
+    let err = r
+        .svc
+        .answer(&Caller::xai(), &answer_req("yes", None), Some(proof))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), "approve_not_allowed");
+}

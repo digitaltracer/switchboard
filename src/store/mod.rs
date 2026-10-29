@@ -59,14 +59,16 @@ macro_rules! str_enum {
 }
 
 mod agents;
+mod attention;
 mod devices;
 mod push;
 
 pub use agents::{SeenAgent, SeenAgentRecord};
+pub use attention::AttentionRecord;
 
 pub use devices::{
-    ApprovalProof, Challenge, ChallengePurpose, Claim, DeviceRecord, DeviceState, NewDevice,
-    PushEnv,
+    AnswerProof, ApprovalProof, Challenge, ChallengePurpose, Claim, DeviceRecord, DeviceState,
+    NewDevice, PushEnv,
 };
 pub use push::{DeliveryUpdate, DueDelivery};
 
@@ -230,6 +232,7 @@ str_enum!(OutboxKind, "kind" {
     Approval => "approval",
     Finished => "finished",
     DevicePaired => "device_paired",
+    Waiting => "waiting",
 });
 
 /// A notification to send, recorded with the change that caused it.
@@ -241,6 +244,7 @@ pub struct OutboxEvent {
     pub session_id: Option<String>,
     pub approval_id: Option<String>,
     pub created_at: i64,
+    pub attention_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -637,8 +641,8 @@ impl Store {
     pub async fn outbox_after(&self, after_id: i64, limit: u32) -> Result<Vec<OutboxEvent>> {
         self.call(move |c| {
             let mut stmt = c.prepare(
-                "SELECT id, dedupe_key, kind, session_id, approval_id, created_at FROM outbox
-                 WHERE id > ?1 ORDER BY id LIMIT ?2",
+                "SELECT id, dedupe_key, kind, session_id, approval_id, created_at, attention_id
+                 FROM outbox WHERE id > ?1 ORDER BY id LIMIT ?2",
             )?;
             let rows = stmt.query_map(params![after_id, limit], |r| {
                 Ok((
@@ -649,6 +653,7 @@ impl Store {
                         session_id: r.get(3)?,
                         approval_id: r.get(4)?,
                         created_at: r.get(5)?,
+                        attention_id: r.get(6)?,
                     },
                     r.get::<_, String>(2)?,
                 ))

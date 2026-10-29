@@ -14,6 +14,7 @@ str_enum!(DeviceState, "state" {
 str_enum!(ChallengePurpose, "purpose" {
     Token => "token",
     Approval => "approval",
+    Answer => "answer",
 });
 
 str_enum!(PushEnv, "push_env" {
@@ -65,6 +66,14 @@ pub struct Challenge {
 pub struct ApprovalProof {
     pub device_id: String,
     pub nonce: String,
+}
+
+/// A verified signature over an answer challenge for one dialog occurrence.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AnswerProof {
+    pub device_id: String,
+    pub nonce: String,
+    pub occurrence: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -367,6 +376,26 @@ impl Store {
                 )?;
             }
             Ok(d)
+        })
+        .await
+    }
+}
+
+impl Store {
+    /// Uses an answer challenge; false if it didn't match, was used or expired.
+    pub async fn use_answer_challenge(&self, p: AnswerProof, now: i64) -> Result<bool> {
+        self.call(move |c| {
+            let tx = c.transaction()?;
+            let used = use_challenge(
+                &tx,
+                &p.nonce,
+                &p.device_id,
+                ChallengePurpose::Answer,
+                Some(&p.occurrence),
+                now,
+            )?;
+            tx.commit()?;
+            Ok(used)
         })
         .await
     }

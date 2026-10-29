@@ -25,9 +25,9 @@ use crate::redact::{redact, redact_as, redact_str};
 use crate::runner::random_id;
 use crate::runner::sessions::agent_name;
 use crate::store::{
-    ApprovalProof, ApprovalRecord, Begin, DecideOutcome, Decision, Delivery, Lifecycle,
-    NewOperation, OpState, Operation, SeenAgent, SeenAgentRecord, SessionPatch, SessionRecord,
-    Store, StoreError,
+    AnswerProof, ApprovalProof, ApprovalRecord, Begin, DecideOutcome, Decision, Delivery,
+    Lifecycle, NewOperation, OpState, Operation, SeenAgent, SeenAgentRecord, SessionPatch,
+    SessionRecord, Store, StoreError,
 };
 use crate::whatsapp::watchlist::WatchState;
 
@@ -250,6 +250,27 @@ fn sha256_hex(s: &str) -> String {
 
 fn fingerprint(args: &Value) -> String {
     sha256_hex(&args.to_string())
+}
+
+/// One option of the dialog on an agent's screen, as the runner listed it.
+#[derive(Debug, Clone)]
+pub struct AnswerRequest {
+    pub machine_id: String,
+    pub agent: String,
+    pub occurrence: String,
+    pub option: String,
+    /// SHA-256 hex of the option's masked label.
+    pub label_sha256: String,
+    pub request_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AnswerResult {
+    /// `answered`: the runner saw the dialog close after its Enter.
+    pub outcome: String,
+    pub operation_id: String,
+    #[serde(default)]
+    pub replayed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1258,49 +1279,98 @@ impl SessionService {
         Ok(screen_result(&v))
     }
 
-    /// Answers a question dialog the runner recognised. Permission dialogs go through `decide`.
+    /// Answers the dialog on an agent's screen with one of its listed options, by keys. Like
+    /// `decide`: any option but the deny needs the approve right (an app approve its device's
+    /// signature), a request id replays the recorded outcome, and it is audited. The runner
+    /// checks the option against a fresh read, and an answer that may have been sent is never
+    /// retried.
     pub async fn answer(
         self: &Arc<Self>,
         caller: &Caller,
-        session_id: &str,
-        dialog_id: &str,
-        option: &str,
-    ) -> Result<Value, HubError> {
-        let s = self.session(session_id).await?;
-        if s.lifecycle != Lifecycle::Running {
-            return Err(HubError::NotRunning {
-                id: s.id,
-                lifecycle: s.lifecycle,
-            });
+        req: &AnswerRequest,
+        proof: Option<AnswerProof>,
+    ) -> Result<AnswerResult, HubError> {
+        self.known_machine(&req.machine_id)?;
+        let approve = match &proof {
+            Some(_) if caller.door != Door::App || !self.cfg.approve.app => {
+                return Err(HubError::ApproveNotAllowed(caller.door.as_str()));
+            }
+            Some(_) => true,
+            None => caller.door != Door::App && self.may_approve(caller),
+        };
+        let fp = fingerprint(&json!({
+            "machine_id": req.machine_id, "agent": req.agent, "occurrence": req.occurrence,
+            "option": req.option, "label_sha256": req.label_sha256,
+        }));
+        let rid = req.request_id.as_deref();
+        if let Some(v) = self.replayed(rid, KIND_ANSWER, &fp).await? {
+            let mut r: AnswerResult = from_recorded(v)?;
+            r.replayed = true;
+            return Ok(r);
         }
-        let fp = fingerprint(&json!({ "dialog_id": dialog_id, "option": option }));
-        let op_id = match self.begin(None, KIND_ANSWER, &fp, Some(session_id)).await? {
+        let session_id = self
+            .store
+            .get_session_by_agent_name(&req.agent)
+            .await?
+            .filter(|s| s.machine_id == req.machine_id)
+            .map(|s| s.id);
+        let sid = session_id.as_deref();
+        let op_id = match self.begin(rid, KIND_ANSWER, &fp, sid).await? {
             Ok(id) => id,
-            Err(v) => return Ok(v),
-        };
-        self.audit(
-            &caller.actor,
-            Some(session_id),
-            "dialog_answer",
-            json!({ "dialog_id": dialog_id, "option": option, "operation_id": op_id }),
-        )
-        .await?;
-        let op = Op::Answer {
-            session_id: session_id.to_owned(),
-            dialog_id: dialog_id.to_owned(),
-            option: option.to_owned(),
-        };
-        let v = match self.runners.call(&s.machine_id, op, CALL_TIMEOUT).await {
-            Ok(v) => v,
-            Err(e) => {
-                return Err(self
-                    .settle_err(&op_id, Some(session_id), &s.machine_id, e)
-                    .await);
+            Err(v) => {
+                let mut r: AnswerResult = from_recorded(v)?;
+                r.replayed = true;
+                return Ok(r);
             }
         };
-        self.finish(&op_id, OpState::Done, Some(session_id), &v)
+        if let Some(p) = proof
+            && !self.store.use_answer_challenge(p, self.now()).await?
+        {
+            // Nothing was sent, so a retry with a fresh challenge may use the same request id.
+            self.store.delete_operation(&op_id).await?;
+            return Err(HubError::InvalidChallenge);
+        }
+        let detail = json!({
+            "machine_id": req.machine_id, "agent": redact_str(&req.agent),
+            "occurrence": req.occurrence, "option": req.option, "deny_only": !approve,
+            "operation_id": op_id,
+        });
+        self.audit(&caller.actor, sid, "dialog_answer", detail.clone())
             .await?;
-        Ok(v)
+        let op = Op::Answer {
+            agent: req.agent.clone(),
+            occurrence: req.occurrence.clone(),
+            option: req.option.clone(),
+            label_sha256: req.label_sha256.clone(),
+            deny_only: !approve,
+        };
+        if let Err(e) = self.runners.call(&req.machine_id, op, CALL_TIMEOUT).await {
+            let refused = e.code == ErrorCode::ApproveNotAllowed;
+            let err = self.settle_err(&op_id, sid, &req.machine_id, e).await;
+            return Err(if refused {
+                HubError::ApproveNotAllowed(caller.door.as_str())
+            } else {
+                err
+            });
+        }
+        self.store
+            .resolve_attention(
+                &req.machine_id,
+                &req.agent,
+                Some(&req.occurrence),
+                "answered",
+                self.now(),
+            )
+            .await?;
+        self.audit("hub", sid, "dialog_answered", detail).await?;
+        let result = AnswerResult {
+            outcome: "answered".into(),
+            operation_id: op_id.clone(),
+            replayed: false,
+        };
+        let v = serde_json::to_value(&result).expect("serializes");
+        self.finish(&op_id, OpState::Done, sid, &v).await?;
+        Ok(result)
     }
 
     // Any named agent, reached through its machine's runner. Agents Switchboard didn't create

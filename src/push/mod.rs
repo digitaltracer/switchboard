@@ -71,6 +71,7 @@ pub fn text(kind: OutboxKind) -> (&'static str, &'static str) {
             "New device paired",
             "A new device was paired with your hub. Revoke it if that wasn't you.",
         ),
+        OutboxKind::Waiting => ("Agent waiting", "An agent is waiting for your answer."),
     }
 }
 

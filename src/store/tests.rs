@@ -525,3 +525,84 @@ async fn agents_missing_from_a_listing_end_and_a_new_occupant_is_a_new_agent() {
     let left = store.ended_agents(0).await.unwrap();
     assert_eq!(left.len(), 1, "only the codex agent that just ended");
 }
+
+#[test]
+fn migration_8_keeps_outbox_deliveries_and_challenges() {
+    let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+    migrate::run_with(&mut conn, None, &MIGRATIONS[..7]).unwrap();
+    conn.execute_batch(
+        "INSERT INTO devices (id, name, auth_key, approval_key, fingerprint, state, created_at)
+         VALUES ('d1', 'phone', 'a', 'b', 'f', 'active', 1);
+         INSERT INTO outbox (id, dedupe_key, kind, session_id, approval_id, created_at)
+         VALUES (5, 'approval:a1', 'approval', 's1', 'a1', 10);
+         INSERT INTO outbox_deliveries (outbox_id, device_id, state, next_attempt_at)
+         VALUES (5, 'd1', 'pending', 10);
+         INSERT INTO challenges (nonce, device_id, purpose, approval_id, created_at, expires_at)
+         VALUES ('n1', 'd1', 'approval', 'a1', 1, 2);",
+    )
+    .unwrap();
+    assert_eq!(migrate::run(&mut conn, None).unwrap(), 8);
+    let row: (i64, String, String, Option<String>) = conn
+        .query_row(
+            "SELECT id, dedupe_key, kind, attention_id FROM outbox",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(row, (5, "approval:a1".into(), "approval".into(), None));
+    let deliveries: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM outbox_deliveries WHERE outbox_id = 5",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(deliveries, 1);
+    let nonce: String = conn
+        .query_row(
+            "SELECT approval_id FROM challenges WHERE nonce = 'n1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(nonce, "a1");
+    let broken: i64 = conn
+        .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(broken, 0);
+    let schema: String = conn
+        .query_row(
+            "SELECT group_concat(sql, ';') FROM sqlite_master WHERE tbl_name = 'outbox_deliveries'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(schema.contains("REFERENCES outbox (id)"), "{schema}");
+    assert!(schema.contains("outbox_deliveries_due"), "{schema}");
+    assert!(!schema.contains("_old"), "{schema}");
+    conn.execute_batch(
+        "INSERT INTO outbox (dedupe_key, kind, attention_id, created_at)
+         VALUES ('waiting:x', 'waiting', 'x', 11);
+         INSERT INTO challenges (nonce, device_id, purpose, approval_id, created_at, expires_at)
+         VALUES ('n2', 'd1', 'answer', 'occ', 1, 2);",
+    )
+    .unwrap();
+    let next: i64 = conn
+        .query_row(
+            "SELECT id FROM outbox WHERE dedupe_key = 'waiting:x'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(next, 6, "ids carry on after the copied rows");
+    assert!(
+        conn.execute(
+            "INSERT INTO outbox (dedupe_key, kind, created_at) VALUES ('k', 'bogus', 1)",
+            []
+        )
+        .is_err()
+    );
+}

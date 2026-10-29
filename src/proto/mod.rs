@@ -74,10 +74,16 @@ pub enum Op {
         approval_id: String,
         allow: bool,
     },
+    /// Picks one listed option of the dialog on an agent's screen, by keys. `occurrence` and
+    /// `option` are the opaque ids `Dialog` gave; `label_sha256` is the masked label's hash.
+    /// With `deny_only`, any option but the dialog's deny is refused.
     Answer {
-        session_id: String,
-        dialog_id: String,
+        agent: String,
+        occurrence: String,
         option: String,
+        label_sha256: String,
+        #[serde(default)]
+        deny_only: bool,
     },
     Read {
         session_id: String,
@@ -286,6 +292,10 @@ pub enum ErrorCode {
     /// The agent's startup screen was not recognised or not cleared; the prompt was not sent.
     StartupFailed,
     UnsupportedAgentVersion,
+    /// The option approves and the caller may only deny.
+    ApproveNotAllowed,
+    /// The dialog changed, was answered, or isn't one the runner may answer; nothing was sent.
+    DialogChanged,
     Herdr,
     BadRequest,
     Internal,
