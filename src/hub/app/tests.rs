@@ -1296,7 +1296,8 @@ async fn a_conversation_comes_from_the_runner_a_page_at_a_time_masked() {
         Op::Transcript {
             agent: crate::runner::sessions::agent_name(&sid),
             after: None,
-            before: Some(4096)
+            before: Some(4096),
+            wait_ms: None,
         },
         "the session's own agent"
     );
@@ -1332,7 +1333,8 @@ async fn a_conversation_comes_from_the_runner_a_page_at_a_time_masked() {
         Op::Transcript {
             agent: "mono1/w1:p2".into(),
             after: Some(10),
-            before: None
+            before: None,
+            wait_ms: None,
         }
     );
     r.err(

@@ -15,6 +15,7 @@ use super::agents;
 use super::codex::{CodexPane, clear_startup, excerpt};
 use super::herdrs::{Herdrs, qualified, split_qualified};
 use super::hooks::{DecideError, HookHub};
+use super::logwatch::{self, Found, LogWatch, Switch};
 use super::{skills, transcript};
 use crate::agents::{claude, codex, hook_command};
 use crate::cli::Agent;
@@ -87,6 +88,11 @@ pub struct Sessions {
     events: mpsc::Sender<Event>,
     cfg: SessionsConfig,
     sessions: Mutex<HashMap<String, RunnerSession>>,
+    pub(crate) logwatch: Arc<LogWatch>,
+    /// Transcript reads waiting for their log to grow.
+    transcript_waits: tokio::sync::Semaphore,
+    /// Agents whose Herdr status really changed, by the name the hub uses.
+    status_changes: tokio::sync::broadcast::Sender<String>,
 }
 
 fn err(code: ErrorCode, message: impl Into<String>) -> ProtoError {
@@ -152,6 +158,9 @@ impl Sessions {
             events,
             cfg,
             sessions: Mutex::default(),
+            logwatch: LogWatch::new(),
+            transcript_waits: tokio::sync::Semaphore::new(logwatch::MAX_WAITS),
+            status_changes: tokio::sync::broadcast::channel(256).0,
         })
     }
 
@@ -216,6 +225,11 @@ impl Sessions {
 
     /// For status updates that come again anyway: they never take the room approvals and
     /// lifecycle events need while the hub is away.
+    /// Wakes transcript reads waiting on `agent`, whose log may have changed with its status.
+    pub(crate) fn status_changed(&self, agent: &str) {
+        let _ = self.status_changes.send(agent.to_owned());
+    }
+
     pub(crate) fn emit_status(&self, event: Event) {
         if self.events.capacity() > STATUS_RESERVE {
             self.emit(event);
@@ -414,7 +428,8 @@ impl Sessions {
                 agent,
                 after,
                 before,
-            } => self.transcript(&agent, after, before).await,
+                wait_ms,
+            } => self.transcript(&agent, after, before, wait_ms).await,
             Op::Skills { agent } => self.skills(&agent).await,
             Op::Changes { session_id } => {
                 let s = self.session(&session_id)?;
@@ -428,15 +443,69 @@ impl Sessions {
         }
     }
 
-    /// A page of an agent's conversation from its own log: a Claude agent's found through the
-    /// Claude running in its pane, else the session id Herdr reports; a Codex agent's through its
-    /// folder.
+    /// A page of an agent's conversation from its own log. With `after` and `wait_ms`, it first
+    /// waits for the log to grow past `after`, woken by the OS, for at most 20 s in all.
     async fn transcript(
         &self,
         agent: &str,
         after: Option<u64>,
         before: Option<u64>,
+        wait_ms: Option<u64>,
     ) -> Result<Value, ProtoError> {
+        let start = Instant::now();
+        let wait = match (after, before, wait_ms) {
+            (Some(after), None, Some(ms)) if ms > 0 => {
+                self.transcript_waits.try_acquire().ok().map(|slot| {
+                    (
+                        slot,
+                        after,
+                        start + Duration::from_millis(ms).min(logwatch::MAX_WAIT),
+                    )
+                })
+            }
+            _ => None,
+        };
+        let path = match wait {
+            None => self.find_log(agent).await?.log,
+            Some((_slot, after, deadline)) => {
+                // Subscribed before the lookup, so a change during it isn't missed.
+                let status = self.status_changes.subscribe();
+                let found = tokio::time::timeout_at(deadline, self.find_log(agent))
+                    .await
+                    .map_err(|_| {
+                        err(
+                            ErrorCode::DeadlineExceeded,
+                            "finding the conversation took too long",
+                        )
+                    })??;
+                logwatch::wait(
+                    &self.logwatch,
+                    Some(status),
+                    agent,
+                    after,
+                    deadline,
+                    found,
+                    || async { self.find_log(agent).await.ok() },
+                )
+                .await
+            }
+        };
+        let page = tokio::task::spawn_blocking(move || {
+            transcript::read_page(&path, after, before).map_err(|e| {
+                err(
+                    ErrorCode::Internal,
+                    format!("reading the conversation: {e}"),
+                )
+            })
+        })
+        .await
+        .map_err(|e| err(ErrorCode::Internal, e.to_string()))??;
+        Ok(serde_json::to_value(page).expect("serializes"))
+    }
+
+    /// An agent's log: a Claude agent's found through the Claude running in its pane, else the
+    /// session id Herdr reports; a Codex agent's through its folder.
+    async fn find_log(&self, agent: &str) -> Result<Found, ProtoError> {
         let (herdr, name, owned) = self.resolve_agent(agent);
         let snap = herdr.session_snapshot().await.map_err(herdr_err)?;
         let info = snap
@@ -450,7 +519,7 @@ impl Sessions {
                 "no conversation log for this agent yet",
             )
         };
-        let find: Box<dyn FnOnce() -> Option<PathBuf> + Send> = match info.agent.as_deref() {
+        let find: Box<dyn FnOnce() -> Option<Found> + Send> = match info.agent.as_deref() {
             Some("claude") => {
                 let pids = herdr
                     .pane_foreground_pids(&info.pane_id)
@@ -459,10 +528,17 @@ impl Sessions {
                 let reported = info.agent_session.map(|s| s.value);
                 let projects = self.cfg.claude_projects.clone();
                 Box::new(move || {
-                    let live = projects
-                        .parent()
-                        .and_then(|dir| transcript::live_claude_session(dir, &pids));
-                    transcript::find_log(&projects, &live.or(reported)?)
+                    let dir = projects.parent()?;
+                    let live = transcript::live_claude_session(dir, &pids);
+                    let session = live.or(reported)?;
+                    Some(Found {
+                        log: transcript::find_log(&projects, &session)?,
+                        switch: Switch::Claude {
+                            records: dir.join("sessions"),
+                            pids,
+                            session,
+                        },
+                    })
                 })
             }
             Some("codex") => {
@@ -472,7 +548,14 @@ impl Sessions {
                     .or(info.cwd)
                     .ok_or_else(none)?;
                 let sessions = self.cfg.codex_sessions.clone();
-                Box::new(move || transcript::find_codex_log(&sessions, Path::new(&cwd)))
+                Box::new(move || {
+                    Some(Found {
+                        log: transcript::find_codex_log(&sessions, Path::new(&cwd))?,
+                        switch: Switch::Codex {
+                            day: logwatch::codex_day(&sessions),
+                        },
+                    })
+                })
             }
             _ => {
                 return Err(err(
@@ -481,18 +564,10 @@ impl Sessions {
                 ));
             }
         };
-        let page = tokio::task::spawn_blocking(move || {
-            let path = find().ok_or_else(none)?;
-            transcript::read_page(&path, after, before).map_err(|e| {
-                err(
-                    ErrorCode::Internal,
-                    format!("reading the conversation: {e}"),
-                )
-            })
-        })
-        .await
-        .map_err(|e| err(ErrorCode::Internal, e.to_string()))??;
-        Ok(serde_json::to_value(page).expect("serializes"))
+        tokio::task::spawn_blocking(find)
+            .await
+            .map_err(|e| err(ErrorCode::Internal, e.to_string()))?
+            .ok_or_else(none)
     }
 
     /// The skills and commands an agent can run, from its machine's and its repo's folders.

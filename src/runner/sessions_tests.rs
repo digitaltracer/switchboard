@@ -889,6 +889,7 @@ async fn an_agents_conversation_is_read_from_its_claude_log() {
         agent: "mono1/claude".into(),
         after,
         before: None,
+        wait_ms: None,
     };
     let e = r.sessions.handle(ask(None)).await.unwrap_err();
     assert_eq!(e.code, ErrorCode::NotFound, "no log yet: {e:?}");
@@ -907,4 +908,83 @@ async fn an_agents_conversation_is_read_from_its_claude_log() {
     let next: crate::proto::TranscriptPage =
         serde_json::from_value(r.sessions.handle(ask(Some(page.end))).await.unwrap()).unwrap();
     assert!(next.items.is_empty() && next.start == page.end);
+}
+
+#[tokio::test]
+async fn a_transcript_read_waits_for_the_log_to_grow_and_a_ninth_wait_answers_at_once() {
+    let _turn = crate::runner::logwatch::TIMED.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (r, config_dir, _) = multi_rig(dir, vec![]);
+    named_herdr(&config_dir.join("sessions/mono1"), "claude", "mono1 screen");
+    let folder = r.dir.path().join("claude-projects/-Users-me-mono1");
+    std::fs::create_dir_all(&folder).unwrap();
+    let log = folder.join(format!("{CLAUDE_SESSION}.jsonl"));
+    let said = |text: &str| {
+        let line = json!({"type": "user", "uuid": text, "message": {"content": text}});
+        format!("{line}\n")
+    };
+    std::fs::write(&log, said("first")).unwrap();
+    let end = std::fs::metadata(&log).unwrap().len();
+    let ask = move || Op::Transcript {
+        agent: "mono1/claude".into(),
+        after: Some(end),
+        before: None,
+        wait_ms: Some(20_000),
+    };
+    let page = |v: Value| serde_json::from_value::<crate::proto::TranscriptPage>(v).unwrap();
+
+    let waits: Vec<_> = (0..crate::runner::logwatch::MAX_WAITS)
+        .map(|_| {
+            let (s, op) = (r.sessions.clone(), ask());
+            tokio::spawn(async move { s.handle(op).await })
+        })
+        .collect();
+    while r.sessions.transcript_waits.available_permits() > 0 {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let start = Instant::now();
+    let ninth = page(r.sessions.handle(ask()).await.unwrap());
+    assert!(
+        start.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        start.elapsed()
+    );
+    assert!(ninth.items.is_empty() && ninth.end == end);
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Held open while the waits answer, as Codex keeps its log.
+    let mut f = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
+    std::io::Write::write_all(&mut f, said("second").as_bytes()).unwrap();
+    let start = Instant::now();
+    for w in waits {
+        let p = page(w.await.unwrap().unwrap());
+        assert_eq!(p.items[0].text.as_deref(), Some("second"));
+    }
+    assert!(
+        start.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        start.elapsed()
+    );
+    assert_eq!(
+        r.sessions.transcript_waits.available_permits(),
+        crate::runner::logwatch::MAX_WAITS
+    );
+}
+
+#[tokio::test]
+async fn only_a_real_status_change_wakes_transcript_waits() {
+    let dir = tempfile::tempdir().unwrap();
+    let (r, _, _) = multi_rig(dir, vec![]);
+    let mut woken = r.sessions.status_changes.subscribe();
+    let mut forward = crate::runner::StatusForwarder::default();
+    // Snapshots every few seconds report the same status again.
+    for status in ["idle", "idle", "idle", "working", "working", "idle"] {
+        forward.forward(&r.sessions, "mono1/claude".into(), status.into());
+    }
+    let mut n = 0;
+    while let Ok(agent) = woken.try_recv() {
+        assert_eq!(agent, "mono1/claude");
+        n += 1;
+    }
+    assert_eq!(n, 3);
 }

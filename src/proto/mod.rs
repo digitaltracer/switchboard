@@ -128,6 +128,9 @@ pub enum Op {
         after: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         before: Option<u64>,
+        /// With `after`, wait up to this long, capped at 20 s, for the log to grow past it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wait_ms: Option<u64>,
     },
     /// The skills and commands an agent can run, as `SkillInfo`s. Read-only.
     Skills {

@@ -1210,6 +1210,7 @@ impl SessionService {
             agent: agent.to_owned(),
             after,
             before,
+            wait_ms: None,
         };
         let v = self
             .runners

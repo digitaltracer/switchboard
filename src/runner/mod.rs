@@ -6,6 +6,7 @@ pub mod herdrs;
 pub mod hooks;
 pub mod link;
 pub mod local;
+pub mod logwatch;
 pub mod sessions;
 pub mod skills;
 pub mod transcript;
@@ -286,6 +287,13 @@ impl StatusForwarder {
             && now.duration_since(*at) < STATUS_REFRESH
         {
             return;
+        }
+        if self
+            .last
+            .get(&agent_name)
+            .is_none_or(|(s, _)| *s != agent_status)
+        {
+            sessions.status_changed(&agent_name);
         }
         self.last
             .insert(agent_name.clone(), (agent_status.clone(), now));
