@@ -145,7 +145,9 @@ pub enum Op {
     Skills {
         agent: String,
     },
-    /// The dialog on an agent's screen, as `{"dialog": DialogView | null}`. Read-only.
+    /// The dialog on an agent's screen, as `{"dialog": DialogView | null, "occurrence": id}`,
+    /// where the occurrence names what the screen shows even when no dialog is recognised.
+    /// Read-only.
     Dialog {
         agent: String,
     },

@@ -45,6 +45,10 @@ use super::types::*;
         super::get_agent_output,
         super::get_agent_transcript,
         super::get_agent_skills,
+        super::get_agent_dialog,
+        super::dialog_challenge,
+        super::answer_dialog,
+        super::get_attention,
     ),
     components(schemas(
         ApiError, ErrorBody, Meta, PairRequest, PairResponse, PairStatus, TokenChallengeRequest,
@@ -55,6 +59,8 @@ use super::types::*;
         PushTokenRequest, TargetRef, TargetView, MessageRequest, MessageChoice, MessageResponse,
         AgentView, Agents, EndedAgent, ChangedFile, Changes, MessagePreviewRequest, MessagePreview,
         DeleteResponse, Transcript, TranscriptItem, Skills, Skill, ApprovalQuestion, ApprovalOption,
+        Dialog, DialogOption, AgentDialog, DialogChallengeRequest, DialogChallenge,
+        DialogAnswerRequest, DialogAnswerResponse, Attention,
     )),
     modifiers(&DeviceToken),
 )]

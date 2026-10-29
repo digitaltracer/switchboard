@@ -12,7 +12,7 @@ use crate::hub::service::{
     ApprovalView, ChangesResult, DecideResult, DeleteResult, MachineView, ProjectView,
     PromptResult, SessionList, SessionView, StartResult, StopResult,
 };
-use crate::proto::TranscriptPage;
+use crate::proto::{DialogView, TranscriptPage};
 use crate::store::{DeviceRecord, Operation, SeenAgentRecord};
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -1037,4 +1037,137 @@ fn enum_str<T: Serialize>(v: &T) -> String {
         .ok()
         .and_then(|v| v.as_str().map(str::to_owned))
         .unwrap_or_else(|| "unknown".into())
+}
+
+/// A dialog on an agent's screen. Masked; the ids are opaque.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct Dialog {
+    /// `question`, `plan`, `permission`, or `other` for a list no pinned recogniser knows.
+    pub kind: String,
+    pub prompt: String,
+    pub options: Vec<DialogOption>,
+    /// The option the screen has selected.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected: Option<String>,
+    pub occurrence_id: String,
+    /// It can be answered from the phone now; otherwise answer it in Herdr.
+    pub answerable: bool,
+    /// Why not: `read_only`, `unpinned`, `hooked` (answered as an approval instead),
+    /// `hook_pending`, `hook_failed`, `not_blocked` or `answered`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DialogOption {
+    pub id: String,
+    pub label: String,
+    /// SHA-256 hex of `label`; an answer signs and repeats it.
+    pub label_sha256: String,
+    /// Choosing it needs no signature.
+    pub is_deny: bool,
+    /// It may be chosen from the phone; the others are shown for context.
+    pub offered: bool,
+}
+
+impl From<DialogView> for Dialog {
+    fn from(d: DialogView) -> Self {
+        let kind = serde_json::to_value(d.kind)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .unwrap_or_default();
+        Self {
+            kind,
+            prompt: d.prompt,
+            options: d
+                .options
+                .into_iter()
+                .map(|o| DialogOption {
+                    id: o.id,
+                    label: o.label,
+                    label_sha256: o.label_sha256,
+                    is_deny: o.is_deny,
+                    offered: o.offered,
+                })
+                .collect(),
+            selected: d.selected,
+            occurrence_id: d.occurrence,
+            answerable: d.answerable,
+            reason: d.reason,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AgentDialog {
+    pub machine_id: String,
+    pub agent: String,
+    /// None when the screen shows no dialog Switchboard recognises; show the screen instead.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dialog: Option<Dialog>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct DialogChallengeRequest {
+    pub machine_id: String,
+    pub agent: String,
+    pub occurrence_id: String,
+}
+
+/// What an answer signs, as `switchboard-answer-v1` (message version 3): `hub=`, `device=`,
+/// `target=agent:<machine_id>/<agent>`, `occurrence=`, `option=`, `label=` (the option's
+/// `label_sha256`), `request=`, `nonce=`, `expires=` lines, joined by `\n`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DialogChallenge {
+    pub nonce: String,
+    pub expires_at: i64,
+    pub message_version: u32,
+    pub hub_id: String,
+    pub device_id: String,
+    pub target: String,
+    pub occurrence_id: String,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct DialogAnswerRequest {
+    pub machine_id: String,
+    pub agent: String,
+    pub occurrence_id: String,
+    pub option_id: String,
+    pub label_sha256: String,
+    /// Replays return the recorded outcome; required with a signature.
+    #[serde(default)]
+    pub request_id: Option<String>,
+    /// Required for any option but the deny: the nonce from the dialog's challenge.
+    #[serde(default)]
+    pub nonce: Option<String>,
+    /// DER ECDSA P-256 over SHA-256 of the answer message, base64url, by the approval key.
+    #[serde(default)]
+    pub signature: Option<String>,
+    #[serde(default)]
+    pub message_version: Option<u32>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DialogAnswerResponse {
+    /// `answered`: the dialog closed after the Enter.
+    pub outcome: String,
+    pub operation_id: String,
+    /// Already answered with this request id; nothing was sent again.
+    pub replayed: bool,
+}
+
+/// What a `waiting` push named.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct Attention {
+    pub id: String,
+    /// `open`, `answered`, `gone` (the agent moved on or was replaced) or `expired`.
+    pub state: String,
+    pub machine_id: String,
+    pub agent: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// While open, the dialog it waits at, if one is recognised.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dialog: Option<Dialog>,
 }

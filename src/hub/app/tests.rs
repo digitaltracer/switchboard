@@ -682,31 +682,6 @@ async fn deny_needs_only_a_token_but_approve_needs_the_approval_keys_signature()
     assert_eq!(deny.await.unwrap()["outcome"], "deny");
 }
 
-fn spawn_post(
-    app: &Router,
-    path: &str,
-    token: &str,
-    body: Value,
-) -> tokio::task::JoinHandle<Value> {
-    let (app, path, token) = (app.clone(), path.to_owned(), token.to_owned());
-    tokio::spawn(async move {
-        let req = HttpRequest::builder()
-            .method("POST")
-            .uri(format!("{PREFIX}{path}"))
-            .header("content-type", "application/json")
-            .header("authorization", format!("Bearer {token}"))
-            .body(Body::from(body.to_string()))
-            .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        serde_json::from_slice::<Value>(
-            &axum::body::to_bytes(resp.into_body(), 1 << 20)
-                .await
-                .unwrap(),
-        )
-        .unwrap()
-    })
-}
-
 #[tokio::test]
 async fn questions_and_plans_are_answered_with_a_signed_choice() {
     let mut r = rig().await;
@@ -774,8 +749,8 @@ async fn questions_and_plans_are_answered_with_a_signed_choice() {
                           "message_version": 1, "request_id": "rq-a1", "choices": ["0.1"]})))
         .await;
     assert_eq!(v1.body["error"]["code"], "unsupported_version");
-    let decide = spawn_post(
-        &r.app,
+    let decide = r.call_later(
+        "POST",
         "/approvals/q1/decision",
         &token,
         json!({"decision": "allow", "nonce": ch["nonce"], "signature": phone.approval.sign(&msg),
@@ -784,7 +759,7 @@ async fn questions_and_plans_are_answered_with_a_signed_choice() {
     let req = r.req().await;
     assert!(matches!(req.op, Op::Decide { allow: true, ref choices, .. } if choices == &["0.1"]));
     r.ok(req.id, json!({})).await;
-    assert_eq!(decide.await.unwrap()["outcome"], "allow");
+    assert_eq!(decide.await.unwrap().body["outcome"], "allow");
 
     let ch = r
         .call("POST", "/approvals/p1/challenge", t, None)
@@ -804,8 +779,8 @@ async fn questions_and_plans_are_answered_with_a_signed_choice() {
         ch["nonce"].as_str().unwrap(),
         ch["expires_at"].as_i64().unwrap(),
     );
-    let decide = spawn_post(
-        &r.app,
+    let decide = r.call_later(
+        "POST",
         "/approvals/p1/decision",
         &token,
         json!({"decision": "allow", "nonce": ch["nonce"], "signature": phone.approval.sign(&msg),
@@ -814,7 +789,7 @@ async fn questions_and_plans_are_answered_with_a_signed_choice() {
     let req = r.req().await;
     assert!(matches!(req.op, Op::Decide { allow: true, .. }));
     r.ok(req.id, json!({})).await;
-    assert_eq!(decide.await.unwrap()["outcome"], "allow");
+    assert_eq!(decide.await.unwrap().body["outcome"], "allow");
 }
 
 #[tokio::test]
@@ -1490,4 +1465,202 @@ async fn a_visible_read_takes_only_the_screen_so_nothing_scrolls() {
     );
     r.ok(req.id, json!({"text": "its screen"})).await;
     assert_eq!(call.await.unwrap().body["text"], "its screen");
+}
+
+fn dialog_reply(occurrence: &str) -> Value {
+    json!({
+        "occurrence": occurrence,
+        "dialog": {
+            "kind": "permission",
+            "prompt": "Would you like to run the following command?\n$ curl -H 'x: ghp_0123456789abcdefghijABCDEFGHIJ'",
+            "options": [
+                {"id": "o1", "label": "Yes, proceed (y)", "label_sha256": label_sha256(&["Yes, proceed (y)".into()]),
+                 "is_deny": false, "offered": true},
+                {"id": "o3", "label": "No", "label_sha256": label_sha256(&["No".into()]),
+                 "is_deny": true, "offered": true},
+            ],
+            "selected": "o1",
+            "occurrence": occurrence,
+            "answerable": true,
+        }
+    })
+}
+
+#[tokio::test]
+async fn an_agents_dialog_is_read_masked_and_answered_by_its_options() {
+    let mut r = rig().await;
+    let phone = Phone::new();
+    let (device, token) = r.pair(&phone).await;
+    let read = r.call_later(
+        "GET",
+        "/agents/dialog?machine_id=mac&agent=work%2Fcx",
+        &token,
+        Value::Null,
+    );
+    let req = r.req().await;
+    assert_eq!(
+        req.op,
+        Op::Dialog {
+            agent: "work/cx".into()
+        }
+    );
+    r.ok(req.id, dialog_reply("occ1")).await;
+    let d = read.await.unwrap().body;
+    assert_eq!(d["dialog"]["occurrence_id"], "occ1");
+    assert!(
+        !d["dialog"]["prompt"].as_str().unwrap().contains("ghp_"),
+        "{d}"
+    );
+    assert_eq!(d["dialog"]["options"][1]["is_deny"], true);
+
+    // The deny needs only the token.
+    let deny = r.call_later(
+        "POST",
+        "/agents/dialog/answer",
+        &token,
+        json!({"machine_id": "mac", "agent": "work/cx", "occurrence_id": "occ1", "option_id": "o3",
+               "label_sha256": label_sha256(&["No".into()])}),
+    );
+    let req = r.req().await;
+    assert!(matches!(req.op, Op::Answer { deny_only: true, ref option, .. } if option == "o3"));
+    r.ok(req.id, json!({"answered": true})).await;
+    assert_eq!(deny.await.unwrap().body["outcome"], "answered");
+
+    // Any other option needs the approval key's signature over the answer message.
+    let ch = r
+        .call(
+            "POST",
+            "/agents/dialog/challenge",
+            Some(&token),
+            Some(json!({"machine_id": "mac", "agent": "work/cx", "occurrence_id": "occ2"})),
+        )
+        .await
+        .body;
+    assert_eq!(
+        (ch["message_version"].as_u64(), ch["target"].as_str()),
+        (Some(3), Some("agent:mac/work/cx"))
+    );
+    let label = label_sha256(&["Yes, proceed (y)".into()]);
+    let msg = answer_message(
+        ch["hub_id"].as_str().unwrap(),
+        &device,
+        &AnswerFields {
+            target: "agent:mac/work/cx",
+            occurrence: "occ2",
+            option: "o1",
+            label: &label,
+            request_id: "rq-d1",
+        },
+        ch["nonce"].as_str().unwrap(),
+        ch["expires_at"].as_i64().unwrap(),
+    );
+    let body = |sig: String, option: &str| {
+        json!({"machine_id": "mac", "agent": "work/cx", "occurrence_id": "occ2", "option_id": option,
+               "label_sha256": label, "request_id": "rq-d1", "nonce": ch["nonce"], "signature": sig,
+               "message_version": 3})
+    };
+    let forged = r
+        .call(
+            "POST",
+            "/agents/dialog/answer",
+            Some(&token),
+            Some(body(phone.approval.sign(&msg), "o3")),
+        )
+        .await;
+    assert_eq!(forged.body["error"]["code"], "bad_signature");
+    let stolen = r
+        .call(
+            "POST",
+            "/agents/dialog/answer",
+            Some(&token),
+            Some(body(phone.auth.sign(&msg), "o1")),
+        )
+        .await;
+    assert_eq!(stolen.body["error"]["code"], "bad_signature");
+    let yes = r.call_later(
+        "POST",
+        "/agents/dialog/answer",
+        &token,
+        body(phone.approval.sign(&msg), "o1"),
+    );
+    let req = r.req().await;
+    assert!(
+        matches!(req.op, Op::Answer { deny_only: false, ref occurrence, .. } if occurrence == "occ2")
+    );
+    r.err(req.id, ErrorCode::DialogChanged, "the dialog changed")
+        .await;
+    let changed = yes.await.unwrap();
+    assert_eq!(
+        (changed.status, changed.body["error"]["code"].as_str()),
+        (StatusCode::CONFLICT, Some("dialog_changed"))
+    );
+    // A used nonce can't be signed again; the recorded outcome is under the request id.
+    let again = r
+        .call(
+            "POST",
+            "/agents/dialog/answer",
+            Some(&token),
+            Some(body(phone.approval.sign(&msg), "o1")),
+        )
+        .await;
+    assert_eq!(again.body["error"]["code"], "invalid_challenge");
+    let op = r.call("GET", "/operations/rq-d1", Some(&token), None).await;
+    assert_eq!(op.body["state"], "failed", "{}", op.body);
+}
+
+#[tokio::test]
+async fn an_attention_opens_only_while_its_agent_shows_that_occurrence() {
+    let mut r = rig().await;
+    let (_device, token) = r.pair(&Phone::new()).await;
+    let now = r.svc.now();
+    let att = |id: &str, occurrence: &str, expires_at: i64| crate::store::AttentionRecord {
+        id: id.into(),
+        machine_id: "mac".into(),
+        herdr_session: Some("work".into()),
+        agent: "work/cx".into(),
+        terminal_id: "term_1".into(),
+        session_id: None,
+        occurrence: occurrence.into(),
+        created_at: now,
+        expires_at,
+        resolved_at: None,
+        resolution: None,
+    };
+    let store = r.svc.store().clone();
+    store
+        .insert_attention(att("at1", "occ1", now + 60_000))
+        .await
+        .unwrap();
+    store
+        .insert_attention(att("at2", "occ0", now + 60_000))
+        .await
+        .unwrap();
+    store
+        .insert_attention(att("at3", "occ9", now - 1))
+        .await
+        .unwrap();
+
+    let open = r.call_later("GET", "/attention/at1", &token, Value::Null);
+    let req = r.req().await;
+    r.ok(req.id, dialog_reply("occ1")).await;
+    let open = open.await.unwrap().body;
+    assert_eq!(
+        (open["state"].as_str(), open["agent"].as_str()),
+        (Some("open"), Some("work/cx"))
+    );
+    assert_eq!(open["dialog"]["options"][0]["id"], "o1");
+
+    // The agent moved on, or a new one took the pane: the attention is gone, for good.
+    let gone = r.call_later("GET", "/attention/at2", &token, Value::Null);
+    let req = r.req().await;
+    r.ok(req.id, dialog_reply("occ1")).await;
+    assert_eq!(gone.await.unwrap().body["state"], "gone");
+    let again = r.call("GET", "/attention/at2", Some(&token), None).await;
+    assert_eq!(again.body["state"], "gone");
+    assert!(again.body.get("dialog").is_none());
+
+    let expired = r.call("GET", "/attention/at3", Some(&token), None).await;
+    assert_eq!(expired.body["state"], "expired");
+    let missing = r.call("GET", "/attention/nope", Some(&token), None).await;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND);
 }

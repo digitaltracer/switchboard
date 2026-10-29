@@ -19,16 +19,16 @@ use crate::agents::claude::answers;
 use crate::cli::Agent;
 use crate::config::{HubConfig, ProjectConfig};
 use crate::proto::{
-    AgentPromptOutcome, AgentSummary, ErrorCode, Event, Frame, Hello, Op, OwnedSession, ProtoError,
-    SkillInfo, TranscriptPage,
+    AgentPromptOutcome, AgentSummary, DialogView, ErrorCode, Event, Frame, Hello, Op, OwnedSession,
+    ProtoError, SkillInfo, TranscriptPage,
 };
 use crate::redact::{redact, redact_as, redact_str};
 use crate::runner::random_id;
 use crate::runner::sessions::agent_name;
 use crate::store::{
-    AnswerProof, ApprovalProof, ApprovalRecord, Begin, DecideOutcome, Decision, Delivery,
-    Lifecycle, NewOperation, OpState, Operation, SeenAgent, SeenAgentRecord, SessionPatch,
-    SessionRecord, Store, StoreError,
+    AnswerProof, ApprovalProof, ApprovalRecord, AttentionRecord, Begin, DecideOutcome, Decision,
+    Delivery, Lifecycle, NewOperation, OpState, Operation, SeenAgent, SeenAgentRecord,
+    SessionPatch, SessionRecord, Store, StoreError,
 };
 use crate::whatsapp::watchlist::WatchState;
 
@@ -186,6 +186,8 @@ pub enum HubError {
     InvalidChallenge,
     #[error("request id {0:?} was already used for a different call")]
     RequestIdReused(String),
+    #[error("unknown attention {0:?}")]
+    UnknownAttention(String),
     /// The change may or may not have happened; the session reconciles when its runner is back.
     #[error("outcome unknown for operation {operation_id:?}")]
     OutcomeUnknown {
@@ -217,6 +219,7 @@ impl HubError {
             HubError::Busy => "busy".into(),
             HubError::InvalidChallenge => "invalid_challenge".into(),
             HubError::RequestIdReused(_) => "request_id_reused".into(),
+            HubError::UnknownAttention(_) => "unknown_attention".into(),
             HubError::OutcomeUnknown { .. } => "outcome_unknown".into(),
             HubError::Runner(e) => code_str(e.code),
             HubError::Recorded { code, .. } => code.clone(),
@@ -251,6 +254,22 @@ fn sha256_hex(s: &str) -> String {
 
 fn fingerprint(args: &Value) -> String {
     sha256_hex(&args.to_string())
+}
+
+/// An agent's dialog as `Op::Dialog` returns it.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct AgentDialog {
+    pub dialog: Option<DialogView>,
+    pub occurrence: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AttentionView {
+    /// `open`, `answered`, `gone` or `expired`.
+    pub state: String,
+    pub record: AttentionRecord,
+    /// The dialog, while open.
+    pub dialog: Option<DialogView>,
 }
 
 /// One option of the dialog on an agent's screen, as the runner listed it.
@@ -1372,6 +1391,82 @@ impl SessionService {
         let v = serde_json::to_value(&result).expect("serializes");
         self.finish(&op_id, OpState::Done, sid, &v).await?;
         Ok(result)
+    }
+
+    /// The dialog on an agent's screen, masked, and the occurrence the screen shows. It shares
+    /// the apps' screen-read limit.
+    pub async fn agent_dialog(&self, machine: &str, agent: &str) -> Result<AgentDialog, HubError> {
+        self.known_machine(machine)?;
+        let Ok(_permit) = self.screen_reads.try_acquire() else {
+            return Err(HubError::Busy);
+        };
+        let op = Op::Dialog {
+            agent: agent.to_owned(),
+        };
+        let v = self
+            .runners
+            .call(machine, op, CALL_TIMEOUT)
+            .await
+            .map_err(|e| runner_error(machine, e))?;
+        let mut d: AgentDialog = serde_json::from_value(v)
+            .map_err(|e| HubError::BadRequest(format!("runner dialog: {e}")))?;
+        // The runner masked it already; masking is idempotent, so the label hashes still match.
+        if let Some(view) = &mut d.dialog {
+            view.prompt = redact_str(&view.prompt);
+            for o in &mut view.options {
+                o.label = redact_str(&o.label);
+            }
+        }
+        Ok(d)
+    }
+
+    /// What a `waiting` push names, if it still shows: open only while unexpired and the
+    /// agent's screen shows the same occurrence, so it never leads to a replacement agent.
+    pub async fn attention(&self, id: &str) -> Result<AttentionView, HubError> {
+        let a = self
+            .store
+            .get_attention(id)
+            .await?
+            .ok_or_else(|| HubError::UnknownAttention(id.to_owned()))?;
+        let settle = |state: &'static str, a: AttentionRecord| AttentionView {
+            state: state.to_owned(),
+            record: a,
+            dialog: None,
+        };
+        if let Some(r) = a.resolution.clone() {
+            return Ok(AttentionView {
+                state: r,
+                record: a,
+                dialog: None,
+            });
+        }
+        if self.now() >= a.expires_at {
+            self.resolve_one(&a, "expired").await?;
+            return Ok(settle("expired", a));
+        }
+        let current = self.agent_dialog(&a.machine_id, &a.agent).await?;
+        if current.occurrence != a.occurrence {
+            self.resolve_one(&a, "gone").await?;
+            return Ok(settle("gone", a));
+        }
+        Ok(AttentionView {
+            state: "open".into(),
+            record: a,
+            dialog: current.dialog,
+        })
+    }
+
+    async fn resolve_one(&self, a: &AttentionRecord, resolution: &str) -> Result<(), HubError> {
+        self.store
+            .resolve_attention(
+                &a.machine_id,
+                &a.agent,
+                Some(&a.occurrence),
+                resolution,
+                self.now(),
+            )
+            .await?;
+        Ok(())
     }
 
     // Any named agent, reached through its machine's runner. Agents Switchboard didn't create

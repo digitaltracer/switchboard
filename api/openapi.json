@@ -1678,10 +1678,287 @@
           }
         ]
       }
+    },
+    "/app/v1/agents/dialog": {
+      "get": {
+        "tags": [
+          "agents"
+        ],
+        "summary": "The dialog on any agent's screen, Switchboard's or not, with its options.",
+        "operationId": "get_agent_dialog",
+        "parameters": [
+          {
+            "name": "machine_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "agent",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentDialog"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many screen reads",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Machine offline",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
+    "/app/v1/agents/dialog/challenge": {
+      "post": {
+        "tags": [
+          "agents"
+        ],
+        "operationId": "dialog_challenge",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DialogChallengeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DialogChallenge"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
+    "/app/v1/agents/dialog/answer": {
+      "post": {
+        "tags": [
+          "agents"
+        ],
+        "summary": "Picks one offered option. The deny needs no signature; any other option needs the device's\nsignature over the answer message.",
+        "operationId": "answer_dialog",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DialogAnswerRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DialogAnswerResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The dialog changed or was answered; read it again",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The Enter may have been sent; never retried",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
+    "/app/v1/attention/{id}": {
+      "get": {
+        "tags": [
+          "agents"
+        ],
+        "summary": "Resolves a `waiting` push's attention id. Open only while the agent still shows that\noccurrence, so an expired or moved-on one never leads to a replacement agent.",
+        "operationId": "get_attention",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Attention"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Machine offline",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
     }
   },
   "components": {
     "schemas": {
+      "AgentDialog": {
+        "type": "object",
+        "required": [
+          "machine_id",
+          "agent"
+        ],
+        "properties": {
+          "machine_id": {
+            "type": "string"
+          },
+          "agent": {
+            "type": "string"
+          },
+          "dialog": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Dialog",
+                "description": "None when the screen shows no dialog Switchboard recognises; show the screen instead."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
       "AgentView": {
         "type": "object",
         "description": "A Herdr agent Switchboard didn't start. It has no permission hooks, so its dialogs\nare answered in Herdr.",
@@ -1897,6 +2174,48 @@
             "items": {
               "$ref": "#/components/schemas/ApprovalOption"
             }
+          }
+        }
+      },
+      "Attention": {
+        "type": "object",
+        "description": "What a `waiting` push named.",
+        "required": [
+          "id",
+          "state",
+          "machine_id",
+          "agent"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "description": "`open`, `answered`, `gone` (the agent moved on or was replaced) or `expired`."
+          },
+          "machine_id": {
+            "type": "string"
+          },
+          "agent": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "dialog": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Dialog",
+                "description": "While open, the dialog it waits at, if one is recognised."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -2133,6 +2452,218 @@
           },
           "push_enabled": {
             "type": "boolean"
+          }
+        }
+      },
+      "Dialog": {
+        "type": "object",
+        "description": "A dialog on an agent's screen. Masked; the ids are opaque.",
+        "required": [
+          "kind",
+          "prompt",
+          "options",
+          "occurrence_id",
+          "answerable"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "`question`, `plan`, `permission`, or `other` for a list no pinned recogniser knows."
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DialogOption"
+            }
+          },
+          "selected": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The option the screen has selected."
+          },
+          "occurrence_id": {
+            "type": "string"
+          },
+          "answerable": {
+            "type": "boolean",
+            "description": "It can be answered from the phone now; otherwise answer it in Herdr."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why not: `read_only`, `unpinned`, `hooked` (answered as an approval instead),\n`hook_pending`, `hook_failed`, `not_blocked` or `answered`."
+          }
+        }
+      },
+      "DialogAnswerRequest": {
+        "type": "object",
+        "required": [
+          "machine_id",
+          "agent",
+          "occurrence_id",
+          "option_id",
+          "label_sha256"
+        ],
+        "properties": {
+          "machine_id": {
+            "type": "string"
+          },
+          "agent": {
+            "type": "string"
+          },
+          "occurrence_id": {
+            "type": "string"
+          },
+          "option_id": {
+            "type": "string"
+          },
+          "label_sha256": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Replays return the recorded outcome; required with a signature."
+          },
+          "nonce": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Required for any option but the deny: the nonce from the dialog's challenge."
+          },
+          "signature": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "DER ECDSA P-256 over SHA-256 of the answer message, base64url, by the approval key."
+          },
+          "message_version": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "DialogAnswerResponse": {
+        "type": "object",
+        "required": [
+          "outcome",
+          "operation_id",
+          "replayed"
+        ],
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "description": "`answered`: the dialog closed after the Enter."
+          },
+          "operation_id": {
+            "type": "string"
+          },
+          "replayed": {
+            "type": "boolean",
+            "description": "Already answered with this request id; nothing was sent again."
+          }
+        }
+      },
+      "DialogChallenge": {
+        "type": "object",
+        "description": "What an answer signs, as `switchboard-answer-v1` (message version 3): `hub=`, `device=`,\n`target=agent:<machine_id>/<agent>`, `occurrence=`, `option=`, `label=` (the option's\n`label_sha256`), `request=`, `nonce=`, `expires=` lines, joined by `\\n`.",
+        "required": [
+          "nonce",
+          "expires_at",
+          "message_version",
+          "hub_id",
+          "device_id",
+          "target",
+          "occurrence_id"
+        ],
+        "properties": {
+          "nonce": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "message_version": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "hub_id": {
+            "type": "string"
+          },
+          "device_id": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          },
+          "occurrence_id": {
+            "type": "string"
+          }
+        }
+      },
+      "DialogChallengeRequest": {
+        "type": "object",
+        "required": [
+          "machine_id",
+          "agent",
+          "occurrence_id"
+        ],
+        "properties": {
+          "machine_id": {
+            "type": "string"
+          },
+          "agent": {
+            "type": "string"
+          },
+          "occurrence_id": {
+            "type": "string"
+          }
+        }
+      },
+      "DialogOption": {
+        "type": "object",
+        "required": [
+          "id",
+          "label",
+          "label_sha256",
+          "is_deny",
+          "offered"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "label_sha256": {
+            "type": "string",
+            "description": "SHA-256 hex of `label`; an answer signs and repeats it."
+          },
+          "is_deny": {
+            "type": "boolean",
+            "description": "Choosing it needs no signature."
+          },
+          "offered": {
+            "type": "boolean",
+            "description": "It may be chosen from the phone; the others are shown for context."
           }
         }
       },

@@ -36,7 +36,42 @@ fn record(r: &Row) -> rusqlite::Result<AttentionRecord> {
     })
 }
 
+pub(super) fn insert(c: &rusqlite::Connection, a: &AttentionRecord) -> Result<AttentionRecord> {
+    c.execute(
+        "INSERT INTO attention (id, machine_id, herdr_session, agent, terminal_id, session_id,
+         occurrence, created_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+         ON CONFLICT (machine_id, agent, occurrence) DO NOTHING",
+        params![
+            a.id,
+            a.machine_id,
+            a.herdr_session,
+            a.agent,
+            a.terminal_id,
+            a.session_id,
+            a.occurrence,
+            a.created_at,
+            a.expires_at
+        ],
+    )?;
+    Ok(c.query_row(
+        "SELECT * FROM attention WHERE machine_id = ?1 AND agent = ?2 AND occurrence = ?3",
+        params![a.machine_id, a.agent, a.occurrence],
+        record,
+    )?)
+}
+
 impl Store {
+    /// Records an attention unless one exists for its agent and occurrence; returns the one kept.
+    pub async fn insert_attention(&self, a: AttentionRecord) -> Result<AttentionRecord> {
+        self.call(move |c| {
+            let tx = c.transaction()?;
+            let kept = insert(&tx, &a)?;
+            tx.commit()?;
+            Ok(kept)
+        })
+        .await
+    }
+
     pub async fn get_attention(&self, id: &str) -> Result<Option<AttentionRecord>> {
         let id = id.to_owned();
         self.call(move |c| {

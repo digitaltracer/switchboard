@@ -27,7 +27,7 @@ use crate::auth::device::{
 use crate::cli::Agent;
 use crate::proto::auth::bearer;
 use crate::proto::{AgentPromptOutcome, ErrorCode};
-use crate::store::{DeviceRecord, DeviceState, PushEnv};
+use crate::store::{AnswerProof, DeviceRecord, DeviceState, PushEnv};
 use types::*;
 
 pub const PREFIX: &str = "/app/v1";
@@ -76,6 +76,10 @@ pub fn routes(state: AppState) -> Router {
         .route("/agents/output", get(get_agent_output))
         .route("/agents/transcript", get(get_agent_transcript))
         .route("/agents/skills", get(get_agent_skills))
+        .route("/agents/dialog", get(get_agent_dialog))
+        .route("/agents/dialog/challenge", post(dialog_challenge))
+        .route("/agents/dialog/answer", post(answer_dialog))
+        .route("/attention/{id}", get(get_attention))
         .route("/meta", get(get_meta));
     Router::new().nest(PREFIX, api).with_state(state)
 }
@@ -124,10 +128,12 @@ fn status_for(code: &str) -> StatusCode {
         "invalid_token" => StatusCode::UNAUTHORIZED,
         "approve_not_allowed" => StatusCode::FORBIDDEN,
         "unknown_session" | "unknown_approval" | "unknown_device" | "unknown_operation"
-        | "not_found" => StatusCode::NOT_FOUND,
-        "session_not_running" | "request_id_reused" | "answer_in_herdr" | "agent_blocked" => {
-            StatusCode::CONFLICT
-        }
+        | "unknown_attention" | "not_found" => StatusCode::NOT_FOUND,
+        "session_not_running"
+        | "request_id_reused"
+        | "answer_in_herdr"
+        | "agent_blocked"
+        | "dialog_changed" => StatusCode::CONFLICT,
         "rate_limited" | "busy" => StatusCode::TOO_MANY_REQUESTS,
         "machine_offline" | "reconciling" => StatusCode::SERVICE_UNAVAILABLE,
         "outcome_unknown" | "deadline_exceeded" => StatusCode::GATEWAY_TIMEOUT,
@@ -1068,6 +1074,137 @@ pub async fn set_push_token(
         .set_push_token(&d.0.id, token.as_deref(), Some(env), st.svc.now())
         .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(get, path = "/app/v1/agents/dialog", tag = "agents",
+    security(("device_token" = [])), params(AgentQuery),
+    responses((status = 200, description = "OK", body = AgentDialog), (status = 404, description = "Not found", body = ApiError),
+              (status = 429, description = "Too many screen reads", body = ApiError), (status = 503, description = "Machine offline", body = ApiError)))]
+/// The dialog on any agent's screen, Switchboard's or not, with its options.
+pub async fn get_agent_dialog(
+    State(st): State<AppState>,
+    _d: DeviceAuth,
+    Query(q): Query<AgentQuery>,
+) -> ApiResult<AgentDialog> {
+    let d = st.svc.agent_dialog(&q.machine_id, &q.agent).await?;
+    Ok(Json(AgentDialog {
+        machine_id: q.machine_id,
+        agent: q.agent,
+        dialog: d.dialog.map(Into::into),
+    }))
+}
+
+#[utoipa::path(post, path = "/app/v1/agents/dialog/challenge", tag = "agents",
+    security(("device_token" = [])), request_body = DialogChallengeRequest,
+    responses((status = 200, description = "OK", body = DialogChallenge), (status = 404, description = "Not found", body = ApiError)))]
+pub async fn dialog_challenge(
+    State(st): State<AppState>,
+    d: DeviceAuth,
+    Json(req): Json<DialogChallengeRequest>,
+) -> ApiResult<DialogChallenge> {
+    if st.svc.config().machine(&req.machine_id).is_none() {
+        return Err(HubError::UnknownMachine(req.machine_id).into());
+    }
+    let ch = st
+        .devices
+        .answer_challenge(&d.0.id, &req.occurrence_id)
+        .await?;
+    Ok(Json(DialogChallenge {
+        nonce: ch.nonce,
+        expires_at: ch.expires_at,
+        message_version: ANSWER_MESSAGE_VERSION,
+        hub_id: st.devices.hub_id().await?,
+        device_id: ch.device_id,
+        target: format!("agent:{}/{}", req.machine_id, req.agent),
+        occurrence_id: req.occurrence_id,
+    }))
+}
+
+#[utoipa::path(post, path = "/app/v1/agents/dialog/answer", tag = "agents",
+    security(("device_token" = [])), request_body = DialogAnswerRequest,
+    responses((status = 200, description = "OK", body = DialogAnswerResponse), (status = 400, description = "Bad request", body = ApiError),
+              (status = 403, description = "Not allowed", body = ApiError), (status = 409, description = "The dialog changed or was answered; read it again", body = ApiError),
+              (status = 504, description = "The Enter may have been sent; never retried", body = ApiError)))]
+/// Picks one offered option. The deny needs no signature; any other option needs the device's
+/// signature over the answer message.
+pub async fn answer_dialog(
+    State(st): State<AppState>,
+    d: DeviceAuth,
+    Json(req): Json<DialogAnswerRequest>,
+) -> ApiResult<DialogAnswerResponse> {
+    let proof = match (&req.nonce, &req.signature) {
+        (Some(nonce), Some(sig)) => {
+            let Some(rid) = req.request_id.as_deref() else {
+                return Err(bad("a signed answer needs a request id"));
+            };
+            let target = format!("agent:{}/{}", req.machine_id, req.agent);
+            let fields = AnswerFields {
+                target: &target,
+                occurrence: &req.occurrence_id,
+                option: &req.option_id,
+                label: &req.label_sha256,
+                request_id: rid,
+            };
+            let version = req.message_version.unwrap_or(0);
+            let p = st
+                .devices
+                .verify_answer(&d.0, &fields, nonce, sig, version)
+                .await?;
+            Some(AnswerProof {
+                device_id: p.device_id,
+                nonce: p.nonce,
+                occurrence: req.occurrence_id.clone(),
+            })
+        }
+        (None, None) => None,
+        _ => {
+            return Err(bad(
+                "a signed answer needs both the nonce and the signature",
+            ));
+        }
+    };
+    let r = st
+        .svc
+        .answer(
+            &d.caller(),
+            &service::AnswerRequest {
+                machine_id: req.machine_id,
+                agent: req.agent,
+                occurrence: req.occurrence_id,
+                option: req.option_id,
+                label_sha256: req.label_sha256,
+                request_id: req.request_id,
+            },
+            proof,
+        )
+        .await?;
+    Ok(Json(DialogAnswerResponse {
+        outcome: r.outcome,
+        operation_id: r.operation_id,
+        replayed: r.replayed,
+    }))
+}
+
+#[utoipa::path(get, path = "/app/v1/attention/{id}", tag = "agents",
+    security(("device_token" = [])), params(("id" = String, Path)),
+    responses((status = 200, description = "OK", body = Attention), (status = 404, description = "Not found", body = ApiError),
+              (status = 503, description = "Machine offline", body = ApiError)))]
+/// Resolves a `waiting` push's attention id. Open only while the agent still shows that
+/// occurrence, so an expired or moved-on one never leads to a replacement agent.
+pub async fn get_attention(
+    State(st): State<AppState>,
+    _d: DeviceAuth,
+    Path(id): Path<String>,
+) -> ApiResult<Attention> {
+    let a = st.svc.attention(&id).await?;
+    Ok(Json(Attention {
+        id: a.record.id,
+        state: a.state,
+        machine_id: a.record.machine_id,
+        agent: a.record.agent,
+        session_id: a.record.session_id,
+        dialog: a.dialog.map(Into::into),
+    }))
 }
 
 #[cfg(test)]
