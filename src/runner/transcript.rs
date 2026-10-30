@@ -27,15 +27,35 @@ const MAX_OUTPUT: usize = 4_000;
 
 /// The session a running Claude is on, from the record it keeps at `<claude dir>/sessions/<pid>.json`
 /// for the first of `pids` that has one. Herdr's session id can be stale: a background Claude
-/// started from the pane reports its own. Only the `.json` records are read.
+/// started from the pane reports its own. A pane whose session was handed to a background job
+/// (a resumed or forked session) names that job, and the job's record has the session it is on
+/// now. Only the `.json` records are read.
 pub fn live_claude_session(claude_dir: &Path, pids: &[u32]) -> Option<String> {
+    let sessions = claude_dir.join("sessions");
+    let record = |path: &Path| -> Option<Value> {
+        serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
+    };
+    let id = |v: &Value| v.get("sessionId")?.as_str().map(str::to_owned);
     pids.iter().find_map(|pid| {
-        let text = std::fs::read_to_string(claude_dir.join("sessions").join(format!("{pid}.json")))
-            .ok()?;
-        let v: Value = serde_json::from_str(&text).ok()?;
-        (v.get("pid")?.as_u64()? == u64::from(*pid))
-            .then(|| v.get("sessionId")?.as_str().map(str::to_owned))
-            .flatten()
+        let v = record(&sessions.join(format!("{pid}.json")))?;
+        if v.get("pid")?.as_u64()? != u64::from(*pid) {
+            return None;
+        }
+        let parked = v
+            .get("parkedJobId")
+            .and_then(Value::as_str)
+            .filter(|j| !j.is_empty());
+        let job = parked.and_then(|job| {
+            std::fs::read_dir(&sessions)
+                .ok()?
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|x| x == "json"))
+                .filter_map(|p| record(&p))
+                .find(|r| r.get("jobId").and_then(Value::as_str) == Some(job))
+                .and_then(|r| id(&r))
+        });
+        job.or_else(|| id(&v))
     })
 }
 

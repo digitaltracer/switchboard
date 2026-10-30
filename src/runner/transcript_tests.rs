@@ -409,6 +409,38 @@ fn the_claude_running_in_the_pane_names_its_own_session() {
 }
 
 #[test]
+fn a_pane_that_handed_its_session_to_a_background_job_follows_the_job() {
+    let dir = tempfile::tempdir().unwrap();
+    let sessions = dir.path().join("sessions");
+    std::fs::create_dir(&sessions).unwrap();
+    let write = |name: &str, v: Value| std::fs::write(sessions.join(name), v.to_string()).unwrap();
+    // The pane's Claude still names the session it started on, and the job it parked it in.
+    write(
+        "36488.json",
+        json!({"pid": 36488, "kind": "interactive", "sessionId": "9e4b382e-old", "parkedJobId": "6ffb85a5"}),
+    );
+    write(
+        "44600.json",
+        json!({"pid": 44600, "kind": "bg", "sessionId": "6ffb85a5-new", "jobId": "6ffb85a5"}),
+    );
+    write(
+        "50000.json",
+        json!({"pid": 50000, "kind": "bg", "sessionId": "other", "jobId": "11111111"}),
+    );
+    assert_eq!(
+        live_claude_session(dir.path(), &[36488]).as_deref(),
+        Some("6ffb85a5-new")
+    );
+
+    // A parked job whose record is gone falls back to the pane's own session.
+    std::fs::remove_file(sessions.join("44600.json")).unwrap();
+    assert_eq!(
+        live_claude_session(dir.path(), &[36488]).as_deref(),
+        Some("9e4b382e-old")
+    );
+}
+
+#[test]
 fn edits_say_how_many_lines_they_add_and_remove() {
     let text = [
         assistant("a1", json!([{"type": "tool_use", "id": "e1", "name": "Edit",
