@@ -274,6 +274,7 @@ Decided: the VPS is only a relay. Every user runs the hub and runner on their ow
   A session reads like a message: status, what this phone last said, the approval, the latest output, changed files and details.
 - **Voice:** a mic sits on the home screen and in each session's toolbar.
   - Speech is transcribed on the device only (`requiresOnDeviceRecognition`). Where that isn't available it refuses and offers the keyboard, so audio never leaves the phone.
+    - **As built (2026-11-03):** that now holds only with no OpenAI key saved. With a key on a phone, its recordings and the expected names go straight to OpenAI, never through the hub or relay. See `.agents/tasks/cloud-transcription/plan.md`.
   - A pause of 1.8 s ends the listen.
   - Voice never approves: approvals stay a tap plus Face ID.
 - **The listening glow** is a Metal shader compiled from source at runtime (`EdgeGlowView`), so building the app needs no Metal toolchain.
