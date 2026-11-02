@@ -1,0 +1,16 @@
+[
+  {
+    "file": "01.m4a",
+    "text": "In switchboard, rebase fix/retry-loop onto main and don't touch the migrations",
+    "names": ["switchboard", "fix/retry-loop"],
+    "meaning": ["rebase", "main", "don't", "migrations"],
+    "held_out": false
+  },
+  {
+    "file": "02.m4a",
+    "text": "Ask the Codex agent on demo to run the benchmarks",
+    "names": ["Codex", "demo"],
+    "meaning": ["run", "benchmarks"],
+    "held_out": true
+  }
+]
