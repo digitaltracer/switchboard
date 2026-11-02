@@ -28,6 +28,8 @@ struct DevicesView: View {
     @State private var error: String?
     @State private var revoking: Schemas.Device?
     @State private var confirmForget = false
+    @State private var newVoiceKey = ""
+    @State private var voiceKeyError: String?
 
     var body: some View {
         NavigationStack {
@@ -58,6 +60,7 @@ struct DevicesView: View {
                     .labelsHidden()
                     .accessibilityIdentifier("appearancePicker")
                 }
+                voiceSection
                 if let p = model.pairing {
                     Section("Hub") {
                         LabeledContent(p.relay == nil ? "Address" : "Relay", value: p.hubURL.absoluteString)
@@ -78,6 +81,35 @@ struct DevicesView: View {
                 Button("Forget", role: .destructive) { Task { await model.unpair() } }
             }
         }
+    }
+
+    /// An OpenAI key, kept on this phone. Once saved it's never shown again.
+    private var voiceSection: some View {
+        Section {
+            if model.voiceKey.saved {
+                LabeledContent("OpenAI", value: "Key saved")
+                    .accessibilityIdentifier("voiceKeySaved")
+                Button("Remove key", role: .destructive) { model.voiceKey.remove() }
+                    .accessibilityIdentifier("voiceKeyRemove")
+            } else {
+                SecureField("OpenAI API key", text: $newVoiceKey)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .accessibilityIdentifier("voiceKeyField")
+                Button("Save key") {
+                    voiceKeyError = model.voiceKey.save(newVoiceKey) ? nil : "This phone couldn't store the key, so voice stays on the device."
+                    newVoiceKey = ""
+                }
+                .disabled(newVoiceKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .accessibilityIdentifier("voiceKeySave")
+            }
+            if let voiceKeyError { Text(voiceKeyError).font(.footnote).foregroundStyle(.red) }
+        } header: {
+            Text("Voice")
+        } footer: {
+            Text(VoiceKey.disclosure)
+        }
+        .onAppear { model.voiceKey.refresh() }
     }
 
     private func load() async {

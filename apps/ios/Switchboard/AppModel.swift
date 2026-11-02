@@ -15,6 +15,7 @@ final class AppModel {
     }
 
     let keys: DeviceKeys
+    let voiceKey = VoiceKey()
     let build: Int
     private(set) var phase: Phase = .unpaired
     private(set) var pairing: Pairing?
@@ -152,6 +153,7 @@ final class AppModel {
         said = [:]
         lastSent = nil
         try? keys.reset()
+        voiceKey.remove()
         pairing = nil
         hub = nil
         sessions = []
