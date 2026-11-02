@@ -15,6 +15,7 @@ import androidx.compose.runtime.LaunchedEffect
 
 class MainActivity : ComponentActivity() {
     private val model get() = (application as SwitchboardApp).model
+    private val voice get() = (application as SwitchboardApp).voice
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -52,11 +53,14 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         model.becameActive()
+        voice.cameToForeground()
     }
 
     override fun onStop() {
         super.onStop()
         model.wentToBackground()
+        // A rotation stops the activity too, but the app is still on screen.
+        if (!isChangingConfigurations) voice.wentToBackground()
     }
 
     override fun onNewIntent(intent: Intent) {

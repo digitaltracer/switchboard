@@ -68,7 +68,7 @@ import kotlinx.coroutines.launch
 fun PairedRoot(model: AppModel, voice: Voice) {
     val listen = rememberListen(voice)
     BackHandler(model.path.isNotEmpty() && voice.phase == Voice.Phase.Idle) { model.pop() }
-    BackHandler(voice.phase == Voice.Phase.Listening) { voice.cancel() }
+    BackHandler(voice.phase == Voice.Phase.Listening || voice.phase == Voice.Phase.Transcribing) { voice.cancel() }
     Box(Modifier.fillMaxSize()) {
         when (val route = model.path.lastOrNull()) {
             null -> HomeScreen(model, voice, listen)

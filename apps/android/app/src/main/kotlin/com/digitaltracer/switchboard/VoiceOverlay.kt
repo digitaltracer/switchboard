@@ -44,6 +44,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.outlined.Keyboard
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -110,7 +111,7 @@ fun rememberListen(voice: Voice): Listen {
 /** The mic, which fades into the listening panel while voice mode is on. */
 @Composable
 fun MicButton(voice: Voice, size: Dp, label: String, tag: String, enabled: Boolean = true, onClick: () -> Unit) {
-    val listening = voice.phase == Voice.Phase.Listening
+    val listening = voice.phase == Voice.Phase.Listening || voice.phase == Voice.Phase.Transcribing
     val shown by animateFloatAsState(if (listening) 0f else 1f, tween(if (listening) 200 else 250, if (listening) 0 else 200), label = "mic")
     Box(
         Modifier.size(size).scale(0.7f + 0.3f * shown).alpha(shown * if (enabled) 1f else 0.4f)
@@ -139,13 +140,15 @@ fun CircleButton(icon: ImageVector, label: String, size: Dp = 44.dp, background:
 @Composable
 fun VoiceOverlay(voice: Voice) {
     val listening = voice.phase == Voice.Phase.Listening
+    val shown = listening || voice.phase == Voice.Phase.Transcribing
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
-        if (listening) {
-            Box(Modifier.fillMaxSize().clickable(remember { MutableInteractionSource() }, null) { voice.cancel() })
+        if (shown) {
+            // A stray tap never throws away a recording that's already uploading.
+            Box(Modifier.fillMaxSize().clickable(remember { MutableInteractionSource() }, null) { if (listening) voice.cancel() })
         }
         EdgeGlow(listening, voice.level)
         AnimatedVisibility(
-            listening,
+            shown,
             enter = fadeIn(tween(300)) + scaleIn(tween(300), 0.9f) + slideInVertically(tween(300)) { it / 4 },
             exit = fadeOut(tween(200)) + scaleOut(tween(200), 0.9f) + slideOutVertically(tween(200)) { it / 4 },
         ) {
@@ -170,9 +173,14 @@ private fun ListeningPanel(voice: Voice) {
             style = Type.footnote, fontWeight = FontWeight.SemiBold, color = palette.secondary,
         )
         Transcript(voice)
+        voice.notice?.let { Text(it, Modifier.testTag("voiceNotice"), style = Type.footnote, color = palette.secondary) }
         Row(verticalAlignment = Alignment.CenterVertically) {
             CircleButton(Icons.Filled.Close, "Cancel") { voice.cancel() }
             Spacer(Modifier.weight(1f))
+            if (voice.phase == Voice.Phase.Transcribing) {
+                CircularProgressIndicator(Modifier.size(22.dp), color = palette.accent, strokeWidth = 2.dp)
+                return@Row
+            }
             Row(
                 Modifier.height(44.dp).background(Color(0xFF1C1C1C), CircleShape).clickable { voice.stop() }
                     .padding(start = 16.dp, end = 20.dp).testTag("voiceDone"),
@@ -193,7 +201,16 @@ private fun ListeningPanel(voice: Voice) {
 private fun Transcript(voice: Voice) {
     val words = voice.heard.split(" ").filter { it.isNotEmpty() }
     val style = Type.title3.copy(fontSize = 22.sp, lineHeight = 28.sp, fontWeight = FontWeight.SemiBold)
-    val text = if (words.isEmpty()) {
+    val text = if (voice.cloud) {
+        buildAnnotatedString {
+            if (voice.text.isNotEmpty()) {
+                withStyle(SpanStyle(color = palette.label)) { append(voice.text + "\n") }
+            }
+            withStyle(SpanStyle(color = palette.secondary)) {
+                append(if (voice.phase == Voice.Phase.Transcribing) "Transcribing…" else "Listening…")
+            }
+        }
+    } else if (words.isEmpty()) {
         buildAnnotatedString {
             withStyle(SpanStyle(color = if (voice.text.isEmpty()) palette.secondary else palette.label)) {
                 append(voice.text.ifEmpty { "Listening…" })

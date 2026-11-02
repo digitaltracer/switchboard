@@ -196,6 +196,19 @@ fun SendSheet(model: AppModel, voice: Voice, listen: Listen) {
                         Text(it, style = Type.footnote, color = palette.secondary)
                     }
                 }
+                voice.notice?.let { Text(it, style = Type.footnote, color = palette.secondary) }
+                if (voice.retrying) {
+                    Row(Modifier.testTag("voiceRetrying"), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Text("Transcribing…", style = Type.footnote, color = palette.secondary)
+                    }
+                } else if (voice.canRetry) {
+                    Box(
+                        Modifier.height(36.dp).background(palette.fill, CircleShape).clickable { voice.retry() }
+                            .padding(horizontal = 16.dp).testTag("voiceRetry"),
+                        Alignment.Center,
+                    ) { Text("Retry", style = Type.subheadline, color = palette.accent) }
+                }
                 val fieldStyle = Type.title3.copy(fontWeight = FontWeight.Normal, color = palette.label)
                 BasicTextField(
                     voice.text, { voice.text = it },
@@ -243,9 +256,9 @@ fun SendSheet(model: AppModel, voice: Voice, listen: Listen) {
                     Modifier.size(50.dp).background(palette.fill, CircleShape).clickable { listen(voice.target, keepText = true) },
                     Alignment.Center,
                 ) { Icon(Icons.Filled.Mic, "Keep talking", Modifier.size(22.dp), tint = palette.accent) }
-                val ready = chosen != null && !empty && !sending
+                val ready = chosen != null && !empty && !sending && !voice.retrying
                 Box(
-                    Modifier.weight(1f).height(50.dp).background(if (chosen == null || empty) Color.Gray else palette.accent, CircleShape)
+                    Modifier.weight(1f).height(50.dp).background(if (chosen == null || empty || voice.retrying) Color.Gray else palette.accent, CircleShape)
                         .clickable(enabled = ready) { send() }.testTag("composeSend"),
                     Alignment.Center,
                 ) {

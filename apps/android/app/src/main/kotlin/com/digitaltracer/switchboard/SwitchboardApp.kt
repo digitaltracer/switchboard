@@ -12,6 +12,6 @@ class SwitchboardApp : Application() {
         super.onCreate()
         model = AppModel(this, KeystoreKeys(this))
         if (Push.start(this)) Push.token(model::registerPush)
-        voice = Voice(this) { model.vocabulary }
+        voice = Voice(this, model.voiceKey) { model.vocabulary }
     }
 }
