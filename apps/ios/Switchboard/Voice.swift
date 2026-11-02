@@ -1,4 +1,5 @@
 import AVFoundation
+import Network
 import Observation
 import Speech
 import SwitchboardKit
@@ -12,6 +13,8 @@ final class Voice {
     enum Phase: Equatable {
         case idle
         case listening
+        /// A cloud recording is uploading; nothing else can happen but Cancel.
+        case transcribing
         /// The text is in the review sheet, typed or heard.
         case review
     }
@@ -29,15 +32,55 @@ final class Voice {
     private(set) var changedAt = Date()
     private(set) var squeeze = false
     var error: String?
+    /// Why this listen stayed on the phone even though a key is saved.
+    private(set) var notice: String?
     /// Names to expect, from the app model.
     var vocabulary: [String] = []
+    /// This listen is recording for OpenAI.
+    private(set) var cloud = false
+    /// A failed recording can be sent again.
+    private(set) var canRetry = false
+    /// Send waits for a Retry to come back.
+    private(set) var retrying = false
 
     private var listener: Listener?
     private var lastHeard = Date()
     private var silence: Task<Void, Never>?
 
+    private let key: VoiceKey
+    private let store = RecordingStore(directory: FileManager.default.temporaryDirectory.appending(path: "voice-recordings"))
+    private let recording = RecordingLifecycle()
+    private let scripted = ProcessInfo.processInfo.environment["SB_FAKE_TRANSCRIBE"].map { ScriptedTranscriber(script: $0) }
+    private let network = NWPathMonitor()
+    private var online = true
+    /// OpenAI refused the key; cloud mode rests until it's replaced or the app relaunches.
+    private var keyRejected = false
+    private var recorder: CloudRecording?
+    private var recordingFile: URL?
+    private var transport: TranscriptionTransport?
+    private var gate = SpeechGate()
+    private var expiry: Task<Void, Never>?
+
+    init(key: VoiceKey) {
+        self.key = key
+        store.sweep()
+        key.changed = { [weak self] removed in
+            guard let self else { return }
+            keyRejected = false
+            // A listen under way would otherwise still upload with the removed key.
+            if removed { if cloud { cancel() } else { dropRecording() } }
+        }
+        network.pathUpdateHandler = { [weak self] path in
+            let online = path.status == .satisfied
+            Task { @MainActor in self?.online = online }
+        }
+        network.start(queue: .global(qos: .utility))
+    }
+
     func listen(to context: Schemas.TargetView?, keepText: Bool = false) {
-        guard phase != .listening else { return }
+        guard phase != .listening, phase != .transcribing else { return }
+        dropRecording()
+        notice = nil
         self.context = context
         if !keepText { text = "" }
         heard = ""
@@ -48,6 +91,10 @@ final class Voice {
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         squeeze = true
         Task { try? await Task.sleep(for: .milliseconds(170)); squeeze = false }
+        if let transport = cloudTransport() {
+            startCloud(transport)
+            return
+        }
         let listener: Listener = ProcessInfo.processInfo.environment["SB_FAKE_VOICE"].map { ScriptedListener(text: $0) }
             ?? OnDeviceListener(vocabulary: vocabulary)
         self.listener = listener
@@ -84,6 +131,10 @@ final class Voice {
     /// Ends the listen; what was heard goes to review, or nothing happens if nothing was.
     func stop() {
         guard phase == .listening else { return }
+        if cloud {
+            endCloudListen(upload: true)
+            return
+        }
         silence?.cancel()
         listener?.stop()
         listener = nil
@@ -98,7 +149,7 @@ final class Voice {
 
     /// Stops listening and opens the review with whatever was heard, even nothing.
     func typeInstead() {
-        stop()
+        if cloud { endCloudListen(upload: false) } else { stop() }
         phase = .review
     }
 
@@ -112,6 +163,10 @@ final class Voice {
         silence?.cancel()
         listener?.stop()
         listener = nil
+        stopRecorder()
+        dropRecording()
+        cloud = false
+        notice = nil
         if phase == .listening { changedAt = Date() }
         phase = .idle
         text = ""
@@ -121,10 +176,168 @@ final class Voice {
 
     /// The review sheet was dismissed or its message went out.
     func finish() {
+        dropRecording()
+        notice = nil
         phase = .idle
         text = ""
         error = nil
     }
+
+    /// Sends the kept recording again, only because the owner tapped Retry.
+    func retry() {
+        guard phase == .review, canRetry || retrying else { return }
+        error = nil
+        canRetry = false
+        retrying = true
+        Task { settle(await recording.retry()) }
+    }
+
+    /// An upload can't finish from the background, so it stops and waits for Retry.
+    func wentToBackground() {
+        guard phase == .transcribing || retrying else { return }
+        recording.interrupt()
+        error = TranscriptionError.interrupted.message
+        retrying = false
+        cloud = false
+        watchExpiry()
+        phase = .review
+    }
+
+    func cameToForeground() {
+        if recording.expireIfDue() { expired() }
+    }
+
+    // Cloud mode.
+
+    /// Cloud with a usable key and a network path; anything else stays on the phone.
+    private func cloudTransport() -> TranscriptionTransport? {
+        if let scripted { return scripted }
+        if ProcessInfo.processInfo.environment["SB_FAKE_VOICE"] != nil { return nil }
+        guard let saved = key.read() else { return nil }
+        if keyRejected {
+            notice = "OpenAI won't accept this phone's key, so speech stays on this phone until you replace it."
+            return nil
+        }
+        guard online else {
+            notice = "You're offline, so speech stays on this phone for now."
+            return nil
+        }
+        return TranscriptionClient(key: saved)
+    }
+
+    private func startCloud(_ transport: TranscriptionTransport) {
+        cloud = true
+        gate = SpeechGate()
+        let recorder: CloudRecording = scripted == nil ? CloudRecorder() : ScriptedRecorder()
+        self.recorder = recorder
+        self.transport = transport
+        do {
+            recordingFile = try store.newFile()
+        } catch {
+            self.error = VoiceError.notRecording.localizedDescription
+            endCloudListen(upload: false)
+            return
+        }
+        guard let file = recordingFile else { return }
+        Task {
+            do {
+                try await recorder.start(to: file) { [weak self] db in
+                    self?.heard(db, from: recorder)
+                }
+            } catch {
+                guard phase == .listening, self.recorder === recorder else { return }
+                self.error = error.localizedDescription
+                endCloudListen(upload: false)
+            }
+        }
+    }
+
+    private func heard(_ db: Float, from recorder: CloudRecording) {
+        guard phase == .listening, self.recorder === recorder else { return }
+        level = level * 0.6 + SpeechGate.barLevel(db) * 0.4
+        if case .stop(let heardSpeech) = gate.add(level: db, at: Date().timeIntervalSinceReferenceDate) {
+            endCloudListen(upload: heardSpeech)
+        }
+    }
+
+    /// Ends a cloud listen: uploads what was recorded, or deletes it and goes as an empty listen does.
+    private func endCloudListen(upload: Bool) {
+        let transport = transport
+        let file = recordingFile
+        recorder?.stop()
+        recorder = nil
+        recordingFile = nil
+        self.transport = nil
+        level = 0
+        changedAt = Date()
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        guard upload, let file, let transport, FileManager.default.fileExists(atPath: file.path) else {
+            if let file { try? FileManager.default.removeItem(at: file) }
+            cloud = false
+            phase = text.isEmpty && error == nil ? .idle : .review
+            return
+        }
+        phase = .transcribing
+        let names = vocabulary
+        Task { settle(await recording.start(file: file, transport: transport, names: names)) }
+    }
+
+    /// Where an upload or a Retry came out. The review sheet shows the rest.
+    private func settle(_ outcome: RecordingLifecycle.Outcome) {
+        switch outcome {
+        case .discarded:
+            return
+        case .text(let words):
+            text = [text, words].filter { !$0.isEmpty }.joined(separator: " ")
+            error = nil
+        case .kept(let failure):
+            error = failure.message
+        case .lost(let failure):
+            error = failure.message
+            if failure.rejectsKey { keyRejected = true }
+        case .expired:
+            error = Self.expiredMessage
+        }
+        retrying = false
+        cloud = false
+        watchExpiry()
+        phase = text.isEmpty && error == nil ? .idle : .review
+    }
+
+    private func watchExpiry() {
+        expiry?.cancel()
+        canRetry = recording.canRetry
+        guard canRetry, let at = recording.expiresAt else { return }
+        expiry = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(max(0, at.timeIntervalSinceNow)))
+            guard !Task.isCancelled, let self, self.recording.expireIfDue() else { return }
+            self.expired()
+        }
+    }
+
+    private func expired() {
+        expiry?.cancel()
+        canRetry = false
+        retrying = false
+        error = Self.expiredMessage
+    }
+
+    private func stopRecorder() {
+        recorder?.stop()
+        recorder = nil
+        transport = nil
+        if let file = recordingFile { try? FileManager.default.removeItem(at: file) }
+        recordingFile = nil
+    }
+
+    private func dropRecording() {
+        expiry?.cancel()
+        recording.discard()
+        canRetry = false
+        retrying = false
+    }
+
+    private static let expiredMessage = "That recording was over ten minutes old, so it was deleted. Say it again, or type instead."
 }
 
 @MainActor
@@ -136,11 +349,15 @@ protocol Listener: AnyObject {
 enum VoiceError: LocalizedError {
     case denied
     case unavailable
+    case micDenied
+    case notRecording
 
     var errorDescription: String? {
         switch self {
         case .denied: return "Switchboard needs the microphone and speech recognition. Turn them on in Settings, or type instead."
         case .unavailable: return "This iPhone can't transcribe your language on the device, so nothing was recorded. Type instead."
+        case .micDenied: return "Switchboard needs the microphone. Turn it on in Settings, or type instead."
+        case .notRecording: return "Recording didn't start. Try again, or type instead."
         }
     }
 }
@@ -180,7 +397,7 @@ private func requestPermissions() async throws {
     guard speech == .authorized, await AVAudioApplication.requestRecordPermission() else { throw VoiceError.denied }
 }
 
-private func activateAudioSession() throws {
+func activateAudioSession() throws {
     let session = AVAudioSession.sharedInstance()
     try session.setCategory(.record, mode: .measurement, options: .duckOthers)
     try session.setActive(true, options: .notifyOthersOnDeactivation)

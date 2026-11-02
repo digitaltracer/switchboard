@@ -29,6 +29,20 @@ struct SendSheet: View {
                 if let error = voice.error {
                     Label(error, systemImage: "mic.slash").font(.footnote).foregroundStyle(.secondary)
                 }
+                if let notice = voice.notice {
+                    Label(notice, systemImage: "iphone").font(.footnote).foregroundStyle(.secondary)
+                }
+                if voice.retrying {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                        Text("Transcribing…").font(.footnote).foregroundStyle(.secondary)
+                    }
+                    .accessibilityIdentifier("voiceRetrying")
+                } else if voice.canRetry {
+                    Button("Retry") { voice.retry() }
+                        .buttonStyle(.bordered)
+                        .accessibilityIdentifier("voiceRetry")
+                }
                 TextField(current.map { "Message \($0.label)" } ?? "Say or type what you want done", text: $voice.text, axis: .vertical)
                     .font(.title3)
                     .lineLimit(2...6)
@@ -91,10 +105,10 @@ struct SendSheet: View {
                     .font(.headline)
                     .lineLimit(1)
                     .frame(maxWidth: .infinity, minHeight: 50)
-                    .background(chosen == nil || empty ? Color.gray : Color.accentColor, in: Capsule())
+                    .background(chosen == nil || empty || voice.retrying ? Color.gray : Color.accentColor, in: Capsule())
                     .foregroundStyle(.white)
                 }
-                .disabled(chosen == nil || empty || sending)
+                .disabled(chosen == nil || empty || sending || voice.retrying)
                 .accessibilityIdentifier("composeSend")
             }
             .padding(.horizontal, 20)

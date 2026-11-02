@@ -17,8 +17,12 @@ struct SwitchboardApp: App {
                 .onChange(of: delegate.model.vocabulary, initial: true) { _, v in delegate.voice.vocabulary = v }
         }
         .onChange(of: scenePhase) { old, new in
-            if new == .active, old != .active { delegate.model.becameActive() }
+            if new == .active, old != .active {
+                delegate.model.becameActive()
+                delegate.voice.cameToForeground()
+            }
             if new != .active { delegate.model.wentInactive() }
+            if new == .background { delegate.voice.wentToBackground() }
         }
     }
 }
@@ -27,7 +31,7 @@ struct SwitchboardApp: App {
 /// fetches the current state from the hub before showing or acting on anything.
 final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     @MainActor let model = AppModel()
-    @MainActor let voice = Voice()
+    @MainActor lazy var voice = Voice(key: model.voiceKey)
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions _: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = self

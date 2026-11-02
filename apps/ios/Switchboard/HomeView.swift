@@ -255,7 +255,7 @@ struct MicButton: View {
     let action: () -> Void
 
     var body: some View {
-        let listening = voice.phase == .listening
+        let listening = voice.phase == .listening || voice.phase == .transcribing
         Button(action: action) {
             Image(systemName: "mic.fill")
                 .font(.system(size: size * 0.38, weight: .semibold))

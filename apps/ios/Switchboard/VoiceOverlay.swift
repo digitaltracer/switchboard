@@ -6,11 +6,13 @@ struct VoiceOverlay: View {
     @Environment(Voice.self) private var voice
 
     var body: some View {
+        let shown = voice.phase == .listening || voice.phase == .transcribing
         ZStack(alignment: .bottom) {
-            if voice.phase == .listening {
+            if shown {
+                // A stray tap never throws away a recording that's already uploading.
                 Color.clear
                     .contentShape(Rectangle())
-                    .onTapGesture { voice.cancel() }
+                    .onTapGesture { if voice.phase == .listening { voice.cancel() } }
                     .accessibilityHidden(true)
                 ListeningPanel()
                     .padding(10)
@@ -19,7 +21,7 @@ struct VoiceOverlay: View {
             EdgeGlow()
         }
         .ignoresSafeArea()
-        .animation(.spring(response: 0.38, dampingFraction: 1), value: voice.phase == .listening)
+        .animation(.spring(response: 0.38, dampingFraction: 1), value: shown)
     }
 }
 
@@ -92,24 +94,20 @@ struct ListeningPanel: View {
                 .font(.title2.weight(.semibold))
                 .frame(maxWidth: .infinity, minHeight: 60, alignment: .topLeading)
                 .accessibilityIdentifier("transcript")
-            HStack {
-                CircleButton(symbol: "xmark", label: "Cancel") { voice.cancel() }
-                Spacer()
-                Button { voice.stop() } label: {
-                    HStack(spacing: 10) {
-                        LevelBars(level: voice.level)
-                        Text("Done")
-                    }
-                    .font(.headline)
-                    .padding(.leading, 16)
-                    .padding(.trailing, 20)
-                    .frame(height: 44)
-                    .background(Color(white: 0.11), in: Capsule())
-                    .foregroundStyle(.white)
+            if let notice = voice.notice {
+                Text(notice)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("voiceNotice")
+            }
+            if voice.phase == .transcribing {
+                HStack {
+                    CircleButton(symbol: "xmark", label: "Cancel") { voice.cancel() }
+                    Spacer()
+                    ProgressView()
                 }
-                .accessibilityIdentifier("voiceDone")
-                Spacer()
-                CircleButton(symbol: "keyboard", label: "Type instead") { voice.typeInstead() }
+            } else {
+                listeningControls
             }
         }
         .padding(EdgeInsets(top: 20, leading: 20, bottom: 16, trailing: 20))
@@ -120,9 +118,36 @@ struct ListeningPanel: View {
         }
     }
 
+    private var listeningControls: some View {
+        HStack {
+            CircleButton(symbol: "xmark", label: "Cancel") { voice.cancel() }
+            Spacer()
+            Button { voice.stop() } label: {
+                HStack(spacing: 10) {
+                    LevelBars(level: voice.level)
+                    Text("Done")
+                }
+                .font(.headline)
+                .padding(.leading, 16)
+                .padding(.trailing, 20)
+                .frame(height: 44)
+                .background(Color(white: 0.11), in: Capsule())
+                .foregroundStyle(.white)
+            }
+            .accessibilityIdentifier("voiceDone")
+            Spacer()
+            CircleButton(symbol: "keyboard", label: "Type instead") { voice.typeInstead() }
+        }
+    }
+
     /// Finished words in full colour, the one still being recognised in grey.
     private var transcript: Text {
         let words = voice.heard.split(separator: " ")
+        if voice.cloud {
+            let status = voice.phase == .transcribing ? "Transcribing…" : "Listening…"
+            guard !voice.text.isEmpty else { return Text(status).foregroundColor(.secondary) }
+            return Text(voice.text + "\n") + Text(status).foregroundColor(.secondary)
+        }
         guard let last = words.last else {
             return Text(voice.text.isEmpty ? "Listening…" : voice.text).foregroundColor(voice.text.isEmpty ? .secondary : .primary)
         }
