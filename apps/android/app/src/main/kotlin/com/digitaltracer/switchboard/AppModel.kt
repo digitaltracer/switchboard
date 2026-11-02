@@ -64,6 +64,7 @@ class AppModel(context: Context, val keys: DeviceKeys) {
     data class Said(val text: String, val at: Long)
 
     private val prefs = context.getSharedPreferences("switchboard", Context.MODE_PRIVATE)
+    val voiceKey = VoiceKey(prefs)
     private val scope = MainScope()
     private var pairJob: Job? = null
     private var pollJob: Job? = null
@@ -237,6 +238,7 @@ class AppModel(context: Context, val keys: DeviceKeys) {
         pollJob?.cancel()
         prefs.edit().remove(PAIRING).remove(SAID).apply()
         runCatching { keys.reset() }
+        voiceKey.remove()
         said = emptyMap()
         pairing = null
         hub = null

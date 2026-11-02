@@ -7,6 +7,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.AlertDialog
@@ -22,8 +24,11 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.digitaltracer.switchboard.api.models.Device
 import kotlinx.coroutines.CancellationException
@@ -87,6 +92,7 @@ fun SettingsScreen(model: AppModel) {
                 }
             }
         }
+        item { VoiceKeySection(model.voiceKey) }
         model.pairing?.let { p ->
             item {
                 InsetGroup("Hub") {
@@ -134,5 +140,56 @@ fun SettingsScreen(model: AppModel) {
             },
             dismissButton = { TextButton({ confirmForget = false }) { Text("Cancel", color = palette.accent) } },
         )
+    }
+}
+
+/** An OpenAI key, kept on this phone. Once saved it's never shown again. */
+@Composable
+private fun VoiceKeySection(key: VoiceKey) {
+    var entered by remember { mutableStateOf("") }
+    var failed by remember { mutableStateOf(false) }
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        InsetGroup("Voice") {
+            if (key.saved) {
+                GroupRow(true) {
+                    Row(Modifier.testTag("voiceKeySaved")) {
+                        Text("OpenAI", Modifier.weight(1f), style = Type.body, color = palette.label)
+                        Text("Key saved", style = Type.body, color = palette.secondary)
+                    }
+                }
+                Column(Modifier.fillMaxWidth().clickable { key.remove() }.testTag("voiceKeyRemove")) {
+                    GroupRow(false) { Text("Remove key", style = Type.body, color = palette.red) }
+                }
+            } else {
+                GroupRow(true) {
+                    BasicTextField(
+                        entered, { entered = it },
+                        Modifier.fillMaxWidth().testTag("voiceKeyField"),
+                        textStyle = Type.body.copy(color = palette.label),
+                        cursorBrush = SolidColor(palette.accent),
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, keyboardType = KeyboardType.Password),
+                        decorationBox = { inner ->
+                            if (entered.isEmpty()) Text("OpenAI API key", style = Type.body, color = palette.tertiary)
+                            inner()
+                        },
+                    )
+                }
+                val ready = entered.isNotBlank()
+                Column(
+                    Modifier.fillMaxWidth().clickable(enabled = ready) {
+                        failed = !key.save(entered)
+                        entered = ""
+                    }.testTag("voiceKeySave"),
+                ) {
+                    GroupRow(false) { Text("Save key", style = Type.body, color = if (ready) palette.accent else palette.tertiary) }
+                }
+            }
+            if (failed) {
+                GroupRow(false) { Text("This phone couldn't store the key, so voice stays on the device.", style = Type.footnote, color = palette.red) }
+            }
+        }
+        Text(VoiceKey.DISCLOSURE, Modifier.padding(horizontal = 16.dp), style = Type.footnote, color = palette.secondary)
     }
 }
