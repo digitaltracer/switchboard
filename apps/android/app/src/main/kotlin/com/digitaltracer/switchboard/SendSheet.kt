@@ -200,7 +200,7 @@ fun SendSheet(model: AppModel, voice: Voice, listen: Listen) {
                 if (voice.retrying) {
                     Row(Modifier.testTag("voiceRetrying"), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                         CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-                        Text("Transcribing…", style = Type.footnote, color = palette.secondary)
+                        Text("Transcribing with OpenAI…", style = Type.footnote, color = palette.secondary)
                     }
                 } else if (voice.canRetry) {
                     Box(

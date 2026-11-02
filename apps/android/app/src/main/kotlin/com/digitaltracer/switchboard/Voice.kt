@@ -28,8 +28,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
- * Voice mode: listen, then review where the words go before they're sent. Speech is
- * transcribed on the phone; only the text ever reaches the hub.
+ * Voice mode: listen, then review where the words go before they're sent. With no OpenAI key,
+ * speech is transcribed on the phone. With one, recordings go straight to OpenAI, along with the
+ * expected names. Either way, only the text ever reaches the hub.
  */
 class Voice(private val context: Context, private val key: VoiceKey, private val vocabulary: () -> List<String>) {
     enum class Phase { Idle, Listening, Transcribing, Review }

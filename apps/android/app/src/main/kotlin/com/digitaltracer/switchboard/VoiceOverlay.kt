@@ -207,7 +207,7 @@ private fun Transcript(voice: Voice) {
                 withStyle(SpanStyle(color = palette.label)) { append(voice.text + "\n") }
             }
             withStyle(SpanStyle(color = palette.secondary)) {
-                append(if (voice.phase == Voice.Phase.Transcribing) "Transcribing…" else "Listening…")
+                append(if (voice.phase == Voice.Phase.Transcribing) "Transcribing with OpenAI…" else "Recording for OpenAI…")
             }
         }
     } else if (words.isEmpty()) {
