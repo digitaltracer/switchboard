@@ -35,7 +35,7 @@ struct SendSheet: View {
                 if voice.retrying {
                     HStack(spacing: 8) {
                         ProgressView()
-                        Text("Transcribing…").font(.footnote).foregroundStyle(.secondary)
+                        Text("Transcribing with OpenAI…").font(.footnote).foregroundStyle(.secondary)
                     }
                     .accessibilityIdentifier("voiceRetrying")
                 } else if voice.canRetry {

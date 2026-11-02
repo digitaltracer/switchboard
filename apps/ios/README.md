@@ -86,6 +86,11 @@ automatic: Xcode, signed in to the team's account, creates the distribution cert
 profile when they're missing. Change its `teamID` along with `DEVELOPMENT_TEAM` for another team.
 
 `Switchboard/PrivacyInfo.xcprivacy` declares the app's one required-reason API (UserDefaults) and
-that it collects no data. `ITSAppUsesNonExemptEncryption` is `NO`: the relay encryption uses
-Apple's CryptoKit.
+the data that goes to OpenAI when the owner saves a key: audio, and project, branch, session and
+agent names. `ITSAppUsesNonExemptEncryption` is `NO`: the relay encryption uses Apple's CryptoKit.
+
+Before a release with cloud voice, update the App Store privacy answers and Play's Data safety form
+to say audio and those names go to a third party at the owner's choice. Check too whether App
+Review wants an explicit consent screen for sharing with a third-party AI: today, saving the key is
+the consent, and the Settings text says what is sent.
 

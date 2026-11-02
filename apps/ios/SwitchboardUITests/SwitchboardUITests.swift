@@ -202,7 +202,12 @@ final class SwitchboardUITests: XCTestCase {
         app.buttons["Done"].tap()
 
         app.buttons["micButton"].tap()
-        XCTAssertTrue(app.staticTexts["transcript"].waitForExistence(timeout: 5))
+        let status = app.staticTexts["transcript"]
+        XCTAssertTrue(status.waitForExistence(timeout: 5))
+        XCTAssertTrue(status.label.contains("Recording for OpenAI"), status.label)
+        let uploading = NSPredicate(format: "label CONTAINS 'Transcribing with OpenAI'")
+        expectation(for: uploading, evaluatedWith: status)
+        waitForExpectations(timeout: 15)
         let field = app.descendants(matching: .any)["composeField"]
         XCTAssertTrue(field.waitForExistence(timeout: 30), app.debugDescription)
         let send = app.buttons["composeSend"]

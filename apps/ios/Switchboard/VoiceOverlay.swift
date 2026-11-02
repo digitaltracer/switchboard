@@ -144,7 +144,7 @@ struct ListeningPanel: View {
     private var transcript: Text {
         let words = voice.heard.split(separator: " ")
         if voice.cloud {
-            let status = voice.phase == .transcribing ? "Transcribing…" : "Listening…"
+            let status = voice.phase == .transcribing ? "Transcribing with OpenAI…" : "Recording for OpenAI…"
             guard !voice.text.isEmpty else { return Text(status).foregroundColor(.secondary) }
             return Text(voice.text + "\n") + Text(status).foregroundColor(.secondary)
         }
