@@ -1,5 +1,16 @@
 import XCTest
 
+private extension XCUIElement {
+    func waitForEnabled(timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if isEnabled { return true }
+            usleep(200_000)
+        }
+        return isEnabled
+    }
+}
+
 /// Runs against a real hub. `scripts/e2e.sh` starts one, runs `pair-device`, and passes the link
 /// as `TEST_RUNNER_SB_PAIR_LINK`; without it the pairing test is skipped.
 final class SwitchboardUITests: XCTestCase {
@@ -144,6 +155,8 @@ final class SwitchboardUITests: XCTestCase {
         app.navigationBars.buttons.firstMatch.tap()
         app.navigationBars.buttons.firstMatch.tap()
 
+        if env["SB_EXPECT_PROJECT"] != nil { try cloudVoice(app) }
+
         if env["SB_EXPECT_PUSH"] != nil {
             // The script pairs a second device; the hub pushes "New device paired" through simctl.
             // The banner may have come and gone, so look in Notification Center.
@@ -160,6 +173,63 @@ final class SwitchboardUITests: XCTestCase {
             }
             XCTAssertTrue(found, "the push reached the simulator")
         }
+    }
+
+    /// The app again, still paired, with canned transcriptions: a success, then a failure with
+    /// Retry, with typing kept while the Retry runs. The recording itself is scripted too.
+    private func cloudVoice(_ app: XCUIApplication) throws {
+        app.terminate()
+        app.launchEnvironment["SB_RESET"] = nil
+        app.launchEnvironment["SB_PAIR_LINK"] = nil
+        app.launchEnvironment["SB_FAKE_VOICE"] = nil
+        app.launchEnvironment["SB_FAKE_TRANSCRIBE"] = "In demo run the benchmarks|error:server|and compare them with main"
+        app.launchEnvironment["SB_FAKE_TRANSCRIBE_MS"] = "6000"
+        app.launch()
+        XCTAssertTrue(app.navigationBars["Agents"].waitForExistence(timeout: 30), app.debugDescription)
+
+        // A saved key is never shown; removing it brings the field back.
+        app.buttons["devicesButton"].tap()
+        let keyField = app.secureTextFields["voiceKeyField"]
+        for _ in 0..<4 where !keyField.exists { app.swipeUp() }
+        XCTAssertTrue(keyField.waitForExistence(timeout: 5), app.debugDescription)
+        keyField.tap()
+        keyField.typeText("sk-fake-ui-test-key")
+        app.buttons["voiceKeySave"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["voiceKeySaved"].waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertFalse(app.staticTexts.containing(NSPredicate(format: "label CONTAINS 'sk-fake'")).firstMatch.exists)
+        app.buttons["voiceKeyRemove"].tap()
+        XCTAssertTrue(keyField.waitForExistence(timeout: 5), app.debugDescription)
+        app.buttons["Done"].tap()
+
+        app.buttons["micButton"].tap()
+        XCTAssertTrue(app.staticTexts["transcript"].waitForExistence(timeout: 5))
+        let field = app.descendants(matching: .any)["composeField"]
+        XCTAssertTrue(field.waitForExistence(timeout: 30), app.debugDescription)
+        let send = app.buttons["composeSend"]
+        XCTAssertEqual(field.value as? String, "In demo run the benchmarks")
+        XCTAssertTrue(app.staticTexts["previewMessage"].waitForExistence(timeout: 20), app.debugDescription)
+        snapshot(app, "review-cloud")
+
+        // Keep talking: this upload fails, and the words so far stay.
+        app.buttons["Keep talking"].tap()
+        let retry = app.buttons["voiceRetry"]
+        XCTAssertTrue(retry.waitForExistence(timeout: 30), app.debugDescription)
+        XCTAssertEqual(field.value as? String, "In demo run the benchmarks")
+        snapshot(app, "review-retry")
+
+        // Retry: Send waits, and what's typed meanwhile stays, with the result after it.
+        retry.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["voiceRetrying"].waitForExistence(timeout: 2), app.debugDescription)
+        XCTAssertFalse(send.isEnabled, "Send waits for the Retry")
+        field.tap()
+        field.typeText(" please")
+        XCTAssertTrue(retry.waitForNonExistence(timeout: 1))
+        let done = NSPredicate(format: "value CONTAINS 'please' AND value CONTAINS 'and compare them with main' AND value CONTAINS 'run the benchmarks'")
+        expectation(for: done, evaluatedWith: field)
+        waitForExpectations(timeout: 20)
+        XCTAssertTrue(send.waitForEnabled(timeout: 20), app.debugDescription)
+        app.buttons["Cancel"].firstMatch.tap()
+        XCTAssertTrue(app.navigationBars["Agents"].waitForExistence(timeout: 5))
     }
 
     /// A screenshot kept in the result bundle, for checking the design by eye.
