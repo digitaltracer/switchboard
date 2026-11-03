@@ -69,6 +69,15 @@ final class AppModel {
         let at: Date
     }
 
+    /// Messages just sent to an idle or done agent, by `saidKey`, shown as "Sent" until its status moves.
+    private(set) var awaiting: [String: Awaiting] = [:]
+
+    struct Awaiting {
+        let target: Schemas.TargetView
+        let status: String
+        let at: Date
+    }
+
     init(keys: DeviceKeys = SecureEnclaveKeys()) {
         self.keys = keys
         build = Int(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "") ?? 1
@@ -152,6 +161,7 @@ final class AppModel {
         UserDefaults.standard.removeObject(forKey: Self.saidStore)
         said = [:]
         lastSent = nil
+        awaiting = [:]
         try? keys.reset()
         voiceKey.remove()
         pairing = nil
@@ -187,12 +197,41 @@ final class AppModel {
     /// Remembers a message this phone sent, for the session page and the home screen.
     func record(sent text: String, to target: Schemas.TargetView?, started: Bool) {
         lastSent = Sent(target: target, text: text, started: started, at: Date())
-        guard let key = target.map(Self.saidKey(for:)) else { return }
+        guard let target else { return }
+        let key = Self.saidKey(for: target)
         said[key] = Said(text: text, at: Date())
         if said.count > Self.maxSaid, let oldest = said.min(by: { $0.value.at < $1.value.at })?.key {
             said[oldest] = nil
         }
         UserDefaults.standard.set(try? JSONEncoder().encode(said), forKey: Self.saidStore)
+        if let status = agentStatus(of: target), status == "idle" || status == "done" {
+            let entry = Awaiting(target: target, status: status, at: Date())
+            awaiting[key] = entry
+            Task { await watch(key, entry) }
+        }
+    }
+
+    private func agentStatus(of t: Schemas.TargetView) -> String? {
+        if let id = t.sessionId { return sessions.first { $0.id == id }?.agentStatus }
+        let name = t.agent ?? t.label
+        return agents.first { $0.machineId == t.machineId && $0.name == name }?.agentStatus
+    }
+
+    /// Re-reads agents often while a message waits, since only sessions are long-polled; gives up after 15 s.
+    private func watch(_ key: String, _ entry: Awaiting) async {
+        let end = entry.at.addingTimeInterval(15)
+        while Date() < end, awaiting[key]?.at == entry.at {
+            if entry.target.sessionId == nil { await refreshAgents() }
+            try? await Task.sleep(for: .milliseconds(1500))
+        }
+        if awaiting[key]?.at == entry.at { awaiting[key] = nil }
+    }
+
+    /// Drops waits whose agent has moved on from the status it had when the message went.
+    private func settleAwaiting() {
+        for (key, entry) in awaiting where agentStatus(of: entry.target).map({ $0 != entry.status }) ?? false {
+            awaiting[key] = nil
+        }
     }
 
     static func saidKey(for t: Schemas.TargetView) -> String {
@@ -220,6 +259,7 @@ final class AppModel {
         guard let hub, let list = try? await hub.agents() else { return }
         agents = list.agents
         ended = list.ended ?? []
+        settleAwaiting()
     }
 
     /// Every Herdr session with its agents, whoever started them. Ended agents count from `since`,
@@ -241,6 +281,7 @@ final class AppModel {
                     if self.projects.isEmpty, let p = try? await hub.projects() { self.projects = p }
                     let list = try await hub.sessions(after: revision)
                     self.sessions = list.sessions
+                    self.settleAwaiting()
                     revision = list.revision
                     self.connected = true
                     self.unreachable = false

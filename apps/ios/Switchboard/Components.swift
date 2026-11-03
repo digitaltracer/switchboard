@@ -43,6 +43,8 @@ struct SessionStatus {
     }
 
     static let ended = SessionStatus("Ended", .secondary, "moon.zzz")
+    /// A message just went, and the agent hasn't been seen to pick it up yet.
+    static let sent = SessionStatus("Sent", .working, "paperplane")
 
     init(agentStatus: String) {
         switch agentStatus {

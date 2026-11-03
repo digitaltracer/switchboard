@@ -296,7 +296,8 @@ struct ConversationScreen: View {
     }
 
     private var status: SessionStatus? {
-        switch ref.source {
+        if let target, model.awaiting[AppModel.saidKey(for: target)] != nil { return .sent }
+        return switch ref.source {
         case .session(let id): model.sessions.first { $0.id == id }.map(SessionStatus.init)
         case .agent(let machine, let name):
             model.agents.first { $0.machineId == machine && $0.name == name }.map { SessionStatus(agentStatus: $0.agentStatus) }
@@ -743,7 +744,7 @@ struct StatusLine: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            if status.text == "Working" { ProgressView().controlSize(.small) } else { Image(systemName: status.symbol) }
+            if status.text == "Working" || status.text == "Sent" { ProgressView().controlSize(.small) } else { Image(systemName: status.symbol) }
             Text(status.text)
         }
         .font(.footnote.weight(.medium))
