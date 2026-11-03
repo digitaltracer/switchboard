@@ -445,10 +445,17 @@ private fun MessageBar(enabled: Boolean, type: () -> Unit, talk: () -> Unit) {
     }
 }
 
-private fun status(model: AppModel, source: ConversationSource): SessionStatus? = when (source) {
-    is ConversationSource.Session -> model.sessions.firstOrNull { it.id == source.id }?.let(SessionStatus::of)
-    is ConversationSource.Agent ->
-        model.agents.firstOrNull { it.machineId == source.machine && it.name == source.name }?.let { SessionStatus.agent(it.agentStatus) }
+private fun status(model: AppModel, source: ConversationSource): SessionStatus? {
+    val key = when (source) {
+        is ConversationSource.Session -> source.id
+        is ConversationSource.Agent -> AppModel.saidKey(agentTarget(source.machine, source.name))
+    }
+    if (key in model.awaiting) return SessionStatus.sent
+    return when (source) {
+        is ConversationSource.Session -> model.sessions.firstOrNull { it.id == source.id }?.let(SessionStatus::of)
+        is ConversationSource.Agent ->
+            model.agents.firstOrNull { it.machineId == source.machine && it.name == source.name }?.let { SessionStatus.agent(it.agentStatus) }
+    }
 }
 
 /** What the agent last said and what its work since your last message came to, for a session or agent page. */

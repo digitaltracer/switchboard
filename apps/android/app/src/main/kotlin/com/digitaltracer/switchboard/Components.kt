@@ -102,6 +102,9 @@ data class SessionStatus(val text: String, val kind: Kind, val symbol: ImageVect
         }
 
         val ended = SessionStatus("Ended", Kind.Quiet, Icons.Outlined.Bedtime)
+
+        /** A message just went, and the agent hasn't been seen to pick it up yet. */
+        val sent = SessionStatus("Sent", Kind.Working, Icons.Outlined.MonitorHeart)
     }
 }
 

@@ -124,6 +124,12 @@ class AppModel(context: Context, val keys: DeviceKeys) {
     /** The last message sent from the home screen's voice or keyboard, shown there for a while. */
     var lastSent by mutableStateOf<Sent?>(null)
 
+    class Awaiting(val target: TargetView, val status: String, val at: Long)
+
+    /** Messages just sent to an idle or done agent, by [saidKey], shown as "Sent" until its status moves. */
+    var awaiting by mutableStateOf<Map<String, Awaiting>>(emptyMap())
+        private set
+
     enum class Appearance(val label: String) { System("System"), Light("Light"), Dark("Dark") }
 
     /** Light, dark or the phone's own setting; kept when the hub is forgotten. */
@@ -251,6 +257,7 @@ class AppModel(context: Context, val keys: DeviceKeys) {
         unreachable = false
         current = null
         lastSent = null
+        awaiting = emptyMap()
         path.clear()
         phase = Phase.Unpaired
     }
@@ -311,6 +318,31 @@ class AppModel(context: Context, val keys: DeviceKeys) {
         val next = said + (saidKey(to) to Said(sent, System.currentTimeMillis()))
         said = if (next.size > MAX_SAID) next - next.minBy { it.value.at }.key else next
         prefs.edit().putString(SAID, Json.encodeToString(saidSerializer, said)).apply()
+        val status = agentStatus(to)
+        if (status == "idle" || status == "done") {
+            val key = saidKey(to)
+            val entry = Awaiting(to, status, System.currentTimeMillis())
+            awaiting = awaiting + (key to entry)
+            scope.launch { watch(key, entry) }
+        }
+    }
+
+    private fun agentStatus(t: TargetView): String? =
+        if (t.sessionId != null) sessions.firstOrNull { it.id == t.sessionId }?.agentStatus
+        else agents.firstOrNull { it.machineId == t.machineId && it.name == (t.agent ?: t.label) }?.agentStatus
+
+    /** Re-reads agents often while a message waits, since only sessions are long-polled; gives up after 15 s. */
+    private suspend fun watch(key: String, entry: Awaiting) {
+        while (System.currentTimeMillis() < entry.at + AWAIT_MS && awaiting[key] === entry) {
+            if (entry.target.sessionId == null) refreshAgents()
+            delay(1_500)
+        }
+        if (awaiting[key] === entry) awaiting = awaiting - key
+    }
+
+    /** Drops waits whose agent has moved on from the status it had when the message went. */
+    private fun settleAwaiting() {
+        awaiting = awaiting.filterValues { agentStatus(it.target)?.let { s -> s == it.status } ?: true }
     }
 
     /** Names the speech recognizer should expect: projects, sessions and agents, as written and as spoken. */
@@ -329,6 +361,7 @@ class AppModel(context: Context, val keys: DeviceKeys) {
         runCatching { hub.agents() }.onSuccess {
             agents = it.agents
             ended = it.ended.orEmpty()
+            settleAwaiting()
         }
     }
 
@@ -349,6 +382,7 @@ class AppModel(context: Context, val keys: DeviceKeys) {
                     if (projects.isEmpty()) runCatching { hub.projects() }.onSuccess { projects = it }
                     val list = hub.sessions(after = revision)
                     sessions = list.sessions
+                    settleAwaiting()
                     revision = list.revision
                     connected = true
                     unreachable = false
@@ -380,6 +414,7 @@ class AppModel(context: Context, val keys: DeviceKeys) {
         private const val APPEARANCE = "appearance"
         private const val PUSH_TOKEN = "push_token"
         private const val MAX_SAID = 50
+        private const val AWAIT_MS = 15_000L
         private val saidSerializer = MapSerializer(String.serializer(), Said.serializer())
 
         fun saidKey(t: TargetView) = t.sessionId ?: "agent:${t.machineId}/${t.agent ?: t.label}"
