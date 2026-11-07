@@ -82,6 +82,9 @@ class AppModel(context: Context, val keys: DeviceKeys) {
     var hub by mutableStateOf<Hub?>(null)
         private set
     var pairingError by mutableStateOf<String?>(null)
+
+    /** A short notice over every screen, such as why a notification opened nothing new. */
+    var banner by mutableStateOf<String?>(null)
     var sessions by mutableStateOf<List<Session>>(emptyList())
         private set
     var connected by mutableStateOf(false)
@@ -293,9 +296,19 @@ class AppModel(context: Context, val keys: DeviceKeys) {
             val hub = hub ?: return@launch
             val route = when {
                 t.attentionId != null -> {
-                    val a = runCatching { hub.attention(t.attentionId!!) }.getOrNull() ?: return@launch
-                    if (a.state != "open") return@launch
-                    a.sessionId?.let { Route.SessionPage(it) } ?: Route.AgentPage(a.machineId, a.agent)
+                    val a = runCatching { hub.attention(t.attentionId!!) }.getOrNull()
+                    if (a == null) {
+                        banner = "Couldn't reach the hub to open that notification. Try again in a moment."
+                        t.sessionId?.let { Route.SessionPage(it) } ?: return@launch
+                    } else {
+                        when (a.state) {
+                            "open" -> {}
+                            "answered" -> banner = "That question was already answered."
+                            "expired" -> banner = "That question expired. Here's the agent now."
+                            else -> banner = "The agent has moved on from that question. Here it is now."
+                        }
+                        a.sessionId?.let { Route.SessionPage(it) } ?: Route.AgentPage(a.machineId, a.agent)
+                    }
                 }
                 t.sessionId != null -> Route.SessionPage(t.sessionId!!)
                 else -> return@launch

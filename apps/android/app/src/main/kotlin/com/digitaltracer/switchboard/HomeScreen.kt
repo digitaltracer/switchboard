@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -81,6 +82,19 @@ fun PairedRoot(model: AppModel, voice: Voice) {
             Route.Projects -> ProjectsScreen(model)
             Route.Settings -> SettingsScreen(model)
             is Route.Conversation -> ConversationScreen(model, voice, listen, route.source, route.title, route.screen)
+        }
+        model.banner?.let { b ->
+            LaunchedEffect(b) {
+                delay(6_000)
+                if (model.banner == b) model.banner = null
+            }
+            Text(
+                b,
+                Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(horizontal = 16.dp, vertical = 8.dp)
+                    .card(20.dp, palette.card).clickable { model.banner = null }.padding(horizontal = 14.dp, vertical = 10.dp)
+                    .testTag("banner"),
+                style = Type.footnote, fontWeight = FontWeight.Medium, color = palette.label,
+            )
         }
         VoiceOverlay(voice)
     }
