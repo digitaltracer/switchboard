@@ -72,11 +72,11 @@ val HerdrSession.Agent.machineId: String
         is HerdrSession.Agent.Ended -> agent.machineId
     }
 
-/** Its name within its session: the Herdr name without the session, or its kind and pane when it has none, e.g. `claude · w2:p1`. */
+/** Its name within its session: a task's label, a live agent's `<space> › <agent>`, or an ended agent's Herdr name, or its kind and pane when it has none, e.g. `claude · w2:p1`. */
 val HerdrSession.Agent.shortName: String
     get() = when (this) {
         is HerdrSession.Agent.Task -> session.label
-        is HerdrSession.Agent.Live -> short(agent.name, agent.kind)
+        is HerdrSession.Agent.Live -> agent.displayName
         is HerdrSession.Agent.Ended -> short(agent.name, agent.kind)
     }
 

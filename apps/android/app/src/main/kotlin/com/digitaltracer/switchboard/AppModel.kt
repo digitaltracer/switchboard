@@ -22,7 +22,7 @@ import com.digitaltracer.switchboard.core.KeyRole
 import com.digitaltracer.switchboard.core.Pairing
 import com.digitaltracer.switchboard.core.PairingLink
 import com.digitaltracer.switchboard.core.PushTarget
-import com.digitaltracer.switchboard.core.displayName
+import com.digitaltracer.switchboard.core.isNamed
 import java.net.URI
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -364,7 +364,7 @@ class AppModel(context: Context, val keys: DeviceKeys) {
             val names = mutableListOf("Switchboard", "Herdr", "Claude", "Codex", "worktree")
             projects.forEach { names += listOf(it.id) + it.aliases }
             sessions.forEach { names += listOfNotNull(it.label, it.branch) }
-            agents.filter { it.displayName == it.name }.forEach { names += it.name.substringAfterLast('/') }
+            agents.filter { it.isNamed }.forEach { names += it.name.substringAfterLast('/') }
             val seen = mutableSetOf<String>()
             return names.flatMap { listOf(it, it.replace(Regex("[-_/]+"), " ")) }.filter { seen.add(it.lowercase()) }.take(100)
         }

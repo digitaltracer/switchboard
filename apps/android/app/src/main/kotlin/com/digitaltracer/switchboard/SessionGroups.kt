@@ -19,8 +19,10 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.digitaltracer.switchboard.core.HerdrSession
 import com.digitaltracer.switchboard.core.agentStatus
+import com.digitaltracer.switchboard.core.isNamed
 import com.digitaltracer.switchboard.core.needsYou
 import com.digitaltracer.switchboard.core.shortName
+import com.digitaltracer.switchboard.core.shownTitle
 import kotlinx.coroutines.delay
 
 /** "3 agents · 1 working", or when it ended. */
@@ -58,7 +60,10 @@ val HerdrSession.Agent.subtitle: String
     get() = when (this) {
         is HerdrSession.Agent.Task ->
             listOfNotNull(if (isEnded) ended(session.updatedAt) else status.text, session.agent.capitalized(), session.branch).joinToString(" · ")
-        is HerdrSession.Agent.Live -> listOfNotNull(status.text, agent.title ?: agent.kind?.capitalized()).joinToString(" · ")
+        is HerdrSession.Agent.Live -> {
+            val kind = agent.kind?.capitalized()
+            listOfNotNull(status.text, if (agent.isNamed) agent.shownTitle ?: kind else agent.shownTitle?.let { kind }).joinToString(" · ")
+        }
         is HerdrSession.Agent.Ended -> listOfNotNull(ended(agent.endedAt), agent.title ?: agent.kind?.capitalized()).joinToString(" · ")
     }
 

@@ -77,15 +77,25 @@ class RoutingTest {
     }
 
     @Test
-    fun anAgentWithoutANameGoesByItsKindAndPane() {
+    fun anAgentGoesByItsSpaceAndNameOrTitleOrKindOrPane() {
         val agents: Agents = decode(
             """
-            {"agents":[{"machine_id":"mac","name":"mono1/claude","agent_status":"idle","title":"Ignored"},
-                       {"machine_id":"mac","name":"mono1/w1:p2","kind":"claude","agent_status":"idle","title":"Session approval"},
+            {"agents":[{"machine_id":"mac","name":"meeting-booking/orchestrator","agent_status":"idle","title":"Ignored","space":"MindTickle Problem"},
+                       {"machine_id":"mac","name":"meeting-booking/w1:pE","kind":"claude","agent_status":"idle","title":"Release log errors","space":"MindTickle Problem"},
+                       {"machine_id":"mac","name":"db-pool/w1:p1","kind":"claude","agent_status":"idle","title":"  ","space":"inbound-se-backend"},
+                       {"machine_id":"mac","name":"mono1/claude","agent_status":"idle","space":"1"},
+                       {"machine_id":"mac","name":"mono1/w1:p2","kind":"codex","agent_status":"idle","space":" "},
                        {"machine_id":"mac","name":"mono1/w1:p3","agent_status":"idle"}]}
             """,
         )
-        assertEquals(listOf("mono1/claude", "claude · w1:p2", "agent · w1:p3"), agents.agents.map { it.displayName })
+        assertEquals(
+            listOf(
+                "MindTickle Problem › orchestrator", "MindTickle Problem › Release log errors", "inbound-se-backend › Claude",
+                "claude", "Codex", "w1:p3",
+            ),
+            agents.agents.map { it.displayName },
+        )
+        assertEquals(listOf(true, false, false, true, false, false), agents.agents.map { it.isNamed })
     }
 
     @Test

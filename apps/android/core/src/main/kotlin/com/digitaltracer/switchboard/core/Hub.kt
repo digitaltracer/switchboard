@@ -437,12 +437,31 @@ class Hub private constructor(
         authed { devicesApi.setPushToken(PushTokenRequest(PushEnvironment.production, token, PushProviderKind.fcm)) }
 }
 
-/** Its Herdr name, or its kind and pane when it has none, e.g. `claude · w2:p1`. Its terminal title is what it's working on, not a name. */
+/** `<space> › <agent>`, as Herdr shows it, e.g. `MindTickle Problem › orchestrator`. A space labelled only with a number, Herdr's default, is left out. */
 val AgentView.displayName: String
     get() {
-        val pane = name.substringAfterLast('/')
-        return if (pane.contains(':')) "${kind ?: "agent"} · $pane" else name
+        val space = space?.trim().orEmpty()
+        return if (space.all { it in '0'..'9' }) agentLabel else "$space › $agentLabel"
     }
+
+/** Its Herdr name without the session; with none, its terminal title, then its kind, then its pane. */
+val AgentView.agentLabel: String
+    get() {
+        val last = name.substringAfterLast('/')
+        return when {
+            isNamed -> last
+            shownTitle != null -> shownTitle!!
+            else -> kind?.replaceFirstChar { it.uppercase() } ?: last
+        }
+    }
+
+/** Whether it has a Herdr name, rather than going by its pane. */
+val AgentView.isNamed: Boolean
+    get() = !name.substringAfterLast('/').contains(':')
+
+/** Its terminal title, when it says anything. */
+val AgentView.shownTitle: String?
+    get() = title?.trim()?.takeIf { it.isNotEmpty() }
 
 fun sessionTarget(s: Session) = TargetView("session", s.machineId, s.label, s.id, s.agentName)
 
