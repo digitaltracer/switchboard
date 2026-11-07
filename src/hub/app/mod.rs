@@ -805,14 +805,22 @@ async fn follow(
 }
 
 #[utoipa::path(get, path = "/app/v1/agents", tag = "agents", security(("device_token" = [])),
-    responses((status = 200, description = "OK", body = Agents)))]
+    params(AgentsQuery), responses((status = 200, description = "OK", body = Agents)))]
 /// Herdr agents Switchboard didn't start, on every connected machine, and those that ended in
-/// the last day.
-pub async fn list_agents(State(st): State<AppState>, _d: DeviceAuth) -> ApiResult<Agents> {
-    let agents = st
-        .svc
-        .herdr_agents()
-        .await?
+/// the last day. With `activity=true`, also every agent's last line where its machine can say.
+pub async fn list_agents(
+    State(st): State<AppState>,
+    _d: DeviceAuth,
+    Query(q): Query<AgentsQuery>,
+) -> ApiResult<Agents> {
+    let activity = async {
+        match q.activity {
+            true => Some(st.svc.activity().await),
+            false => None,
+        }
+    };
+    let (agents, activity) = tokio::join!(st.svc.herdr_agents(), activity);
+    let agents = agents?
         .into_iter()
         .map(|(machine_id, a)| AgentView {
             machine_id,
@@ -831,7 +839,27 @@ pub async fn list_agents(State(st): State<AppState>, _d: DeviceAuth) -> ApiResul
         .into_iter()
         .map(Into::into)
         .collect();
-    Ok(Json(Agents { agents, ended }))
+    let (activity, activity_machines) = activity
+        .map(|(entries, machines)| {
+            let entries = entries
+                .into_iter()
+                .map(|(machine_id, a)| AgentActivityView {
+                    machine_id,
+                    name: a.name,
+                    session_id: a.session_id,
+                    line: a.line,
+                    at: a.at,
+                })
+                .collect();
+            (entries, machines)
+        })
+        .unzip();
+    Ok(Json(Agents {
+        agents,
+        ended,
+        activity,
+        activity_machines,
+    }))
 }
 
 #[utoipa::path(get, path = "/app/v1/agents/transcript", tag = "agents",

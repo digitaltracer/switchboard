@@ -1188,6 +1188,69 @@ async fn an_agents_skills_come_from_its_runner_masked() {
 }
 
 #[tokio::test]
+async fn activity_comes_from_a_runner_that_advertises_it_masked() {
+    let mut r = rig_advertising("", vec![crate::proto::CAP_ACTIVITY.into()]).await;
+    let (_, token) = r.pair(&Phone::new()).await;
+    let call = r.call_later("GET", "/agents?activity=true", &token, Value::Null);
+    for _ in 0..2 {
+        let req = r.req().await;
+        let reply = match req.op {
+            Op::Agents => agents_reply(),
+            Op::Activity => json!([
+                {"name": "mono1/claude", "session_id": null,
+                 "line": "Pushed with ghp_abcdefghijklmnopqrstuvwxyz0123456789", "at": "2026-11-07T09:00:00Z"},
+                {"name": "mono1/w1:p2", "session_id": null, "line": null, "at": null},
+                {"name": "sb-task", "session_id": "s-task", "line": "Ran cargo test", "at": null},
+            ]),
+            other => panic!("unexpected {other:?}"),
+        };
+        r.ok(req.id, reply).await;
+    }
+    let reply = call.await.unwrap();
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(reply.body["activity_machines"], json!(["mac"]));
+    let activity = reply.body["activity"].as_array().unwrap();
+    assert_eq!(activity.len(), 3, "one entry per agent, sessions' included");
+    let line = activity[0]["line"].as_str().unwrap();
+    assert!(
+        line.starts_with("Pushed with") && !line.contains("ghp_abc"),
+        "{line}"
+    );
+    assert_eq!(activity[0]["machine_id"], "mac");
+    assert!(activity[1].get("line").is_none(), "no line yet");
+    assert_eq!(activity[2]["session_id"], "s-task");
+
+    // Without asking, the list is as before.
+    let call = r.call_later("GET", "/agents", &token, Value::Null);
+    let req = r.req().await;
+    assert!(matches!(req.op, Op::Agents));
+    r.ok(req.id, agents_reply()).await;
+    let plain = call.await.unwrap();
+    assert!(plain.body.get("activity").is_none() && plain.body.get("activity_machines").is_none());
+}
+
+#[tokio::test]
+async fn an_older_runner_is_never_asked_for_activity() {
+    let mut r = rig().await;
+    let (_, token) = r.pair(&Phone::new()).await;
+    let start = Instant::now();
+    let call = r.call_later("GET", "/agents?activity=true", &token, Value::Null);
+    let req = r.req().await;
+    assert!(matches!(req.op, Op::Agents), "{:?}", req.op);
+    r.ok(req.id, agents_reply()).await;
+    let reply = call.await.unwrap();
+    assert!(
+        start.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        start.elapsed()
+    );
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(reply.body["activity"], json!([]));
+    assert_eq!(reply.body["activity_machines"], json!([]));
+    assert!(r.runner.try_recv().is_err(), "nothing else was sent");
+}
+
+#[tokio::test]
 async fn an_agent_that_leaves_its_pane_is_listed_as_ended() {
     let mut r = rig().await;
     let (_, token) = r.pair(&Phone::new()).await;

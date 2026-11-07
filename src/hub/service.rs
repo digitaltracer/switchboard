@@ -19,8 +19,8 @@ use crate::agents::claude::answers;
 use crate::cli::Agent;
 use crate::config::{HubConfig, ProjectConfig};
 use crate::proto::{
-    AgentPromptOutcome, AgentSummary, DialogView, ErrorCode, Event, Frame, Hello, Op, OwnedSession,
-    ProtoError, SkillInfo, TranscriptPage,
+    AgentActivity, AgentPromptOutcome, AgentSummary, CAP_ACTIVITY, DialogView, ErrorCode, Event,
+    Frame, Hello, Op, OwnedSession, ProtoError, SkillInfo, TranscriptPage,
 };
 use crate::redact::{redact, redact_as, redact_str};
 use crate::runner::random_id;
@@ -46,6 +46,8 @@ pub const MAX_WAIT: Duration = Duration::from_secs(25);
 pub const MAX_TRANSCRIPT_WAIT: Duration = Duration::from_secs(20);
 pub const MAX_READ_LINES: u32 = 500;
 pub const SWEEP_INTERVAL: Duration = Duration::from_secs(1);
+/// How long the agent list waits for a machine's activity before going on without it.
+pub const ACTIVITY_TIMEOUT: Duration = Duration::from_secs(3);
 const AGENT_WATCH_INTERVAL: Duration = Duration::from_secs(15);
 /// How far back the app is shown agents that ended.
 const ENDED_WINDOW_MS: i64 = 24 * 60 * 60 * 1000;
@@ -1689,6 +1691,49 @@ impl SessionService {
         out
     }
 
+    /// Every agent's last line on the connected machines whose runner advertises activity,
+    /// asked in parallel, with the machines that answered. An older runner is never asked, since
+    /// it can't decode the op and would never reply.
+    pub async fn activity(&self) -> (Vec<(String, AgentActivity)>, Vec<String>) {
+        let machines: Vec<String> = self
+            .machines()
+            .into_iter()
+            .filter(|m| m.connected && self.runners.can(&m.id, CAP_ACTIVITY))
+            .map(|m| m.id)
+            .collect();
+        let calls = machines.into_iter().map(|m| async move {
+            let call = self.runners.call(&m, Op::Activity, ACTIVITY_TIMEOUT);
+            match tokio::time::timeout(ACTIVITY_TIMEOUT, call).await {
+                Ok(Ok(v)) => match serde_json::from_value::<Vec<AgentActivity>>(v) {
+                    Ok(list) => Some((m, list)),
+                    Err(e) => {
+                        tracing::warn!(machine = %m, error = %e, "runner activity");
+                        None
+                    }
+                },
+                Ok(Err(e)) => {
+                    tracing::debug!(machine = %m, error = %e, "runner activity");
+                    None
+                }
+                Err(_) => {
+                    tracing::debug!(machine = %m, "runner activity timed out");
+                    None
+                }
+            }
+        });
+        let mut entries = Vec::new();
+        let mut answered = Vec::new();
+        for (m, list) in futures_util::future::join_all(calls)
+            .await
+            .into_iter()
+            .flatten()
+        {
+            entries.extend(list.into_iter().map(|a| (m.clone(), a)));
+            answered.push(m);
+        }
+        (entries, answered)
+    }
+
     /// Agents Switchboard didn't start, on every connected machine.
     pub async fn herdr_agents(&self) -> Result<Vec<(String, AgentSummary)>, HubError> {
         let running = self
@@ -2692,6 +2737,7 @@ impl SessionService {
             runner_version: hello.runner_version.clone(),
             herdr_version: hello.herdr_version.clone(),
             connected_at: self.now(),
+            capabilities: hello.capabilities.clone(),
         };
         let (generation, rx) = self.runners.attach(machine, info.clone());
         let reconciled = async {

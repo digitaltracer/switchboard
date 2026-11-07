@@ -805,6 +805,45 @@ pub struct Agents {
     /// leave it out.
     #[schema(required = false)]
     pub ended: Vec<EndedAgent>,
+    /// With `activity=true`: every agent's last line, sessions' agents included, on the machines
+    /// in `activity_machines`, one entry per agent. Older hubs leave it out.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    pub activity: Option<Vec<AgentActivityView>>,
+    /// With `activity=true`: the machines `activity` covers. For an agent on any other machine,
+    /// read its conversation instead.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    pub activity_machines: Option<Vec<String>>,
+}
+
+#[derive(Debug, Default, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct AgentsQuery {
+    /// Adds `activity` and `activity_machines`.
+    #[serde(default)]
+    pub activity: bool,
+}
+
+/// The first line of the last thing an agent said or did, as a tile shows it.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AgentActivityView {
+    pub machine_id: String,
+    /// As in `AgentView`; for a session's agent, its Herdr name.
+    pub name: String,
+    /// Set when the agent is a session's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    pub session_id: Option<String>,
+    /// At most about 200 characters, masked. Absent when the agent has said nothing yet.
+    /// Untrusted text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    pub line: Option<String>,
+    /// When the line was written, as an RFC 3339 time from the agent's log.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    pub at: Option<String>,
 }
 
 /// An agent that has left its pane. Sessions Switchboard started keep their own records.

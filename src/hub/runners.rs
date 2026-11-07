@@ -31,6 +31,9 @@ pub struct RunnerInfo {
     pub runner_version: String,
     pub herdr_version: Option<String>,
     pub connected_at: i64,
+    /// What its hello advertised, e.g. `activity`.
+    #[serde(skip)]
+    pub capabilities: Vec<String>,
 }
 
 #[derive(Default)]
@@ -120,6 +123,16 @@ impl Runners {
             .unwrap()
             .get(machine)
             .and_then(|s| s.info.clone())
+    }
+
+    /// Whether the current connection of `machine` advertised `capability`.
+    pub fn can(&self, machine: &str, capability: &str) -> bool {
+        let slots = self.slots.lock().unwrap();
+        slots
+            .get(machine)
+            .filter(|s| s.tx.is_some())
+            .and_then(|s| s.info.as_ref())
+            .is_some_and(|i| i.capabilities.iter().any(|c| c == capability))
     }
 
     /// Sends `op` on the current connection; `runner_disconnected` means it was never sent.
