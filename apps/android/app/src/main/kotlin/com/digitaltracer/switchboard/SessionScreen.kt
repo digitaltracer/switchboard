@@ -198,6 +198,8 @@ fun SessionScreen(model: AppModel, voice: Voice, listen: Listen, sessionId: Stri
             }
             model.said[s.id]?.let { item { SaidBubble(it) } }
             items(s.pendingApprovals, key = { it.id }) { a -> ApprovalCard(model, a, s, decided = { refresh() }) }
+            val name = s.agentName
+            if (s.lifecycle == "running" && name != null) item { DialogCard(model, s.machineId, name, s.label) }
             item {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     SummaryCard(convo) { model.path.add(Route.Conversation(ConversationSource.Session(s.id), s.label)) }

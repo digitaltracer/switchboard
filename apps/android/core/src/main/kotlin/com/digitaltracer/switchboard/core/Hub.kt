@@ -49,6 +49,7 @@ import com.digitaltracer.switchboard.api.models.StopRequest
 import com.digitaltracer.switchboard.api.models.StopResponse
 import com.digitaltracer.switchboard.api.models.Approval
 import com.digitaltracer.switchboard.api.models.Attention
+import com.digitaltracer.switchboard.api.models.AgentDialog
 import com.digitaltracer.switchboard.api.models.Dialog
 import com.digitaltracer.switchboard.api.models.DialogAnswerRequest
 import com.digitaltracer.switchboard.api.models.DialogAnswerResponse
@@ -401,7 +402,8 @@ class Hub private constructor(
     // Dialogs on an agent's screen.
 
     /** The dialog on any agent's screen; null when none is recognised. */
-    suspend fun dialog(machine: String, agent: String): Dialog? = authed { agentsApi.getAgentDialog(machine, agent).dialog }
+    /** What the agent's screen shows: a dialog with options, or whether it waits on something else. */
+    suspend fun dialog(machine: String, agent: String): AgentDialog = authed { agentsApi.getAgentDialog(machine, agent) }
 
     /** Picks one offered option: the deny unsigned, any other option signed with the approval key. */
     suspend fun answer(machine: String, agent: String, dialog: Dialog, option: DialogOption, reason: String, requestId: String): DialogAnswerResponse {

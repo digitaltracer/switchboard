@@ -21,6 +21,7 @@ import androidx.compose.ui.unit.dp
 import com.digitaltracer.switchboard.core.ConversationSource
 import com.digitaltracer.switchboard.core.agentTarget
 import com.digitaltracer.switchboard.core.displayName
+import kotlinx.coroutines.delay
 
 /**
  * A Herdr agent Switchboard didn't start: its latest turns, refreshed while on screen. A dialog on
@@ -33,6 +34,13 @@ fun AgentScreen(model: AppModel, voice: Voice, listen: Listen, machine: String, 
     val label = info?.displayName ?: name
 
     LaunchedEffect(machine, name, model.wakes, model.foreground) { if (model.foreground) convo.follow(model) }
+    // Its status pill: only home refreshes agents otherwise, and home isn't showing now.
+    LaunchedEffect(machine, name, model.wakes, model.foreground) {
+        while (model.foreground) {
+            model.refreshAgents()
+            delay(5_000)
+        }
+    }
 
     val target = agentTarget(machine, name, label)
     Page(model.backLabel, model::pop, bottomBar = {
@@ -56,7 +64,7 @@ fun AgentScreen(model: AppModel, voice: Voice, listen: Listen, machine: String, 
                 }
             }
             info?.title?.takeIf { it.isNotEmpty() }?.let { Text(it, style = Type.subheadline, fontWeight = FontWeight.SemiBold, color = palette.label) }
-            DialogCard(model, machine, name, label, info?.agentStatus)
+            DialogCard(model, machine, name, label)
             model.said[AppModel.saidKey(agentTarget(machine, name, label))]?.let { SaidBubble(it) }
             SummaryCard(convo) { model.path.add(Route.Conversation(ConversationSource.Agent(machine, name), label)) }
             ConversationLinks(model, ConversationSource.Agent(machine, name), label, hasConversation = convo.unavailable == null)

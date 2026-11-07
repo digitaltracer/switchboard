@@ -71,32 +71,54 @@ fun OptionList(prompt: String, options: List<OptionItem>, selected: Set<String>,
 
 /**
  * The dialog on an agent's screen, answered from the phone when Switchboard recognises it. Any
- * option but the deny asks for a fingerprint or the screen lock. A dialog that changed is read again.
+ * option but the deny asks for a fingerprint or the screen lock. It reads the screen itself while
+ * shown, so a dialog that appears after the page opened still shows, and says so when the agent
+ * waits on something else.
  */
 @Composable
-fun DialogCard(model: AppModel, machine: String, agent: String, label: String, status: String?) {
+fun DialogCard(model: AppModel, machine: String, agent: String, label: String) {
     val scope = rememberCoroutineScope()
     var dialog by remember { mutableStateOf<Dialog?>(null) }
+    // Waiting on something the phone can't show as options.
+    var waitingElsewhere by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var result by remember { mutableStateOf<String?>(null) }
     suspend fun load() {
-        val hub = model.hub
-        if (hub == null || status != "blocked") {
-            dialog = null
-            return
-        }
-        // A failed read keeps what is shown; no dialog clears it.
-        if (!busy) runCatching { hub.dialog(machine, agent) }.onSuccess { dialog = it }
+        val hub = model.hub ?: return
+        if (busy) return
+        // A failed read keeps what is shown.
+        val d = runCatching { hub.dialog(machine, agent) }.getOrNull() ?: return
+        if (dialog != null && d.dialog != null && d.dialog?.occurrenceId != dialog?.occurrenceId) result = null
+        dialog = d.dialog
+        waitingElsewhere = d.dialog == null && d.waiting == true
     }
-    LaunchedEffect(machine, agent, status) {
-        // Read again while it waits: a busy hub or a new dialog under the same status.
-        while (true) {
+    LaunchedEffect(machine, agent, model.wakes, model.foreground) {
+        while (model.foreground) {
             load()
-            if (status != "blocked") break
-            delay(4_000)
+            delay(if (dialog != null || waitingElsewhere) 3_000 else 5_000)
         }
     }
-    val d = dialog ?: return
+    val d = dialog
+    if (d == null) {
+        if (!waitingElsewhere && result == null) return
+        Column(
+            Modifier.fillMaxWidth().card(20.dp, palette.card).padding(16.dp).testTag("dialog-elsewhere"),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            if (waitingElsewhere) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.AutoMirrored.Outlined.HelpOutline, null, Modifier.size(20.dp), tint = palette.needs)
+                    Text("$label is waiting", style = Type.headline, color = palette.needs)
+                }
+                Text(
+                    "On something Switchboard can't show as options here. Check its screen, or answer it in Herdr.",
+                    style = Type.footnote, color = palette.secondary,
+                )
+            }
+            result?.let { Text(it, style = Type.footnote, color = palette.secondary) }
+        }
+        return
+    }
     Column(
         Modifier.fillMaxWidth().card(20.dp, palette.card).padding(16.dp).testTag("dialog-card"),
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -122,21 +144,20 @@ fun DialogCard(model: AppModel, machine: String, agent: String, label: String, s
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: KeyError.Cancelled) {
-                    null
+                    "Not answered: the fingerprint check was cancelled."
                 } catch (e: HubError.Hub) {
-                    if (e.code == "dialog_changed") {
-                        load()
-                        "The question changed; here it is again."
-                    } else {
-                        e.message
-                    }
+                    if (e.code == "dialog_changed") "The question changed; here it is again." else e.message
                 } catch (e: Exception) {
                     e.message
                 }
                 busy = false
+                load()
             }
         }
-        if (!d.answerable) Text(why(d.reason), style = Type.footnote, color = palette.secondary)
+        Text(
+            if (d.answerable) "Tap an option to answer. The tick is what its screen has selected now." else why(d.reason),
+            style = Type.footnote, color = palette.secondary,
+        )
         result?.let { Text(it, style = Type.footnote, color = palette.secondary) }
     }
 }
@@ -144,5 +165,7 @@ fun DialogCard(model: AppModel, machine: String, agent: String, label: String, s
 private fun why(reason: String?): String = when (reason) {
     "hooked" -> "Answer it as the approval above."
     "answered" -> "Already answered from the phone."
+    "read_only" -> "This kind of question can't be answered from the phone. Answer it in Herdr."
+    "hook_pending", "hook_failed" -> "Its approval is being handled; answer it in Herdr if it stays."
     else -> "Answer it in Herdr, on its machine."
 }

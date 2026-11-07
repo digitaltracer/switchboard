@@ -10,6 +10,7 @@ import androidx.compose.animation.scaleIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.AnimatedVisibility
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.first
 import androidx.compose.runtime.snapshotFlow
@@ -258,6 +259,14 @@ fun ConversationScreen(model: AppModel, voice: Voice, listen: Listen, source: Co
         convo.showTerminal(terminalTab)
         if (model.foreground) convo.follow(model)
     }
+    // An agent's status line: only home refreshes agents otherwise.
+    LaunchedEffect(source, model.wakes, model.foreground) {
+        if (source !is ConversationSource.Agent) return@LaunchedEffect
+        while (model.foreground) {
+            model.refreshAgents()
+            delay(5_000)
+        }
+    }
     val target = when (source) {
         is ConversationSource.Session -> model.sessions.firstOrNull { it.id == source.id }?.let(::sessionTarget)
         is ConversationSource.Agent -> agentTarget(source.machine, source.name, title)
@@ -299,7 +308,7 @@ fun ConversationScreen(model: AppModel, voice: Voice, listen: Listen, source: Co
             if (terminalTab) {
                 Screen(convo)
             } else {
-                Feed(model, convo, source) { scope.launch { model.hub?.let { convo.loadEarlier(it) } } }
+                Feed(model, convo, source, title) { scope.launch { model.hub?.let { convo.loadEarlier(it) } } }
             }
         }
     }
@@ -352,7 +361,7 @@ fun ConversationSkeleton(rows: Int = 3) {
 }
 
 @Composable
-private fun Feed(model: AppModel, convo: ConversationModel, source: ConversationSource, loadEarlier: () -> Unit) {
+private fun Feed(model: AppModel, convo: ConversationModel, source: ConversationSource, title: String, loadEarlier: () -> Unit) {
     val items = convo.conversation.items
     val list = rememberLazyListState()
     var opened by remember { mutableStateOf(false) }
@@ -403,6 +412,7 @@ private fun Feed(model: AppModel, convo: ConversationModel, source: Conversation
             val speaker = speaker(model, source)
             items(Turns.entries(items), key = { it.id }) { EntryRow(it, speaker) }
             if (convo.conversation.isLoaded) {
+                pane(model, source)?.let { (machine, agent) -> item { DialogCard(model, machine, agent, title) } }
                 status(model, source)?.let { s -> item { StatusLine(s) } }
                 error?.let { e -> item { Text(e, style = Type.footnote, color = palette.needs) } }
             }
@@ -443,6 +453,13 @@ private fun MessageBar(enabled: Boolean, type: () -> Unit, talk: () -> Unit) {
             Alignment.Center,
         ) { Icon(Icons.Filled.Mic, null, Modifier.size(22.dp), tint = Color.White) }
     }
+}
+
+/** The agent's pane, for its dialog: a session's own agent, or the Herdr agent itself. */
+private fun pane(model: AppModel, source: ConversationSource): Pair<String, String>? = when (source) {
+    is ConversationSource.Session ->
+        model.sessions.firstOrNull { it.id == source.id && it.lifecycle == "running" }?.let { s -> s.agentName?.let { s.machineId to it } }
+    is ConversationSource.Agent -> source.machine to source.name
 }
 
 private fun status(model: AppModel, source: ConversationSource): SessionStatus? {
