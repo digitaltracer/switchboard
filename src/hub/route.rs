@@ -34,22 +34,47 @@ pub fn project_by_name<'a>(name: &str, projects: &'a [ProjectView]) -> Option<&'
     projects.iter().find(|p| names(p).any(|n| n == name))
 }
 
+/// Words joined into one name when a project's id has them apart, as in "udp backend".
+const MAX_NAME_WORDS: usize = 4;
+
+/// The project named by the words at `words[i..]`, longest first, and how many words it took.
+fn project_at<'a>(
+    words: &[String],
+    i: usize,
+    projects: &'a [ProjectView],
+) -> Option<(&'a ProjectView, usize)> {
+    (1..=MAX_NAME_WORDS.min(words.len() - i))
+        .rev()
+        .find_map(|n| {
+            let name = words[i..i + n].join("-");
+            projects
+                .iter()
+                .find(|p| names(p).any(|x| x == name))
+                .map(|p| (p, n))
+        })
+}
+
 /// Project ids named in `text`, in order of appearance. A leading "in <project>" (or "on",
 /// "for") settles it on its own, so "in switchboard, fix the hub test" isn't also `hub`.
 pub fn projects_named(text: &str, projects: &[ProjectView]) -> Vec<String> {
     let words = words(text);
-    if let [lead, first, ..] = words.as_slice()
+    if let [lead, _, ..] = words.as_slice()
         && matches!(lead.as_str(), "in" | "on" | "for")
-        && let Some(p) = project_by_name(first, projects)
+        && let Some((p, _)) = project_at(&words, 1, projects)
     {
         return vec![p.id.clone()];
     }
     let mut found: Vec<String> = Vec::new();
-    for w in &words {
-        if let Some(p) = projects.iter().find(|p| names(p).any(|n| n == *w))
-            && !found.contains(&p.id)
-        {
-            found.push(p.id.clone());
+    let mut i = 0;
+    while i < words.len() {
+        match project_at(&words, i, projects) {
+            Some((p, n)) => {
+                if !found.contains(&p.id) {
+                    found.push(p.id.clone());
+                }
+                i += n;
+            }
+            None => i += 1,
         }
     }
     found
@@ -288,6 +313,32 @@ mod tests {
         );
         assert_eq!(project_by_name("Work/Foo", &p).unwrap().id, "work-foo");
         assert!(project_by_name("foo", &p).is_none());
+    }
+
+    #[test]
+    fn a_hyphenated_id_matches_its_words_written_apart() {
+        let mut p = projects();
+        p.push(project("udp-backend", &[]));
+        p.push(project("serenity", &[]));
+        p.push(project("serenity-mac", &[]));
+        assert_eq!(
+            projects_named(
+                "create a new session in udp backend and name it cdp-investigation",
+                &p
+            ),
+            ["udp-backend"]
+        );
+        assert_eq!(
+            projects_named("in lib utils, cut a release", &p),
+            ["lib-utils"]
+        );
+        assert_eq!(
+            projects_named("fix the build on serenity mac", &p),
+            ["serenity-mac"],
+            "the longest name wins over the words in it"
+        );
+        assert_eq!(projects_named("tidy serenity", &p), ["serenity"]);
+        assert!(projects_named("udp is fast", &p).is_empty());
     }
 
     #[test]
