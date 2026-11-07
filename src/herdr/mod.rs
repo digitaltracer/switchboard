@@ -479,11 +479,12 @@ fn unexpected<T>(method: &'static str, got: ResponseResult) -> Result<T> {
 }
 
 /// Herdr agent names: `[a-z][a-z0-9_-]{0,31}`.
-/// An agent's name, or the pane id of one that has none (`w1:p2`).
+/// An agent's name, or the pane id of one that has none (`w1:p2`, `w1:pE`: Herdr counts in letters
+/// as well as digits).
 pub fn check_agent_target(target: &str) -> Result<()> {
-    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    let id = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric());
     let pane = target.split_once(':').is_some_and(|(w, p)| {
-        w.strip_prefix('w').is_some_and(digits) && p.strip_prefix('p').is_some_and(digits)
+        w.strip_prefix('w').is_some_and(id) && p.strip_prefix('p').is_some_and(id)
     });
     if pane {
         Ok(())

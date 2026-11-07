@@ -111,7 +111,7 @@ async fn an_agent_without_a_name_is_listed_by_its_pane_with_its_title() {
 
 #[test]
 fn an_agent_is_reached_by_name_or_pane_and_nothing_else() {
-    for ok in ["sb-3f9a", "w1:p2", "w12:p104"] {
+    for ok in ["sb-3f9a", "w1:p2", "w12:p104", "w1:pE", "w1:pM", "w3:p13"] {
         assert!(check_agent_target(ok).is_ok(), "{ok}");
     }
     for bad in ["w1:", ":p2", "w1:p2;rm", "W1:P2", "x1:p2", "w1:p2:p3", ""] {
