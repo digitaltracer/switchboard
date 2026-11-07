@@ -185,6 +185,14 @@ struct ConversationScreen: View {
             convo.showTerminal(t == .terminal)
         }
         .task(id: model.followKey) { await convo.follow(model) }
+        // An agent's status line: only home refreshes agents otherwise.
+        .task(id: model.followKey) {
+            guard case .agent = ref.source else { return }
+            while model.followKey != nil, !Task.isCancelled {
+                await model.refreshAgents()
+                try? await Task.sleep(for: .seconds(5))
+            }
+        }
     }
 
     @ViewBuilder
@@ -222,6 +230,7 @@ struct ConversationScreen: View {
                     }
                     ForEach(Turns.entries(convo.conversation.items)) { EntryRow(entry: $0, speaker: speaker) }
                     if convo.conversation.isLoaded {
+                        if let pane { DialogCard(machine: pane.machine, agent: pane.agent, label: ref.title) }
                         if let status { StatusLine(status: status) }
                         if let error = convo.error { Text(error).font(.footnote).foregroundStyle(.orange) }
                     }
@@ -293,6 +302,15 @@ struct ConversationScreen: View {
         .padding(.bottom, 6)
         .background(.bar)
         .disabled(target == nil)
+    }
+
+    /// The agent's pane, for its dialog: a session's own agent, or the Herdr agent itself.
+    private var pane: (machine: String, agent: String)? {
+        switch ref.source {
+        case .session(let id):
+            model.sessions.first { $0.id == id && $0.lifecycle == "running" }.flatMap { s in s.agentName.map { (s.machineId, $0) } }
+        case .agent(let machine, let name): (machine, name)
+        }
     }
 
     private var status: SessionStatus? {

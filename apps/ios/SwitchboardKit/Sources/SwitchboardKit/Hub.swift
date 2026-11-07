@@ -420,8 +420,9 @@ public final class Hub: Sendable {
     // Dialogs on an agent's screen.
 
     /// The dialog on any agent's screen; nil when none is recognised.
-    public func dialog(machine: String, agent: String) async throws -> Schemas.Dialog? {
-        try await Self.unwrap { try await client.getAgentDialog(query: .init(machineId: machine, agent: agent)).ok.body.json.dialog }
+    /// What the agent's screen shows: a dialog with options, or whether it waits on something else.
+    public func dialog(machine: String, agent: String) async throws -> Schemas.AgentDialog {
+        try await Self.unwrap { try await client.getAgentDialog(query: .init(machineId: machine, agent: agent)).ok.body.json }
     }
 
     /// Picks one offered option. The deny is sent unsigned; any other option is signed with the

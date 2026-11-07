@@ -33,7 +33,7 @@ struct AgentDetailView: View {
                 if let title = info?.title, !title.isEmpty {
                     Text(title).font(.subheadline.weight(.semibold))
                 }
-                DialogCard(machine: agent.machine, agent: agent.name, label: label, status: info?.agentStatus ?? "")
+                DialogCard(machine: agent.machine, agent: agent.name, label: label)
                 if let said = model.said[AppModel.saidKey(for: target)] { SaidBubble(said: said) }
                 SummaryCard(convo: convo, conversation: ConversationRef(source: .agent(machine: agent.machine, name: agent.name), title: label))
                 ConversationLinks(source: .agent(machine: agent.machine, name: agent.name), title: label,
@@ -61,5 +61,12 @@ struct AgentDetailView: View {
         .navigationBarTitleDisplayMode(.large)
         .refreshable { if let hub = model.hub { await convo.refresh(hub) } }
         .task(id: model.followKey) { await convo.follow(model) }
+        // Its status pill: only home refreshes agents otherwise, and home isn't running now.
+        .task(id: model.followKey) {
+            while model.followKey != nil, !Task.isCancelled {
+                await model.refreshAgents()
+                try? await Task.sleep(for: .seconds(5))
+            }
+        }
     }
 }

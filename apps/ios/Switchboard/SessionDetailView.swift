@@ -82,6 +82,9 @@ struct SessionDetailView: View {
         ForEach(s.pendingApprovals, id: \.id) { a in
             ApprovalCard(approval: a, session: s) { await refresh() }
         }
+        if s.lifecycle == "running", let name = s.agentName {
+            DialogCard(machine: s.machineId, agent: name, label: s.label)
+        }
         SummaryCard(convo: convo, conversation: ConversationRef(source: .session(s.id), title: s.label))
         ConversationLinks(source: .session(s.id), title: s.label, hasConversation: convo.unavailable == nil)
         if let changes, !changes.files.isEmpty {
