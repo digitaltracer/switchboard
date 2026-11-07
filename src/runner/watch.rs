@@ -203,7 +203,6 @@ impl Tracker {
         };
         let facts = Facts {
             agent: s.agent,
-            codex_version: s.codex_version.as_deref(),
             blocked_since: self.blocked_since.get(&s.session_id).copied(),
             hooks,
             now: Instant::now(),
@@ -215,13 +214,12 @@ impl Tracker {
                 let Some(pane) = CodexPane::new(herdr, s.agent, &s.agent_name) else {
                     return;
                 };
-                let version = s.codex_version.as_deref().unwrap_or_default();
                 let pane_id = s.pane_id.as_deref().unwrap_or_default();
                 let _lock = sessions
                     .pane_locks
                     .lock(s.herdr_session.as_deref(), pane_id)
                     .await;
-                match deny_dialog(&pane, version).await {
+                match deny_dialog(&pane).await {
                     FallbackOutcome::Denied { screen_excerpt } => {
                         sessions.fallback_denied(s, screen_excerpt);
                         self.blocked_since.remove(&s.session_id);

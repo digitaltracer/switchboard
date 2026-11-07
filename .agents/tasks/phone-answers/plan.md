@@ -326,3 +326,13 @@ Every answer is signed by the device (a deny needs no signature), requires the a
 
 **Notes**
 - No global CLI config was edited. Running Claude in `target/phonecap` recorded per-folder state in `~/.claude.json` and accepted that folder's "No, disable external imports" prompt, as any Claude run does. The plan files, transcripts and Codex logs these runs created were deleted.
+
+## As built (2026-11-05): no version pin
+
+The owner dropped the exact version pin. Claude Code and Codex update themselves, so every update turned every dialog read-only on the phone (installed 2.1.318 and 0.166.0 against pinned 2.1.312 and 0.163.0/0.165.0).
+- Recognition is by layout alone: title, footer, option rows, selection marker and deny row. The checks before Enter are unchanged: the fresh read must show the same occurrence with the option selected, and the process must be unchanged.
+- A screen the per-CLI layer doesn't match falls back to the shared parser, read-only. It no longer shows nothing.
+- Starting a Codex session no longer refuses an unknown version, and the Codex deny fallback no longer marks one hook-failed. Only unreadable `--version` output is refused.
+- The runner no longer runs `claude --version`. The `unpinned` reason is gone.
+- The captured screens stay as regression tests. Capture new ones when a layout changes.
+- `GET /app/v1/agents/dialog` gained `waiting` (additive). With no `dialog`, it means the agent waits on something the phone can't show as options.

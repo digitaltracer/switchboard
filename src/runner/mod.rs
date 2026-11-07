@@ -176,7 +176,6 @@ pub async fn start(cfg: Settings) -> anyhow::Result<Started> {
             exe: std::env::current_exe().context("locating the switchboard binary")?,
             hook_addr,
             codex_version_cmd: vec!["codex".into(), "--version".into()],
-            claude_version_cmd: vec!["claude".into(), "--version".into()],
             liveness_timeout: Duration::from_secs(15),
             startup_timeout: Duration::from_secs(20),
         },

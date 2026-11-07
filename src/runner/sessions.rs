@@ -77,8 +77,6 @@ pub struct SessionsConfig {
     pub hook_addr: SocketAddr,
     /// Command printing the Codex version, normally `codex --version`.
     pub codex_version_cmd: Vec<String>,
-    /// Command printing the Claude Code version, for agents Switchboard didn't start.
-    pub claude_version_cmd: Vec<String>,
     /// How long a Claude session may take to prove its hook is live.
     pub liveness_timeout: Duration,
     /// How long a Codex startup screen may take to be recognised and cleared.
@@ -99,8 +97,6 @@ pub struct Sessions {
     /// One action at a time per pane: dialog answers, prompts and the Codex key paths.
     pub(crate) pane_locks: PaneLocks,
     answered: Arc<Answered>,
-    /// Each CLI's version as `--version` last said, for agents Switchboard didn't start.
-    versions: Mutex<HashMap<&'static str, (Option<String>, Instant)>>,
     /// Occurrences already reported as waiting.
     waited: Mutex<std::collections::VecDeque<String>>,
 }
@@ -108,9 +104,6 @@ pub struct Sessions {
 /// How long an agent stays blocked before its owner's phones are told it's waiting.
 pub const WAITING_HOLD: Duration = Duration::from_secs(3);
 const KEEP_WAITED: usize = 500;
-
-/// How long a CLI's `--version` answer is reused.
-const VERSION_TTL: Duration = Duration::from_secs(60);
 
 fn err(code: ErrorCode, message: impl Into<String>) -> ProtoError {
     ProtoError::new(code, message)
@@ -179,7 +172,6 @@ impl Sessions {
             status_changes: tokio::sync::broadcast::channel(256).0,
             pane_locks: PaneLocks::default(),
             answered: Answered::load(cfg.state_dir.join("dialog-answers.json")),
-            versions: Mutex::default(),
             waited: Mutex::default(),
             cfg,
         })
@@ -637,17 +629,11 @@ impl Sessions {
         Ok(json!({ "skills": list }))
     }
 
-    /// An agent's pane for the dialog path: its Herdr server and pane, the CLI version its
-    /// screen is recognised for, and the session it belongs to, if any.
+    /// An agent's pane for the dialog path: its Herdr server and pane, and the session it
+    /// belongs to, if any.
     async fn dialog_pane(&self, agent: &str) -> Result<DialogPane, ProtoError> {
         let (herdr, name, owned) = self.resolve_agent(agent);
         let info = herdr.agent_get(name).await.map_err(herdr_err)?;
-        let version = match (&owned, info.agent.as_deref()) {
-            (Some(s), _) if s.agent == Agent::Codex => s.codex_version.clone(),
-            (_, Some("claude")) => self.cli_version("claude").await,
-            (_, Some("codex")) => self.cli_version("codex").await,
-            _ => None,
-        };
         let server = split_qualified(agent)
             .0
             .map(str::to_owned)
@@ -661,7 +647,6 @@ impl Sessions {
             },
             pane_id: info.pane_id,
             server,
-            version,
             owned,
         })
     }
@@ -684,9 +669,9 @@ impl Sessions {
 
     async fn dialog(&self, agent: &str) -> Result<Value, ProtoError> {
         let p = self.dialog_pane(agent).await?;
-        let seen = dialogs::look(&p.io, p.version.as_deref()).await?;
+        let seen = dialogs::look(&p.io).await?;
         let refuse = || self.key_refusal(p.owned.as_ref());
-        let view = dialogs::view(&seen, p.version.as_deref(), &refuse, &self.answered);
+        let view = dialogs::view(&seen, &refuse, &self.answered);
         Ok(json!({ "dialog": view, "occurrence": seen.occurrence }))
     }
 
@@ -694,8 +679,7 @@ impl Sessions {
         let p = self.dialog_pane(agent).await?;
         let _lock = self.pane_locks.lock(p.server.as_deref(), &p.pane_id).await;
         let refuse = || self.key_refusal(p.owned.as_ref());
-        let result =
-            dialogs::answer(&p.io, p.version.as_deref(), &refuse, &self.answered, req).await;
+        let result = dialogs::answer(&p.io, &refuse, &self.answered, req).await;
         let detail = json!({
             "agent": agent, "occurrence": req.occurrence, "option": req.option,
             "outcome": match &result { Ok(()) => "answered".to_owned(), Err(e) => code_name(e.code) },
@@ -724,7 +708,7 @@ impl Sessions {
             .await
             .map_err(|e| err(ErrorCode::Herdr, e))?;
         tokio::time::sleep(WAITING_HOLD).await;
-        let seen = dialogs::look(&p.io, p.version.as_deref()).await?;
+        let seen = dialogs::look(&p.io).await?;
         let held = seen.process.blocked
             && seen.process.state_change_seq == before.state_change_seq
             && seen.process.terminal_id == before.terminal_id;
@@ -753,37 +737,6 @@ impl Sessions {
             session_id: p.owned.map(|s| s.session_id),
         });
         Ok(())
-    }
-
-    /// A CLI's version from `--version`, cached for a minute; `None` if it can't be read.
-    async fn cli_version(&self, kind: &'static str) -> Option<String> {
-        if let Some((v, at)) = self.versions.lock().unwrap().get(kind)
-            && at.elapsed() < VERSION_TTL
-        {
-            return v.clone();
-        }
-        let cmd = match kind {
-            "claude" => &self.cfg.claude_version_cmd,
-            _ => &self.cfg.codex_version_cmd,
-        };
-        let (prog, args) = cmd.split_first()?;
-        let out = tokio::time::timeout(
-            Duration::from_secs(15),
-            tokio::process::Command::new(prog).args(args).output(),
-        )
-        .await
-        .ok()
-        .and_then(Result::ok);
-        let text = out.map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
-        let v = text.and_then(|t| match kind {
-            "claude" => claude::screen::parse_version(&t),
-            _ => codex::parse_version(&t),
-        });
-        self.versions
-            .lock()
-            .unwrap()
-            .insert(kind, (v.clone(), Instant::now()));
-        v
     }
 
     fn session(&self, session_id: &str) -> Result<RunnerSession, ProtoError> {
@@ -821,8 +774,6 @@ impl Sessions {
                 format!("unrecognised codex version output {:?}", text.trim()),
             )
         })?;
-        codex::check_version(&version)
-            .map_err(|e| err(ErrorCode::UnsupportedAgentVersion, e.to_string()))?;
         Ok(version)
     }
 
@@ -1020,13 +971,12 @@ impl Sessions {
                     return Err(herdr_err(e));
                 }
                 let pane = CodexPane::new(&herdr, s.agent, &s.agent_name).expect("codex session");
-                let version = s.codex_version.as_deref().unwrap_or_default();
                 let pane_id = s.pane_id.as_deref().unwrap_or_default();
                 let _lock = self
                     .pane_locks
                     .lock(s.herdr_session.as_deref(), pane_id)
                     .await;
-                clear_startup(&pane, version, self.cfg.startup_timeout)
+                clear_startup(&pane, self.cfg.startup_timeout)
                     .await
                     .map_err(|f| {
                         self.audit(
@@ -1310,7 +1260,6 @@ struct DialogPane {
     io: HerdrPane,
     pane_id: String,
     server: Option<String>,
-    version: Option<String>,
     owned: Option<RunnerSession>,
 }
 

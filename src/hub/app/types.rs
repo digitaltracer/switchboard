@@ -1055,7 +1055,7 @@ fn enum_str<T: Serialize>(v: &T) -> String {
 /// A dialog on an agent's screen. Masked; the ids are opaque.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct Dialog {
-    /// `question`, `plan`, `permission`, or `other` for a list no pinned recogniser knows.
+    /// `question`, `plan`, `permission`, or `other` for a list no recogniser knows.
     pub kind: String,
     pub prompt: String,
     pub options: Vec<DialogOption>,
@@ -1065,7 +1065,7 @@ pub struct Dialog {
     pub occurrence_id: String,
     /// It can be answered from the phone now; otherwise answer it in Herdr.
     pub answerable: bool,
-    /// Why not: `read_only`, `unpinned`, `hooked` (answered as an approval instead),
+    /// Why not: `read_only`, `hooked` (answered as an approval instead),
     /// `hook_pending`, `hook_failed`, `not_blocked` or `answered`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,

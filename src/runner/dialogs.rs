@@ -1,6 +1,6 @@
 //! The owner's signed choice of one listed option on a dialog drawn on an agent's screen, sent
 //! as keys. With `codex.rs` this is the only key path, and it only acts on a dialog a
-//! version-pinned recogniser in `src/agents/` recognised. Arrows move the selection; a fresh read
+//! recogniser in `src/agents/` recognised by its layout. Arrows move the selection; a fresh read
 //! must then show the same occurrence with that option selected, and Herdr the same process,
 //! before the single Enter. Esc is never sent, and a send that may have happened is never retried.
 //!
@@ -68,21 +68,11 @@ pub trait DialogIo {
 /// Why keys may not go to a pane, asked at the first read and again just before Enter.
 pub type Refusal<'a> = &'a (dyn Fn() -> Option<&'static str> + Send + Sync);
 
-pub fn recognise(kind: Option<&str>, version: Option<&str>, text: &str) -> Recognised {
-    let v = version.unwrap_or_default();
+pub fn recognise(kind: Option<&str>, text: &str) -> Recognised {
     match kind {
-        Some("claude") => claude::screen::recognise(v, text),
-        Some("codex") => codex::screen::recognise(v, text),
+        Some("claude") => claude::screen::recognise(text),
+        Some("codex") => codex::screen::recognise(text),
         _ => Recognised::Unknown,
-    }
-}
-
-fn pinned(kind: Option<&str>, version: Option<&str>) -> bool {
-    let v = version.unwrap_or_default();
-    match kind {
-        Some("claude") => claude::screen::SUPPORTED_VERSIONS.contains(&v),
-        Some("codex") => codex::SUPPORTED_VERSIONS.contains(&v),
-        _ => false,
     }
 }
 
@@ -119,12 +109,12 @@ impl Seen {
     }
 }
 
-pub async fn look<I: DialogIo>(io: &I, version: Option<&str>) -> Result<Seen, ProtoError> {
+pub async fn look<I: DialogIo>(io: &I) -> Result<Seen, ProtoError> {
     let herdr = |e: String| ProtoError::new(ErrorCode::Herdr, e);
     let process = io.process().await.map_err(herdr)?;
     let screen = io.screen().await.map_err(herdr)?;
     let call = io.pending_call().await;
-    let dialog = match recognise(process.kind.as_deref(), version, &screen) {
+    let dialog = match recognise(process.kind.as_deref(), &screen) {
         Recognised::Dialog(d) => Some(d),
         Recognised::Unknown => None,
     };
@@ -143,16 +133,8 @@ pub async fn look<I: DialogIo>(io: &I, version: Option<&str>) -> Result<Seen, Pr
 }
 
 /// Whether keys may answer what `seen` shows, and if not, why.
-fn refusal(
-    seen: &Seen,
-    version: Option<&str>,
-    refuse: Refusal<'_>,
-    answered: &Answered,
-) -> Option<&'static str> {
+fn refusal(seen: &Seen, refuse: Refusal<'_>, answered: &Answered) -> Option<&'static str> {
     let d = seen.dialog.as_ref()?;
-    if !pinned(seen.process.kind.as_deref(), version) {
-        return Some("unpinned");
-    }
     if !d.actionable {
         return Some("read_only");
     }
@@ -169,14 +151,9 @@ fn refusal(
 }
 
 /// The masked dialog for the hub, or `None` when no dialog is recognised.
-pub fn view(
-    seen: &Seen,
-    version: Option<&str>,
-    refuse: Refusal<'_>,
-    answered: &Answered,
-) -> Option<DialogView> {
+pub fn view(seen: &Seen, refuse: Refusal<'_>, answered: &Answered) -> Option<DialogView> {
     let d = seen.dialog.as_ref()?;
-    let why = refusal(seen, version, refuse, answered);
+    let why = refusal(seen, refuse, answered);
     let options = d
         .options
         .iter()
@@ -217,19 +194,18 @@ fn changed(why: impl Into<String>) -> ProtoError {
 /// Picks one option by keys. The caller holds the pane's action lock throughout.
 pub async fn answer<I: DialogIo>(
     io: &I,
-    version: Option<&str>,
     refuse: Refusal<'_>,
     answered: &Answered,
     req: &AnswerRequest,
 ) -> Result<(), ProtoError> {
-    let first = look(io, version).await?;
+    let first = look(io).await?;
     let Some(dialog) = &first.dialog else {
         return Err(changed("no dialog is showing"));
     };
     if first.occurrence != req.occurrence {
         return Err(changed("the dialog changed"));
     }
-    if let Some(why) = refusal(&first, version, refuse, answered) {
+    if let Some(why) = refusal(&first, refuse, answered) {
         return Err(changed(format!("keys may not answer this dialog: {why}")));
     }
     let (target, option) = dialog
@@ -269,7 +245,7 @@ pub async fn answer<I: DialogIo>(
     let mut verified = false;
     for _ in 0..SELECT_READS {
         tokio::time::sleep(SETTLE).await;
-        let Ok(again) = look(io, version).await else {
+        let Ok(again) = look(io).await else {
             continue;
         };
         let same = again.occurrence == first.occurrence
@@ -301,7 +277,7 @@ pub async fn answer<I: DialogIo>(
     }
     for _ in 0..CONFIRM_ATTEMPTS {
         tokio::time::sleep(CONFIRM_INTERVAL).await;
-        if let Ok(after) = look(io, version).await
+        if let Ok(after) = look(io).await
             && (after.dialog.is_none() || after.occurrence != first.occurrence)
         {
             return Ok(());

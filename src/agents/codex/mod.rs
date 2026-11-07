@@ -1,4 +1,4 @@
-//! Codex profile: restricted mode per run, own hooks from `-c`, version-pinned screen adapter.
+//! Codex profile: restricted mode per run, own hooks from `-c`, a screen adapter by layout.
 //! Codex can't make a failed hook fail closed, so the runner's keystroke-deny fallback covers it.
 
 pub mod screen;
@@ -7,25 +7,10 @@ use std::path::Path;
 
 use super::HOOK_TIMEOUT_SECS;
 
-/// Versions whose startup and permission screens the adapter was built from.
-pub const SUPPORTED_VERSIONS: &[&str] = &["0.163.0", "0.165.0"];
-
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("codex {0:?} is not a supported version ({supported})", supported = SUPPORTED_VERSIONS.join(", "))]
-pub struct UnsupportedVersion(pub String);
-
 /// Parses `codex --version` output such as `codex-cli 0.163.0`.
 pub fn parse_version(output: &str) -> Option<String> {
     let v = output.trim().strip_prefix("codex-cli ")?.trim();
     (!v.is_empty() && !v.contains(char::is_whitespace)).then(|| v.to_owned())
-}
-
-pub fn check_version(version: &str) -> Result<(), UnsupportedVersion> {
-    if SUPPORTED_VERSIONS.contains(&version) {
-        Ok(())
-    } else {
-        Err(UnsupportedVersion(version.to_owned()))
-    }
 }
 
 /// Arguments for `herdr agent start --kind codex -- …`.
@@ -72,19 +57,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn version_pinning() {
+    fn version_output() {
         assert_eq!(
             parse_version("codex-cli 0.163.0\n").as_deref(),
             Some("0.163.0")
         );
         assert_eq!(parse_version("codex 0.163.0"), None);
         assert_eq!(parse_version("codex-cli "), None);
-        assert!(check_version("0.163.0").is_ok());
-        assert!(check_version("0.165.0").is_ok());
-        assert_eq!(
-            check_version("0.164.0"),
-            Err(UnsupportedVersion("0.164.0".into()))
-        );
     }
 
     #[test]

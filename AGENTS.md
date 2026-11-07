@@ -16,14 +16,14 @@ Each of these has tests. Keep them passing, and add tests when you touch the are
 
 - **Fail closed.** An approval that is unanswered, expired, or interrupted by a runner, hub or hook-helper loss ends in deny. Replaying a decision returns the recorded outcome and does nothing else.
 - **Mask everything that leaves the machine** with `src/redact.rs`. That covers API responses, approvals, terminal output, push text and WhatsApp messages. Never store unmasked tool input.
-- **Keystrokes.** Only `src/runner/codex.rs` and `src/runner/dialogs.rs` send keys to an agent, and only keys built from a dialog recognised by a version-pinned recogniser in `src/agents/`.
+- **Keystrokes.** Only `src/runner/codex.rs` and `src/runner/dialogs.rs` send keys to an agent, and only keys built from a dialog recognised by its layout (title, footer, option rows and selection marker) by a recogniser in `src/agents/`. Recognition doesn't depend on the CLI's version: Claude Code and Codex update themselves, and a screen that doesn't match is shown read-only. The captured screens under `tests/fixtures/` are regression tests; capture new ones when a CLI's layout changes.
   - **What may be sent:**
     - Codex's restricted-startup Enter and its permission-deny Esc.
     - The owner's signed choice of one listed option on a recognised question, plan or permission dialog. This is sent as arrow keys, then one Enter. The Enter goes only after a fresh read shows the same occurrence with that option selected, and the agent's process is unchanged. Choosing the deny option needs no signature.
   - **What is never sent:**
     - free text, or an "Other" or free-text row;
     - answers to multi-select or multi-question dialogs;
-    - keys to an unknown or unpinned screen;
+    - keys to a screen whose layout isn't recognised;
     - keys to a pane with a pending hook call;
     - keys to a Claude pane that Switchboard started, which the hook answers instead.
   - Nothing in `src/whatsapp/` sends keys.
@@ -79,7 +79,7 @@ Each test file's header says what it needs.
   - `sessions.rs` covers worktrees and the agent lifecycle.
   - `hooks.rs` is the hook endpoint.
   - `codex.rs` and `dialogs.rs` are the only key paths: Codex's own startup and deny keys, and the owner's chosen option on a recognised dialog.
-- **Agent profiles:** `src/agents/`. Claude Code runs in auto mode by default; what still asks goes through the hook, and deny patterns are checked before every tool. A machine can choose acceptEdits, where every shell command asks. Codex runs in restricted mode, version-pinned. The dialog recognisers are `dialog.rs` (the shared option-row parser) with a pinned layer per CLI in `claude/screen.rs` and `codex/screen.rs`.
+- **Agent profiles:** `src/agents/`. Claude Code runs in auto mode by default; what still asks goes through the hook, and deny patterns are checked before every tool. A machine can choose acceptEdits, where every shell command asks. Codex runs in restricted mode. The dialog recognisers are `dialog.rs` (the shared option-row parser) with a layer per CLI in `claude/screen.rs` and `codex/screen.rs` that knows its layouts.
 - **Hook helper:** `src/hook/`. It denies on any error.
 - **Pairing and signatures:** `src/auth/`. **Push:** `src/push/`. **Relay:** `src/relay/`. **WhatsApp:** `src/whatsapp/`.
 - **Config schema:** `src/config.rs`, with documented fields and validation.

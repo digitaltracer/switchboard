@@ -226,7 +226,7 @@ pub struct DialogView {
     pub occurrence: String,
     /// Keys may answer it now.
     pub answerable: bool,
-    /// Why not, when not: `read_only`, `unpinned`, `hooked`, `hook_pending`, `hook_failed`,
+    /// Why not, when not: `read_only`, `hooked`, `hook_pending`, `hook_failed`,
     /// `not_blocked` or `answered`.
     #[serde(default)]
     pub reason: Option<String>,

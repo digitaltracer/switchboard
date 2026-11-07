@@ -1,4 +1,4 @@
-//! Shared option-row parser for agent dialogs drawn on screen. The version-pinned layers in
+//! Shared option-row parser for agent dialogs drawn on screen. The per-CLI layers in
 //! `claude/screen.rs` and `codex/screen.rs` add the anchors that make a dialog answerable; a
 //! list this parser finds without them is shown read-only.
 

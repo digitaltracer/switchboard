@@ -49,10 +49,9 @@ impl CodexIo for FakeIo {
     }
 }
 
-fn facts(now: Instant) -> Facts<'static> {
+fn facts(now: Instant) -> Facts {
     Facts {
         agent: Agent::Codex,
-        codex_version: Some(V),
         blocked_since: Some(now - GRACE - Duration::from_secs(1)),
         hooks: HookState {
             live: true,
@@ -94,31 +93,6 @@ async fn refuses_while_an_approval_is_pending() {
         ..facts(now)
     };
     assert_eq!(gate(&f), Gate::Wait("approval_pending"));
-}
-
-#[tokio::test(start_paused = true)]
-async fn refuses_unknown_codex_version() {
-    let now = Instant::now() + Duration::from_secs(60);
-    for v in [Some("0.164.0"), None] {
-        assert_eq!(
-            gate(&Facts {
-                codex_version: v,
-                ..facts(now)
-            }),
-            Gate::HookFailed("unsupported_codex_version")
-        );
-    }
-    // The adapter itself recognises nothing on an unknown version, so no key is sent.
-    let io = FakeIo::new(&[fixture("permission-command")]);
-    let out = deny_dialog(&io, "0.164.0").await;
-    assert!(matches!(
-        out,
-        FallbackOutcome::HookFailed {
-            reason: "unrecognised_screen",
-            ..
-        }
-    ));
-    assert!(io.sent().is_empty());
 }
 
 #[tokio::test(start_paused = true)]
@@ -169,7 +143,7 @@ async fn waits_for_running_hook_and_grace_and_stops_after_failure() {
 #[tokio::test(start_paused = true)]
 async fn unrecognised_screen_sends_nothing() {
     let io = FakeIo::new(&["  something we have never seen\n  continue? [y/n]\n".to_owned()]);
-    let out = deny_dialog(&io, V).await;
+    let out = deny_dialog(&io).await;
     let FallbackOutcome::HookFailed {
         reason,
         screen_excerpt,
@@ -185,14 +159,14 @@ async fn unrecognised_screen_sends_nothing() {
 #[tokio::test(start_paused = true)]
 async fn stale_blocked_status_with_composer_showing_sends_nothing() {
     let io = FakeIo::new(&[fixture("ready")]);
-    assert_eq!(deny_dialog(&io, V).await, FallbackOutcome::NothingToDo);
+    assert_eq!(deny_dialog(&io).await, FallbackOutcome::NothingToDo);
     assert!(io.sent().is_empty());
 }
 
 #[tokio::test(start_paused = true)]
 async fn dialog_still_present_after_deny_sends_nothing_more() {
     let io = FakeIo::new(&[fixture("permission-command")]);
-    let out = deny_dialog(&io, V).await;
+    let out = deny_dialog(&io).await;
     assert!(
         matches!(
             out,
@@ -213,7 +187,7 @@ async fn recognised_dialog_is_denied_once_and_confirmed_gone() {
         ("permission-edit", "after-deny-edit"),
     ] {
         let io = FakeIo::new(&[fixture(dialog), fixture(dialog), fixture(after)]);
-        let out = deny_dialog(&io, V).await;
+        let out = deny_dialog(&io).await;
         let FallbackOutcome::Denied { screen_excerpt } = out else {
             panic!("{out:?}")
         };
@@ -230,7 +204,7 @@ async fn startup_presses_enter_once_on_recognised_folder_access() {
         fixture("folder-access"),
         fixture("ready"),
     ]);
-    clear_startup(&io, V, STARTUP).await.unwrap();
+    clear_startup(&io, STARTUP).await.unwrap();
     assert_eq!(io.sent(), vec![vec!["enter"]]);
 }
 
@@ -250,27 +224,17 @@ async fn startup_refusals_send_nothing() {
     ];
     for (screen, reason) in cases {
         let io = FakeIo::new(&[screen]);
-        let err = clear_startup(&io, V, STARTUP).await.unwrap_err();
+        let err = clear_startup(&io, STARTUP).await.unwrap_err();
         assert_eq!(err.reason, reason);
         assert!(io.sent().is_empty(), "{reason}");
     }
-    // Unknown version: the startup screen is not recognised, so Enter is never sent.
-    let io = FakeIo::new(&[fixture("folder-access")]);
-    assert_eq!(
-        clear_startup(&io, "9.9.9", STARTUP)
-            .await
-            .unwrap_err()
-            .reason,
-        "restricted_screen_not_seen"
-    );
-    assert!(io.sent().is_empty());
 }
 
 #[tokio::test(start_paused = true)]
 async fn composer_before_the_restricted_screen_is_not_ready() {
     // Live run: Codex drew its composer, then a startup modal the override should have prevented.
     let io = FakeIo::new(&[fixture("ready"), fixture("folder-trust")]);
-    let err = clear_startup(&io, V, STARTUP).await.unwrap_err();
+    let err = clear_startup(&io, STARTUP).await.unwrap_err();
     assert_eq!(err.reason, "restricted_screen_not_seen");
     assert!(err.screen_excerpt.contains("Trust this folder?"));
     assert!(
@@ -279,7 +243,7 @@ async fn composer_before_the_restricted_screen_is_not_ready() {
     );
     let only_ready = FakeIo::new(&[fixture("ready")]);
     assert_eq!(
-        clear_startup(&only_ready, V, STARTUP)
+        clear_startup(&only_ready, STARTUP)
             .await
             .unwrap_err()
             .reason,
@@ -294,7 +258,7 @@ async fn a_single_composer_read_after_enter_is_not_enough() {
         fixture("ready"),
         fixture("folder-access"),
     ]);
-    let err = clear_startup(&io, V, STARTUP).await.unwrap_err();
+    let err = clear_startup(&io, STARTUP).await.unwrap_err();
     assert_eq!(err.reason, "startup_not_cleared");
     assert_eq!(io.sent(), vec![vec!["enter"]], "Enter is sent once");
 }

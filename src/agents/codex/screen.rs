@@ -1,10 +1,9 @@
-//! Version-pinned recogniser for the Codex screens Switchboard may answer with keys.
-//! Built from the Codex 0.163.0 captures in `tests/fixtures/codex-0.163.0/` and the 0.165.0 ones
-//! in `tests/fixtures/dialogs/codex-0.165.0/`, whose layout is the same. `classify` only ever
+//! Recogniser for the Codex screens Switchboard may answer with keys, by their layout. Built from
+//! the Codex 0.163.0 captures in `tests/fixtures/codex-0.163.0/` and the 0.165.0 ones in
+//! `tests/fixtures/dialogs/codex-0.165.0/`, whose layout is the same; they stay as its tests. `classify` only ever
 //! yields the "Open restricted" startup key and the permission dialog's deny key; `recognise`
 //! lists a permission dialog's options for the owner's signed choice.
 
-use super::SUPPORTED_VERSIONS;
 use crate::agents::dialog::{self, Dialog, DialogOption, Recognised};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,11 +51,8 @@ const HOOKS_REVIEW: &str = "Hooks need review";
 /// How far above the footer a dialog's title may sit.
 const DIALOG_SPAN: usize = 30;
 
-/// Classifies a Herdr `visible` read. Unsupported versions always classify as `Unknown`.
-pub fn classify(version: &str, text: &str) -> Screen {
-    if !SUPPORTED_VERSIONS.contains(&version) {
-        return Screen::Unknown;
-    }
+/// Classifies a Herdr `visible` read; a layout this doesn't know is `Unknown`.
+pub fn classify(text: &str) -> Screen {
     let lines: Vec<&str> = text
         .lines()
         .map(str::trim)
@@ -134,34 +130,28 @@ const MARKER: char = '›';
 
 /// A permission dialog as options, for an answer by keys. Row 2 grants a standing approval, so
 /// it is shown but not offered. Anything else is only parsed read-only.
-pub fn recognise(version: &str, text: &str) -> Recognised {
-    if !SUPPORTED_VERSIONS.contains(&version) {
-        return dialog::generic(text, MARKER);
-    }
+pub fn recognise(text: &str) -> Recognised {
+    exact(text).unwrap_or_else(|| dialog::generic(text, MARKER))
+}
+
+fn exact(text: &str) -> Option<Recognised> {
     let lines = dialog::lines(text);
-    let Some(footer) = lines.len().checked_sub(1) else {
-        return Recognised::Unknown;
-    };
+    let footer = lines.len().checked_sub(1)?;
     if lines[footer] != DIALOG_FOOTER || lines.contains(&HOOKS_REVIEW) {
-        return Recognised::Unknown;
+        return None;
     }
-    let Some(r) = dialog::rows(&lines, footer, MARKER) else {
-        return Recognised::Unknown;
-    };
+    let r = dialog::rows(&lines, footer, MARKER)?;
     let labels: Vec<&str> = r.rows.iter().map(|r| r.1).collect();
     let [yes, _, no] = labels[..] else {
-        return Recognised::Unknown;
+        return None;
     };
     if format!("1. {yes}") != DIALOG_YES || format!("3. {no}") != DIALOG_NO {
-        return Recognised::Unknown;
+        return None;
     }
     let floor = r.first.saturating_sub(DIALOG_SPAN);
-    let Some(title_at) = (floor..r.first)
+    let title_at = (floor..r.first)
         .rev()
-        .find(|&i| lines[i] == COMMAND_TITLE || lines[i] == EDITS_TITLE)
-    else {
-        return Recognised::Unknown;
-    };
+        .find(|&i| lines[i] == COMMAND_TITLE || lines[i] == EDITS_TITLE)?;
     let options = r
         .rows
         .iter()
@@ -172,14 +162,14 @@ pub fn recognise(version: &str, text: &str) -> Recognised {
             excluded: number == 2,
         })
         .collect();
-    Recognised::Dialog(Dialog {
+    Some(Recognised::Dialog(Dialog {
         kind: dialog::DialogKind::Permission,
         prompt: lines[title_at..r.first].join("\n"),
         options,
         selected: r.selected,
         region: lines[title_at..].join("\n"),
         actionable: true,
-    })
+    }))
 }
 
 /// Enter, only while "Open restricted" is the selected option.
@@ -217,31 +207,31 @@ mod tests {
     #[test]
     fn recognises_captured_screens() {
         assert_eq!(
-            classify(V, &fixture("folder-access")),
+            classify(&fixture("folder-access")),
             Screen::FolderAccess {
                 open_restricted_selected: true
             }
         );
-        assert_eq!(classify(V, &fixture("ready")), Screen::Ready);
-        assert_eq!(classify(V, &fixture("turn-done")), Screen::Ready);
+        assert_eq!(classify(&fixture("ready")), Screen::Ready);
+        assert_eq!(classify(&fixture("turn-done")), Screen::Ready);
         assert_eq!(
-            classify(V, &fixture("permission-command")),
+            classify(&fixture("permission-command")),
             Screen::PermissionDialog(DialogKind::Command)
         );
         assert_eq!(
-            classify(V, &fixture("permission-edit")),
+            classify(&fixture("permission-edit")),
             Screen::PermissionDialog(DialogKind::Edits)
         );
-        assert_eq!(classify(V, &fixture("after-deny-command")), Screen::Ready);
-        assert_eq!(classify(V, &fixture("after-deny-edit")), Screen::Ready);
+        assert_eq!(classify(&fixture("after-deny-command")), Screen::Ready);
+        assert_eq!(classify(&fixture("after-deny-edit")), Screen::Ready);
     }
 
     #[test]
     fn keys_only_for_recognised_screens() {
-        let folder = classify(V, &fixture("folder-access"));
+        let folder = classify(&fixture("folder-access"));
         assert_eq!(startup_keys(folder).unwrap().as_slice(), ["enter"]);
         assert_eq!(deny_keys(folder), None);
-        let dialog = classify(V, &fixture("permission-command"));
+        let dialog = classify(&fixture("permission-command"));
         assert_eq!(deny_keys(dialog).unwrap().as_slice(), ["esc"]);
         assert_eq!(startup_keys(dialog), None);
         for s in [Screen::Ready, Screen::Unknown, Screen::HooksReview] {
@@ -250,20 +240,11 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_version_recognises_nothing() {
-        assert_eq!(
-            classify("0.164.0", &fixture("permission-command")),
-            Screen::Unknown
-        );
-        assert_eq!(classify("", &fixture("folder-access")), Screen::Unknown);
-    }
-
-    #[test]
     fn folder_access_with_quit_selected_gets_no_key() {
         let text = fixture("folder-access")
             .replace("› 1. Open restricted", "  1. Open restricted")
             .replace("  2. Quit", "› 2. Quit");
-        let s = classify(V, &text);
+        let s = classify(&text);
         assert_eq!(
             s,
             Screen::FolderAccess {
@@ -278,14 +259,14 @@ mod tests {
         let base = fixture("permission-command");
         // Dialog text echoed by the agent, with the composer below it.
         let echoed = format!("{base}\n› Ask Codex to do anything\n  ? for shortcuts\n");
-        assert_eq!(classify(V, &echoed), Screen::Ready);
+        assert_eq!(classify(&echoed), Screen::Ready);
         let reworded = base.replace(DIALOG_NO, "3. No, deny (n)");
-        assert_eq!(classify(V, &reworded), Screen::Unknown);
+        assert_eq!(classify(&reworded), Screen::Unknown);
         let no_title = base.replace(COMMAND_TITLE, "Something else?");
-        assert_eq!(classify(V, &no_title), Screen::Unknown);
+        assert_eq!(classify(&no_title), Screen::Unknown);
         let trailing = format!("{base}\n  extra line\n");
-        assert_eq!(classify(V, &trailing), Screen::Unknown);
-        assert_eq!(classify(V, ""), Screen::Unknown);
+        assert_eq!(classify(&trailing), Screen::Unknown);
+        assert_eq!(classify(""), Screen::Unknown);
     }
 
     fn fixture_165(name: &str) -> String {
@@ -297,7 +278,7 @@ mod tests {
     }
 
     fn dialog_165(text: &str) -> Dialog {
-        match recognise("0.165.0", text) {
+        match recognise(text) {
             Recognised::Dialog(d) => d,
             Recognised::Unknown => panic!("not recognised:\n{text}"),
         }
@@ -305,28 +286,24 @@ mod tests {
 
     #[test]
     fn classifies_0_165_0_screens() {
-        let v = "0.165.0";
         assert_eq!(
-            classify(v, &fixture_165("folder-access")),
+            classify(&fixture_165("folder-access")),
             Screen::FolderAccess {
                 open_restricted_selected: true
             }
         );
-        assert_eq!(classify(v, &fixture_165("ready")), Screen::Ready);
-        assert_eq!(classify(v, &fixture_165("question-queued")), Screen::Ready);
+        assert_eq!(classify(&fixture_165("ready")), Screen::Ready);
+        assert_eq!(classify(&fixture_165("question-queued")), Screen::Ready);
         assert_eq!(
-            classify(v, &fixture_165("permission-command")),
+            classify(&fixture_165("permission-command")),
             Screen::PermissionDialog(DialogKind::Command)
         );
         assert_eq!(
-            classify(v, &fixture_165("permission-edit")),
+            classify(&fixture_165("permission-edit")),
             Screen::PermissionDialog(DialogKind::Edits)
         );
-        assert_eq!(
-            classify(v, &fixture_165("after-deny-command")),
-            Screen::Ready
-        );
-        assert_eq!(classify(v, &fixture_165("after-allow-edit")), Screen::Ready);
+        assert_eq!(classify(&fixture_165("after-deny-command")), Screen::Ready);
+        assert_eq!(classify(&fixture_165("after-allow-edit")), Screen::Ready);
     }
 
     #[test]
@@ -351,7 +328,7 @@ mod tests {
     }
 
     #[test]
-    fn altered_or_unpinned_dialogs_get_no_actionable_options() {
+    fn altered_dialogs_get_no_actionable_options() {
         let base = fixture_165("permission-command");
         let cases = [
             base.replace(DIALOG_NO, "3. No, deny (n)"),
@@ -363,19 +340,15 @@ mod tests {
         ];
         for (i, text) in cases.iter().enumerate() {
             assert!(
-                !matches!(recognise("0.165.0", text), Recognised::Dialog(d) if d.actionable),
+                !matches!(recognise(text), Recognised::Dialog(d) if d.actionable),
                 "case {i}"
             );
         }
-        assert!(matches!(
-            recognise("0.164.0", &base),
-            Recognised::Dialog(d) if !d.actionable
-        ));
     }
 
     #[test]
     fn hooks_review_is_flagged() {
         let text = "  Hooks need review\n  5 hooks are new or changed.\n› 1. Review hooks\n  enter confirm · esc skip\n";
-        assert_eq!(classify(V, text), Screen::HooksReview);
+        assert_eq!(classify(text), Screen::HooksReview);
     }
 }

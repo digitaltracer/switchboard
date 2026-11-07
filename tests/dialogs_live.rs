@@ -103,7 +103,7 @@ async fn a_codex_dialog_is_denied_by_arrows_and_one_enter() {
         assert_eq!(e.server_code(), Some("agent_not_ready"), "{e}");
     }
     let codex = CodexPane::new(&herdr, Agent::Codex, name).unwrap();
-    clear_startup(&codex, "0.165.0", Duration::from_secs(30))
+    clear_startup(&codex, Duration::from_secs(30))
         .await
         .expect("the restricted startup screen clears");
     // Herdr takes prompts once it has finished the launch, which can lag Codex's own screen.
@@ -140,7 +140,6 @@ async fn a_codex_dialog_is_denied_by_arrows_and_one_enter() {
             exe: PathBuf::from(env!("CARGO_BIN_EXE_switchboard")),
             hook_addr: "127.0.0.1:9".parse().unwrap(),
             codex_version_cmd: vec!["codex".into(), "--version".into()],
-            claude_version_cmd: vec!["claude".into(), "--version".into()],
             liveness_timeout: Duration::from_secs(30),
             startup_timeout: Duration::from_secs(30),
         },

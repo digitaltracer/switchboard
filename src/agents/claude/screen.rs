@@ -1,9 +1,7 @@
-//! Version-pinned recogniser for Claude Code's question, plan and permission dialogs, built from
-//! the 2.1.312 captures in `tests/fixtures/dialogs/claude-2.1.312/`.
+//! Recogniser for Claude Code's question, plan and permission dialogs by their layout, built from
+//! the 2.1.312 captures in `tests/fixtures/dialogs/claude-2.1.312/`, which stay as its tests.
 
 use crate::agents::dialog::{self, Dialog, DialogKind, DialogOption, Recognised};
-
-pub const SUPPORTED_VERSIONS: &[&str] = &["2.1.312"];
 
 const MARKER: char = '❯';
 const QUESTION_FOOTER_START: &str = "Enter to select · ";
@@ -22,17 +20,8 @@ const PLAN_ROWS: &[&str] = &[
 const QUESTION_TAB: &str = "☐ ";
 const MULTI_SELECT_BOX: &str = "[ ] ";
 
-/// Parses `claude --version` output such as `2.1.312 (Claude Code)`.
-pub fn parse_version(output: &str) -> Option<String> {
-    let v = output.trim().strip_suffix("(Claude Code)")?.trim();
-    (!v.is_empty() && !v.contains(char::is_whitespace)).then(|| v.to_owned())
-}
-
-/// Classifies a Herdr `visible` read. An unpinned version only gets the read-only parser.
-pub fn recognise(version: &str, text: &str) -> Recognised {
-    if !SUPPORTED_VERSIONS.contains(&version) {
-        return dialog::generic(text, MARKER);
-    }
+/// Classifies a Herdr `visible` read. A layout this doesn't know only gets the read-only parser.
+pub fn recognise(text: &str) -> Recognised {
     let lines = dialog::lines(text);
     let Some(footer) = lines.len().checked_sub(1) else {
         return Recognised::Unknown;
@@ -47,7 +36,7 @@ pub fn recognise(version: &str, text: &str) -> Recognised {
     } else {
         None
     };
-    found.map_or(Recognised::Unknown, Recognised::Dialog)
+    found.map_or_else(|| dialog::generic(text, MARKER), Recognised::Dialog)
 }
 
 fn is_rule(line: &str) -> bool {
@@ -188,7 +177,7 @@ mod tests {
     }
 
     fn dialog(text: &str) -> Dialog {
-        match recognise(V, text) {
+        match recognise(text) {
             Recognised::Dialog(d) => d,
             Recognised::Unknown => panic!("not recognised:\n{text}"),
         }
@@ -268,7 +257,7 @@ mod tests {
         ];
         for (i, text) in cases.iter().enumerate() {
             assert!(
-                !matches!(recognise(V, text), Recognised::Dialog(d) if d.actionable),
+                !matches!(recognise(text), Recognised::Dialog(d) if d.actionable),
                 "case {i} was actionable"
             );
         }
@@ -285,25 +274,25 @@ mod tests {
     }
 
     #[test]
-    fn other_versions_and_echoes_get_no_actionable_dialog() {
-        for name in ["question-single", "permission-bash", "plan"] {
-            let text = fixture(name);
-            assert!(
-                !matches!(recognise("2.1.313", &text), Recognised::Dialog(d) if d.actionable),
-                "{name}"
-            );
-            let echoed = format!("{text}\n❯ \n  ⏸ manual mode on · ← 2 agents\n");
-            assert_eq!(recognise(V, &echoed), Recognised::Unknown, "{name}");
+    fn a_layout_it_does_not_know_is_shown_read_only() {
+        let text =
+            fixture("permission-bash").replace("Tab to amend", "Tab to amend · ctrl+e to explain");
+        match recognise(&text) {
+            Recognised::Dialog(d) => {
+                assert!(!d.actionable);
+                assert_eq!(d.options.len(), 4);
+            }
+            Recognised::Unknown => panic!("hidden:\n{text}"),
         }
-        assert_eq!(recognise(V, ""), Recognised::Unknown);
     }
 
     #[test]
-    fn version_output() {
-        assert_eq!(
-            parse_version("2.1.312 (Claude Code)\n").as_deref(),
-            Some("2.1.312")
-        );
-        assert_eq!(parse_version("2.1.312"), None);
+    fn echoes_get_no_dialog() {
+        for name in ["question-single", "permission-bash", "plan"] {
+            let text = fixture(name);
+            let echoed = format!("{text}\n❯ \n  ⏸ manual mode on · ← 2 agents\n");
+            assert_eq!(recognise(&echoed), Recognised::Unknown, "{name}");
+        }
+        assert_eq!(recognise(""), Recognised::Unknown);
     }
 }

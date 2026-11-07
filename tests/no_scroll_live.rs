@@ -149,7 +149,6 @@ async fn automatic_reads_leave_a_full_screen_agent_still() {
             exe: PathBuf::from(env!("CARGO_BIN_EXE_switchboard")),
             hook_addr,
             codex_version_cmd: vec!["codex".into(), "--version".into()],
-            claude_version_cmd: vec!["claude".into(), "--version".into()],
             liveness_timeout: Duration::from_secs(30),
             startup_timeout: Duration::from_secs(30),
         },

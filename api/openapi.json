@@ -2454,7 +2454,7 @@
         "properties": {
           "kind": {
             "type": "string",
-            "description": "`question`, `plan`, `permission`, or `other` for a list no pinned recogniser knows."
+            "description": "`question`, `plan`, `permission`, or `other` for a list no recogniser knows."
           },
           "prompt": {
             "type": "string"
@@ -2484,7 +2484,7 @@
               "string",
               "null"
             ],
-            "description": "Why not: `read_only`, `unpinned`, `hooked` (answered as an approval instead),\n`hook_pending`, `hook_failed`, `not_blocked` or `answered`."
+            "description": "Why not: `read_only`, `hooked` (answered as an approval instead),\n`hook_pending`, `hook_failed`, `not_blocked` or `answered`."
           }
         }
       },

@@ -8,7 +8,6 @@ use std::time::Duration;
 use tokio::time::Instant;
 
 use super::hooks::HookState;
-use crate::agents::codex::check_version;
 use crate::agents::codex::screen::{Keys, Screen, classify, deny_keys, startup_keys};
 use crate::cli::Agent;
 use crate::herdr::Client;
@@ -78,11 +77,7 @@ const READY_READS: u32 = 2;
 /// The screen must be seen: it proves the untrusted override applied, and Codex can draw its
 /// composer briefly before a startup modal. Enter is sent at most once, and only when the
 /// adapter recognises "Open restricted" as selected.
-pub async fn clear_startup<I: CodexIo>(
-    io: &I,
-    version: &str,
-    timeout: Duration,
-) -> Result<(), StartupFailure> {
+pub async fn clear_startup<I: CodexIo>(io: &I, timeout: Duration) -> Result<(), StartupFailure> {
     let fail = |reason, screen: &str| StartupFailure {
         reason,
         screen_excerpt: excerpt(screen),
@@ -96,7 +91,7 @@ pub async fn clear_startup<I: CodexIo>(
             Ok(screen) => screen,
             Err(_) => return Err(fail("screen_read_failed", &last)),
         };
-        let screen = classify(version, &last);
+        let screen = classify(&last);
         ready_reads = if sent && screen == Screen::Ready {
             ready_reads + 1
         } else {
@@ -138,9 +133,8 @@ pub async fn clear_startup<I: CodexIo>(
 
 /// What the runner knows about one session without reading its screen.
 #[derive(Debug, Clone, Copy)]
-pub struct Facts<'a> {
+pub struct Facts {
     pub agent: Agent,
-    pub codex_version: Option<&'a str>,
     pub blocked_since: Option<Instant>,
     pub hooks: HookState,
     pub now: Instant,
@@ -157,7 +151,7 @@ pub enum Gate {
     HookFailed(&'static str),
 }
 
-pub fn gate(f: &Facts<'_>) -> Gate {
+pub fn gate(f: &Facts) -> Gate {
     if f.agent != Agent::Codex {
         return Gate::Refuse("not_codex");
     }
@@ -167,9 +161,6 @@ pub fn gate(f: &Facts<'_>) -> Gate {
     let Some(since) = f.blocked_since else {
         return Gate::Wait("not_blocked");
     };
-    if !f.codex_version.is_some_and(|v| check_version(v).is_ok()) {
-        return Gate::HookFailed("unsupported_codex_version");
-    }
     if f.hooks.pending > 0 {
         return Gate::Wait("approval_pending");
     }
@@ -201,7 +192,7 @@ pub enum FallbackOutcome {
 
 /// Sends the deny choice once if the adapter recognises a permission dialog, then confirms
 /// from the screen that the dialog is gone. Never sends anything else.
-pub async fn deny_dialog<I: CodexIo>(io: &I, version: &str) -> FallbackOutcome {
+pub async fn deny_dialog<I: CodexIo>(io: &I) -> FallbackOutcome {
     let failed = |reason, screen: &str| FallbackOutcome::HookFailed {
         reason,
         screen_excerpt: excerpt(screen),
@@ -209,7 +200,7 @@ pub async fn deny_dialog<I: CodexIo>(io: &I, version: &str) -> FallbackOutcome {
     let Ok(before) = io.read_screen().await else {
         return failed("screen_read_failed", "");
     };
-    let screen = classify(version, &before);
+    let screen = classify(&before);
     if screen == Screen::Ready {
         return FallbackOutcome::NothingToDo;
     }
@@ -226,7 +217,7 @@ pub async fn deny_dialog<I: CodexIo>(io: &I, version: &str) -> FallbackOutcome {
             continue;
         };
         after = screen;
-        if !matches!(classify(version, &after), Screen::PermissionDialog(_)) {
+        if !matches!(classify(&after), Screen::PermissionDialog(_)) {
             return FallbackOutcome::Denied {
                 screen_excerpt: excerpt(&before),
             };

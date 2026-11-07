@@ -4,7 +4,6 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 
 use super::*;
-use crate::agents::codex::SUPPORTED_VERSIONS;
 
 fn fixture(name: &str) -> String {
     std::fs::read_to_string(format!(
@@ -150,7 +149,6 @@ fn rig_with(dir: tempfile::TempDir, socket: &Path, codex_version_output: &str) -
         exe: PathBuf::from("/opt/sb/switchboard"),
         hook_addr: "127.0.0.1:9".parse().unwrap(),
         codex_version_cmd: vec!["echo".into(), codex_version_output.into()],
-        claude_version_cmd: vec!["echo".into(), "2.1.312 (Claude Code)".into()],
         liveness_timeout: Duration::from_secs(1),
         startup_timeout: Duration::from_secs(2),
     };
@@ -207,7 +205,7 @@ async fn codex_start_clears_startup_screen_before_sending_the_prompt() {
     );
     let mut r = rig_with(dir, &herdr.socket, "codex-cli 0.163.0");
     let out = r.sessions.start(start_req(Agent::Codex)).await.unwrap();
-    assert_eq!(out["codex_version"], SUPPORTED_VERSIONS[0]);
+    assert_eq!(out["codex_version"], "0.163.0");
     assert_eq!(
         herdr.methods(),
         [
@@ -293,15 +291,17 @@ async fn codex_launch_herdr_never_finishes_fails_without_prompting() {
 }
 
 #[tokio::test]
-async fn unknown_codex_version_is_refused_before_anything_is_created() {
+async fn unreadable_codex_version_is_refused_before_anything_is_created() {
     let dir = tempfile::tempdir().unwrap();
     let herdr = FakeHerdr::start(dir.path(), json!({"type": "ok"}), vec![]);
-    for output in ["codex-cli 0.164.0", "something else"] {
-        let r = rig_with(tempfile::tempdir().unwrap(), &herdr.socket, output);
-        let e = r.sessions.start(start_req(Agent::Codex)).await.unwrap_err();
-        assert_eq!(e.code, ErrorCode::UnsupportedAgentVersion, "{output}");
-        assert!(!r.dir.path().join("state").exists());
-    }
+    let r = rig_with(
+        tempfile::tempdir().unwrap(),
+        &herdr.socket,
+        "something else",
+    );
+    let e = r.sessions.start(start_req(Agent::Codex)).await.unwrap_err();
+    assert_eq!(e.code, ErrorCode::UnsupportedAgentVersion);
+    assert!(!r.dir.path().join("state").exists());
     assert!(herdr.methods().is_empty(), "Herdr was never called");
 }
 
@@ -401,7 +401,6 @@ async fn sessions_reload_after_restart_with_new_hook_address() {
         exe: PathBuf::from("/opt/sb/switchboard"),
         hook_addr: "127.0.0.1:4242".parse().unwrap(),
         codex_version_cmd: vec![],
-        claude_version_cmd: vec!["echo".into(), "2.1.312 (Claude Code)".into()],
         liveness_timeout: Duration::from_secs(1),
         startup_timeout: Duration::from_secs(2),
     };
@@ -583,7 +582,6 @@ fn multi_rig(dir: tempfile::TempDir, screens: Vec<String>) -> (Rig, PathBuf, Sta
         exe: PathBuf::from("/opt/sb/switchboard"),
         hook_addr: "127.0.0.1:9".parse().unwrap(),
         codex_version_cmd: vec!["echo".into(), "codex-cli 0.163.0".into()],
-        claude_version_cmd: vec!["echo".into(), "2.1.312 (Claude Code)".into()],
         liveness_timeout: Duration::from_secs(1),
         startup_timeout: Duration::from_secs(2),
     };

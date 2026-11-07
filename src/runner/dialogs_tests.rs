@@ -2,8 +2,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::*;
 
-const CODEX: &str = "0.165.0";
-
 fn fixture(dir: &str, name: &str) -> String {
     std::fs::read_to_string(format!(
         "{}/tests/fixtures/dialogs/{dir}/{name}.txt",
@@ -163,9 +161,9 @@ fn never() -> Option<&'static str> {
     None
 }
 
-async fn seen(io: &Arc<Fake>, version: &str) -> (Seen, DialogView) {
-    let s = look(io, Some(version)).await.unwrap();
-    let v = view(&s, Some(version), &never, &Answered::default()).unwrap();
+async fn seen(io: &Arc<Fake>) -> (Seen, DialogView) {
+    let s = look(io).await.unwrap();
+    let v = view(&s, &never, &Answered::default()).unwrap();
     (s, v)
 }
 
@@ -182,20 +180,20 @@ fn request(v: &DialogView, index: usize) -> AnswerRequest {
 #[tokio::test(start_paused = true)]
 async fn arrows_then_one_enter_after_the_selection_is_verified() {
     let io = Fake::codex();
-    let (_, v) = seen(&io, CODEX).await;
+    let (_, v) = seen(&io).await;
     assert!(v.answerable, "{v:?}");
     assert_eq!(
         v.options.iter().map(|o| o.offered).collect::<Vec<_>>(),
         [true, false, true]
     );
     let answered = Answered::default();
-    answer(&io, Some(CODEX), &never, &answered, &request(&v, 2))
+    answer(&io, &never, &answered, &request(&v, 2))
         .await
         .unwrap();
     assert_eq!(io.sent(), vec![vec!["down", "down"], vec!["enter"]]);
     assert!(io.0.lock().unwrap().entered[0].contains("› 3. No, and tell Codex"));
     // A replay of the same answer sends nothing.
-    let again = answer(&io, Some(CODEX), &never, &answered, &request(&v, 2))
+    let again = answer(&io, &never, &answered, &request(&v, 2))
         .await
         .unwrap_err();
     assert_eq!(again.code, ErrorCode::DialogChanged);
@@ -205,33 +203,21 @@ async fn arrows_then_one_enter_after_the_selection_is_verified() {
 #[tokio::test(start_paused = true)]
 async fn the_selected_option_needs_no_arrows() {
     let io = Fake::codex();
-    let (_, v) = seen(&io, CODEX).await;
-    answer(
-        &io,
-        Some(CODEX),
-        &never,
-        &Answered::default(),
-        &request(&v, 0),
-    )
-    .await
-    .unwrap();
+    let (_, v) = seen(&io).await;
+    answer(&io, &never, &Answered::default(), &request(&v, 0))
+        .await
+        .unwrap();
     assert_eq!(io.sent(), vec![vec!["enter"]]);
 }
 
 #[tokio::test(start_paused = true)]
 async fn a_changed_screen_gets_no_keys() {
     let io = Fake::codex();
-    let (_, v) = seen(&io, CODEX).await;
+    let (_, v) = seen(&io).await;
     io.0.lock().unwrap().dialog = Some(fixture("codex-0.165.0", "permission-edit"));
-    let e = answer(
-        &io,
-        Some(CODEX),
-        &never,
-        &Answered::default(),
-        &request(&v, 2),
-    )
-    .await
-    .unwrap_err();
+    let e = answer(&io, &never, &Answered::default(), &request(&v, 2))
+        .await
+        .unwrap_err();
     assert_eq!(e.code, ErrorCode::DialogChanged);
     assert!(io.sent().is_empty());
 }
@@ -240,9 +226,9 @@ async fn a_changed_screen_gets_no_keys() {
 async fn a_selection_that_never_moves_gets_no_enter_and_may_be_retried() {
     let io = Fake::codex();
     io.0.lock().unwrap().stuck = true;
-    let (_, v) = seen(&io, CODEX).await;
+    let (_, v) = seen(&io).await;
     let answered = Answered::default();
-    let e = answer(&io, Some(CODEX), &never, &answered, &request(&v, 2))
+    let e = answer(&io, &never, &answered, &request(&v, 2))
         .await
         .unwrap_err();
     assert_eq!(e.code, ErrorCode::DialogChanged);
@@ -261,17 +247,11 @@ async fn a_changed_process_between_the_arrows_and_enter_stops_everything() {
         |s: &mut State| s.process.agent_session = Some("other".into()),
     ] {
         let io = Fake::codex();
-        let (_, v) = seen(&io, CODEX).await;
+        let (_, v) = seen(&io).await;
         io.0.lock().unwrap().on_arrow = Some(Box::new(change));
-        let e = answer(
-            &io,
-            Some(CODEX),
-            &never,
-            &Answered::default(),
-            &request(&v, 2),
-        )
-        .await
-        .unwrap_err();
+        let e = answer(&io, &never, &Answered::default(), &request(&v, 2))
+            .await
+            .unwrap_err();
         assert_eq!(e.code, ErrorCode::DialogChanged);
         assert_eq!(io.enters(), 0);
         assert!(!io.sent().iter().flatten().any(|k| *k == "esc"));
@@ -281,7 +261,7 @@ async fn a_changed_process_between_the_arrows_and_enter_stops_everything() {
 #[tokio::test(start_paused = true)]
 async fn two_answers_at_once_send_one_enter() {
     let io = Fake::codex();
-    let (_, v) = seen(&io, CODEX).await;
+    let (_, v) = seen(&io).await;
     let answered = Arc::new(Answered::default());
     let locks = Arc::new(PaneLocks::default());
     let run = |index: usize| {
@@ -293,7 +273,7 @@ async fn two_answers_at_once_send_one_enter() {
         );
         tokio::spawn(async move {
             let _g = locks.lock(None, "w1:p1").await;
-            answer(&io, Some(CODEX), &never, &answered, &req).await
+            answer(&io, &never, &answered, &req).await
         })
     };
     let (a, b) = (run(0), run(2));
@@ -309,20 +289,14 @@ async fn two_answers_at_once_send_one_enter() {
 #[tokio::test(start_paused = true)]
 async fn a_hook_call_that_arrives_during_the_arrows_stops_the_enter() {
     let io = Fake::codex();
-    let (_, v) = seen(&io, CODEX).await;
+    let (_, v) = seen(&io).await;
     let pending = Arc::new(AtomicBool::new(false));
     let flag = pending.clone();
     io.0.lock().unwrap().on_arrow = Some(Box::new(move |_| flag.store(true, Ordering::SeqCst)));
     let refuse = move || pending.load(Ordering::SeqCst).then_some("hook_pending");
-    let e = answer(
-        &io,
-        Some(CODEX),
-        &refuse,
-        &Answered::default(),
-        &request(&v, 2),
-    )
-    .await
-    .unwrap_err();
+    let e = answer(&io, &refuse, &Answered::default(), &request(&v, 2))
+        .await
+        .unwrap_err();
     assert_eq!(e.code, ErrorCode::DialogChanged);
     assert_eq!(io.enters(), 0);
 }
@@ -330,9 +304,9 @@ async fn a_hook_call_that_arrives_during_the_arrows_stops_the_enter() {
 #[tokio::test(start_paused = true)]
 async fn refused_panes_and_options_get_no_keys() {
     let io = Fake::codex();
-    let (s, v) = seen(&io, CODEX).await;
+    let (s, v) = seen(&io).await;
     let hooked = || Some("hooked");
-    let hv = view(&s, Some(CODEX), &hooked, &Answered::default()).unwrap();
+    let hv = view(&s, &hooked, &Answered::default()).unwrap();
     assert_eq!(
         (hv.answerable, hv.reason.as_deref()),
         (false, Some("hooked"))
@@ -340,17 +314,16 @@ async fn refused_panes_and_options_get_no_keys() {
     let answered = Answered::default();
     let cases = [
         (
-            answer(&io, Some(CODEX), &hooked, &answered, &request(&v, 2)).await,
+            answer(&io, &hooked, &answered, &request(&v, 2)).await,
             ErrorCode::DialogChanged,
         ),
         (
-            answer(&io, Some(CODEX), &never, &answered, &request(&v, 1)).await,
+            answer(&io, &never, &answered, &request(&v, 1)).await,
             ErrorCode::BadRequest,
         ),
         (
             answer(
                 &io,
-                Some(CODEX),
                 &never,
                 &answered,
                 &AnswerRequest {
@@ -364,7 +337,6 @@ async fn refused_panes_and_options_get_no_keys() {
         (
             answer(
                 &io,
-                Some(CODEX),
                 &never,
                 &answered,
                 &AnswerRequest {
@@ -373,10 +345,6 @@ async fn refused_panes_and_options_get_no_keys() {
                 },
             )
             .await,
-            ErrorCode::DialogChanged,
-        ),
-        (
-            answer(&io, Some("0.164.0"), &never, &answered, &request(&v, 2)).await,
             ErrorCode::DialogChanged,
         ),
     ];
@@ -389,13 +357,11 @@ async fn refused_panes_and_options_get_no_keys() {
         deny_only: true,
         ..request(&v, 2)
     };
-    answer(&io, Some(CODEX), &never, &answered, &req)
-        .await
-        .unwrap();
+    answer(&io, &never, &answered, &req).await.unwrap();
 }
 
 #[tokio::test(start_paused = true)]
-async fn read_only_and_unpinned_dialogs_are_shown_but_not_answerable() {
+async fn read_only_dialogs_are_shown_but_not_answerable() {
     let multi = Fake::new(
         "claude",
         fixture("claude-2.1.312", "question-multi"),
@@ -403,16 +369,12 @@ async fn read_only_and_unpinned_dialogs_are_shown_but_not_answerable() {
         4,
         String::new(),
     );
-    let (_, v) = seen(&multi, "2.1.312").await;
+    let (_, v) = seen(&multi).await;
     assert_eq!(
         (v.answerable, v.reason.as_deref()),
         (false, Some("read_only"))
     );
     assert!(v.options.iter().all(|o| !o.offered));
-    let io = Fake::codex();
-    let s = look(&io, Some("0.164.0")).await.unwrap();
-    let v = view(&s, Some("0.164.0"), &never, &Answered::default()).unwrap();
-    assert_eq!(v.reason.as_deref(), Some("unpinned"));
 }
 
 #[tokio::test(start_paused = true)]
@@ -424,18 +386,12 @@ async fn a_claude_question_is_answered_across_its_description_lines() {
         5,
         String::new(),
     );
-    let (_, v) = seen(&io, "2.1.312").await;
+    let (_, v) = seen(&io).await;
     assert_eq!(v.kind, crate::agents::dialog::DialogKind::Question);
     assert_eq!(v.options[2].label, "Blue");
-    answer(
-        &io,
-        Some("2.1.312"),
-        &never,
-        &Answered::default(),
-        &request(&v, 2),
-    )
-    .await
-    .unwrap();
+    answer(&io, &never, &Answered::default(), &request(&v, 2))
+        .await
+        .unwrap();
     assert_eq!(io.sent(), vec![vec!["down", "down"], vec!["enter"]]);
     assert!(io.0.lock().unwrap().entered[0].contains("❯ 3. Blue"));
 }
@@ -444,13 +400,13 @@ async fn a_claude_question_is_answered_across_its_description_lines() {
 async fn identical_dialogs_differ_by_their_call_ids() {
     let io = Fake::codex();
     io.0.lock().unwrap().call = Some("call_a".into());
-    let a = look(&io, Some(CODEX)).await.unwrap().occurrence;
+    let a = look(&io).await.unwrap().occurrence;
     io.0.lock().unwrap().call = Some("call_b".into());
-    let b = look(&io, Some(CODEX)).await.unwrap().occurrence;
+    let b = look(&io).await.unwrap().occurrence;
     assert_ne!(a, b);
     // The marker and footer follow the selection; the occurrence doesn't.
     io.0.lock().unwrap().selected = 3;
-    assert_eq!(look(&io, Some(CODEX)).await.unwrap().occurrence, b);
+    assert_eq!(look(&io).await.unwrap().occurrence, b);
 }
 
 /// Documents the risk the owner accepted: a dialog replaced after the last read and before
@@ -458,17 +414,10 @@ async fn identical_dialogs_differ_by_their_call_ids() {
 #[tokio::test(start_paused = true)]
 async fn a_dialog_replaced_between_the_read_and_enter_gets_the_enter() {
     let io = Fake::codex();
-    let (_, v) = seen(&io, CODEX).await;
+    let (_, v) = seen(&io).await;
     let next = fixture("codex-0.165.0", "permission-edit");
     io.0.lock().unwrap().replace_on_enter = Some(next);
-    let r = answer(
-        &io,
-        Some(CODEX),
-        &never,
-        &Answered::default(),
-        &request(&v, 0),
-    )
-    .await;
+    let r = answer(&io, &never, &Answered::default(), &request(&v, 0)).await;
     assert!(r.is_ok());
     let entered = io.0.lock().unwrap().entered.clone();
     assert_eq!(entered.len(), 1);
