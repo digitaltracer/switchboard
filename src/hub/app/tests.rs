@@ -148,6 +148,11 @@ fn config(extra: &str) -> HubConfig {
 }
 
 async fn rig_with(extra: &str) -> Rig {
+    rig_advertising(extra, vec![]).await
+}
+
+/// A rig whose runner advertises `capabilities`; others are an older runner's.
+async fn rig_advertising(extra: &str, capabilities: Vec<String>) -> Rig {
     let store = Store::open_in_memory().await.unwrap();
     let svc = SessionService::new(config(extra), store.clone(), Clock::System);
     let devices = Arc::new(Devices::new(store, Clock::System));
@@ -157,6 +162,7 @@ async fn rig_with(extra: &str) -> Rig {
         runner_version: "test".into(),
         herdr_version: None,
         sessions: vec![],
+        capabilities,
     };
     let (generation, runner) = svc.runner_connected("mac", hello).await;
     let app = routes(AppState {

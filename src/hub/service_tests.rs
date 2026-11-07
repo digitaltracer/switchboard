@@ -97,6 +97,7 @@ async fn connect(
         runner_version: "test".into(),
         herdr_version: Some("0.9.1".into()),
         sessions,
+        capabilities: vec![],
     };
     let (generation, outbound) = svc.runner_connected(machine, hello).await;
     FakeRunner {

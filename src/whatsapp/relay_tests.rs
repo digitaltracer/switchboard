@@ -186,6 +186,7 @@ impl Rig {
             runner_version: "test".into(),
             herdr_version: None,
             sessions: vec![],
+            capabilities: vec![],
         };
         let (generation, mut outbound) = svc.runner_connected("mac", hello).await;
         let (svc2, s) = (svc.clone(), script.clone());

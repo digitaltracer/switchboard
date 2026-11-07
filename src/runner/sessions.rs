@@ -225,6 +225,61 @@ impl Sessions {
         Ok(out)
     }
 
+    /// Every agent's last line, named as `all_agents` names them, from one snapshot per Herdr
+    /// server and the log cache. An agent without a log, or that isn't Claude or Codex, has none.
+    async fn activity(&self) -> Vec<crate::proto::AgentActivity> {
+        let tasks = self.all();
+        let mut out = Vec::new();
+        let mut logs = std::collections::HashSet::new();
+        for (server, client) in self.herdrs.running().await {
+            let Ok(snap) = client.session_snapshot().await else {
+                continue;
+            };
+            let panes = snap.agents.iter().map(|a| a.pane_id.clone()).collect();
+            self.logs.retain(client.socket(), &panes);
+            for info in snap.agents {
+                let local = info.name.clone().unwrap_or_else(|| info.pane_id.clone());
+                let task = tasks.iter().find(|s| s.agent_name == local);
+                let name = match task {
+                    Some(_) => local.clone(),
+                    None => qualified(server.as_deref(), &local),
+                };
+                let owned = task
+                    .filter(|s| server.is_none() || s.herdr_session == server)
+                    .cloned();
+                let line = match info.agent.as_deref() {
+                    Some("claude" | "codex") => match self.log_for(&client, owned, info).await {
+                        Ok(found) => {
+                            logs.insert(found.log.clone());
+                            let cache = self.logs.clone();
+                            tokio::task::spawn_blocking(move || cache.last_line(&found.log))
+                                .await
+                                .ok()
+                                .flatten()
+                        }
+                        Err(_) => None,
+                    },
+                    _ => None,
+                };
+                let (line, at) = line.unzip();
+                out.push(crate::proto::AgentActivity {
+                    name,
+                    session_id: task.map(|s| s.session_id.clone()),
+                    line,
+                    at: at.flatten(),
+                });
+            }
+        }
+        self.logs.keep_lines(&logs);
+        tracing::debug!(
+            agents = out.len(),
+            searches = self.logs.searches(),
+            bytes_read = self.logs.bytes_read(),
+            "activity"
+        );
+        out
+    }
+
     fn dir(&self, session_id: &str) -> PathBuf {
         self.cfg.state_dir.join("sessions").join(session_id)
     }
@@ -419,6 +474,7 @@ impl Sessions {
             }
             Op::ListSessions => Ok(serde_json::to_value(self.owned().await).expect("serializes")),
             Op::Agents => Ok(serde_json::to_value(self.all_agents().await?).expect("serializes")),
+            Op::Activity => Ok(serde_json::to_value(self.activity().await).expect("serializes")),
             Op::ReadAgent {
                 agent,
                 lines,

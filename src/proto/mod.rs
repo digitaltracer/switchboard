@@ -10,6 +10,8 @@ use crate::cli::Agent;
 
 pub const PROTOCOL_VERSION: u32 = 1;
 pub const MAX_FRAME_BYTES: usize = 1 << 20;
+/// A runner that answers `Op::Activity`.
+pub const CAP_ACTIVITY: &str = "activity";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -32,6 +34,10 @@ pub struct Hello {
     pub herdr_version: Option<String>,
     /// Workspaces this runner owns, each labelled with its session id.
     pub sessions: Vec<OwnedSession>,
+    /// Ops beyond the first protocol this runner answers, e.g. `activity`. Older runners send
+    /// none, and are never sent an op they can't decode.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -110,6 +116,9 @@ pub enum Op {
     ListSessions,
     /// Every named Herdr agent on the machine, Switchboard's or not.
     Agents,
+    /// Every agent's last line, as `AgentActivity`s; only for runners advertising
+    /// `CAP_ACTIVITY`. Read-only.
+    Activity,
     /// Reads any named agent; `visible` is the current screen, which shows a dialog. `ansi` adds
     /// that screen with its colours; older runners leave it out.
     ReadAgent {
@@ -161,6 +170,7 @@ impl Op {
             Op::Read { .. }
                 | Op::ListSessions
                 | Op::Agents
+                | Op::Activity
                 | Op::ReadAgent { .. }
                 | Op::Changes { .. }
                 | Op::Transcript { .. }
@@ -271,6 +281,21 @@ pub struct AgentSummary {
     /// The label of the Herdr workspace it runs in. Untrusted text.
     #[serde(default)]
     pub space: Option<String>,
+}
+
+/// One agent from `Op::Activity`: the first line of the last thing it said or did, masked.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentActivity {
+    /// As in `AgentSummary`.
+    pub name: String,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    /// None when its log has none yet. Untrusted text.
+    #[serde(default)]
+    pub line: Option<String>,
+    /// When the line was written, as the log says it.
+    #[serde(default)]
+    pub at: Option<String>,
 }
 
 impl AgentSummary {

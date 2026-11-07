@@ -912,6 +912,39 @@ async fn an_agents_conversation_is_read_from_its_claude_log() {
 }
 
 #[tokio::test]
+async fn activity_gives_each_agent_its_last_line() {
+    let dir = tempfile::tempdir().unwrap();
+    let (r, config_dir, _) = multi_rig(dir, vec![]);
+    named_herdr(&config_dir.join("sessions/mono1"), "claude", "mono1 screen");
+    named_herdr(&config_dir.join("sessions/pca-udp"), "claude", "pca screen");
+    let activity =
+        |v: Value| serde_json::from_value::<Vec<crate::proto::AgentActivity>>(v).unwrap();
+    let none = activity(r.sessions.handle(Op::Activity).await.unwrap());
+    assert_eq!(none.len(), 2);
+    assert!(
+        none.iter().all(|a| a.line.is_none()),
+        "no logs yet: {none:?}"
+    );
+
+    let folder = r.dir.path().join("claude-projects/-Users-me-mono1");
+    std::fs::create_dir_all(&folder).unwrap();
+    let said = json!({"type": "assistant", "uuid": "a1", "timestamp": "2026-11-07T09:00:00Z",
+                      "message": {"content": [{"type": "text", "text": "Tests pass.\nAll of them."}]}});
+    std::fs::write(
+        folder.join(format!("{CLAUDE_SESSION}.jsonl")),
+        format!("{said}\n"),
+    )
+    .unwrap();
+    let list = activity(r.sessions.handle(Op::Activity).await.unwrap());
+    let names: Vec<&str> = list.iter().map(|a| a.name.as_str()).collect();
+    assert_eq!(names, ["mono1/claude", "pca-udp/claude"]);
+    // Both fake servers report the same session, so both find the log.
+    assert_eq!(list[0].line.as_deref(), Some("Tests pass."));
+    assert_eq!(list[0].at.as_deref(), Some("2026-11-07T09:00:00Z"));
+    assert_eq!(list[0].session_id, None);
+}
+
+#[tokio::test]
 async fn a_transcript_read_waits_for_the_log_to_grow_and_a_ninth_wait_answers_at_once() {
     let _turn = crate::runner::logwatch::TIMED.lock().await;
     let dir = tempfile::tempdir().unwrap();

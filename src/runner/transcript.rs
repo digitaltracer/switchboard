@@ -19,7 +19,11 @@ use serde_json::Value;
 use crate::proto::{TranscriptItem, TranscriptPage};
 
 /// The most of the log one page reads.
-const WINDOW: u64 = 1 << 20;
+pub const WINDOW: u64 = 1 << 20;
+/// The most of a log's end read for its last line.
+pub const TAIL: u64 = 256 * 1024;
+/// The most characters of a last line kept.
+pub const MAX_LINE: usize = 200;
 /// The most items one page returns; the oldest are dropped.
 const MAX_ITEMS: usize = 300;
 /// The most of a message's text kept; a longer one is cut there and ends in "…".
@@ -225,6 +229,52 @@ pub fn pending_call(path: &Path) -> Option<String> {
     let page = read_page(path, None, None).ok()?;
     let last = page.items.iter().rev().find(|i| i.kind == "tool")?;
     (!last.done).then(|| last.id.clone())
+}
+
+/// A log's last line and when it was written.
+pub type LastLine = (String, Option<String>);
+
+/// The first line of the last thing the agent said or did, as a phone's tile shows it, with
+/// when it was written, from the last `TAIL` bytes. Masked on the whole text before it's cut.
+/// Also the bytes read.
+pub fn last_line(path: &Path) -> io::Result<(Option<LastLine>, u64)> {
+    let mut file = File::open(path)?;
+    let len = file.metadata()?.len();
+    let lo = len.saturating_sub(TAIL);
+    // One byte early, to tell whether `lo` starts a line.
+    let from = lo.saturating_sub(1);
+    let buf = read_range(&mut file, from, len)?;
+    let read = buf.len() as u64;
+    let first = match lo {
+        0 => 0,
+        _ => buf
+            .iter()
+            .position(|&b| b == b'\n')
+            .map_or(buf.len(), |i| i + 1),
+    };
+    // A last line still being written is left out.
+    let end = buf.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
+    let body = buf.get(first..end.max(first)).unwrap_or_default();
+    let p = page(from + first as u64, from + end as u64, body);
+    let last = p
+        .items
+        .into_iter()
+        .rev()
+        .find(|i| i.kind != "user" && i.text.is_some());
+    let line = last.and_then(|i| {
+        let text = crate::redact::redact_str(i.text.as_deref()?);
+        let line = text.lines().find(|l| !l.trim().is_empty())?;
+        Some((clip_chars(line, MAX_LINE), i.at))
+    });
+    Ok((line, read))
+}
+
+/// At most `max` characters, ending in "…" when cut.
+fn clip_chars(s: &str, max: usize) -> String {
+    match s.char_indices().nth(max) {
+        Some((cut, _)) => format!("{}…", &s[..cut]),
+        None => s.to_owned(),
+    }
 }
 
 /// The page made of whole lines `body`, which starts at `start`.

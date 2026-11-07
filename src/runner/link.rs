@@ -18,7 +18,8 @@ use url::Url;
 use super::sessions::Sessions;
 use crate::proto::conn::{Backoff, PING_INTERVAL, QUEUE_CAPACITY};
 use crate::proto::{
-    Event, Frame, Hello, Op, Outcome, OwnedSession, PROTOCOL_VERSION, ProtoError, Resp, decode,
+    CAP_ACTIVITY, Event, Frame, Hello, Op, Outcome, OwnedSession, PROTOCOL_VERSION, ProtoError,
+    Resp, decode,
 };
 use crate::redact::redact;
 
@@ -77,6 +78,7 @@ async fn connect_once<H: Handler>(
         runner_version: env!("CARGO_PKG_VERSION").into(),
         herdr_version: cfg.herdr_version.clone(),
         sessions: handler.owned().await,
+        capabilities: vec![CAP_ACTIVITY.into()],
     });
     sink.send(Message::text(masked(&hello))).await?;
     tracing::info!(url = %cfg.url, "connected to hub");

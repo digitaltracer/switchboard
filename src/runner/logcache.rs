@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
 use super::logwatch::{self, Found, Switch};
-use super::transcript;
+use super::transcript::{self, LastLine};
 
 /// How long an entry is trusted before a full search checks it again.
 pub const REVALIDATE: Duration = Duration::from_secs(60);
@@ -91,8 +91,11 @@ pub struct LogCache {
     revalidate: Duration,
     entries: Mutex<HashMap<Key, Entry>>,
     headers: transcript::CodexHeaders,
+    /// Each log's last line, by the log's stamp when it was read.
+    lines: Mutex<HashMap<PathBuf, (Stamp, Option<LastLine>)>>,
     searches: AtomicU64,
     parses: AtomicU64,
+    bytes: AtomicU64,
 }
 
 impl LogCache {
@@ -111,8 +114,10 @@ impl LogCache {
             revalidate,
             entries: Mutex::default(),
             headers: Default::default(),
+            lines: Mutex::default(),
             searches: AtomicU64::new(0),
             parses: AtomicU64::new(0),
+            bytes: AtomicU64::new(0),
         }
     }
 
@@ -124,6 +129,11 @@ impl LogCache {
     /// Pending-call parses so far.
     pub fn parses(&self) -> u64 {
         self.parses.load(Ordering::Relaxed)
+    }
+
+    /// Bytes of logs read so far for pending calls and last lines.
+    pub fn bytes_read(&self) -> u64 {
+        self.bytes.load(Ordering::Relaxed)
     }
 
     /// Codex first lines read so far.
@@ -288,6 +298,8 @@ impl LogCache {
             }
         }
         self.parses.fetch_add(1, Ordering::Relaxed);
+        self.bytes
+            .fetch_add(before.len.min(transcript::WINDOW), Ordering::Relaxed);
         let call = transcript::pending_call(log);
         // A write during the parse leaves nothing cached.
         if Stamp::of(log) == Some(before)
@@ -297,6 +309,30 @@ impl LogCache {
             e.pending = Some((before, call.clone()));
         }
         call
+    }
+
+    /// `log`'s last line, read again only when the log changed.
+    pub fn last_line(&self, log: &Path) -> Option<LastLine> {
+        let before = Stamp::of(log)?;
+        if let Some((stamp, line)) = self.lines.lock().unwrap().get(log)
+            && *stamp == before
+        {
+            return line.clone();
+        }
+        let (line, read) = transcript::last_line(log).ok()?;
+        self.bytes.fetch_add(read, Ordering::Relaxed);
+        if Stamp::of(log) == Some(before) {
+            self.lines
+                .lock()
+                .unwrap()
+                .insert(log.to_owned(), (before, line.clone()));
+        }
+        line
+    }
+
+    /// Forgets the last lines of logs not in `logs`.
+    pub fn keep_lines(&self, logs: &HashSet<PathBuf>) {
+        self.lines.lock().unwrap().retain(|p, _| logs.contains(p));
     }
 }
 

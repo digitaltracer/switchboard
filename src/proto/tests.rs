@@ -20,6 +20,7 @@ fn hello(machine: &str, version: u32) -> Frame {
             agent_status: "idle".into(),
             hook_failed: false,
         }],
+        capabilities: vec![CAP_ACTIVITY.into()],
     })
 }
 
@@ -48,6 +49,11 @@ fn every_frame_round_trips() {
             id: 2,
             deadline_ms: 5_000,
             op: Op::ListSessions,
+        }),
+        Frame::Req(Req {
+            id: 20,
+            deadline_ms: 3_000,
+            op: Op::Activity,
         }),
         Frame::Req(Req {
             id: 3,
@@ -397,4 +403,19 @@ fn a_read_from_an_older_hub_asks_for_no_colours() {
     )
     .unwrap();
     assert!(matches!(op, Op::ReadAgent { ansi: false, .. }), "{op:?}");
+}
+
+#[test]
+fn an_older_runners_hello_decodes_with_no_capabilities() {
+    let old = json!({"type": "hello", "machine_id": "mac", "protocol_version": 1,
+                     "runner_version": "0.1.0", "herdr_version": null, "sessions": []});
+    let Frame::Hello(h) = decode(&old.to_string()).unwrap() else {
+        panic!("not a hello");
+    };
+    assert!(h.capabilities.is_empty());
+    let new = serde_json::to_value(hello("mac", PROTOCOL_VERSION)).unwrap();
+    assert_eq!(new["capabilities"], json!(["activity"]));
+    let mut without = new.clone();
+    without.as_object_mut().unwrap().remove("capabilities");
+    assert!(decode(&without.to_string()).is_ok());
 }

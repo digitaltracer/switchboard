@@ -529,3 +529,61 @@ fn a_reply_that_ends_its_turn_says_so() {
         [false, false, true]
     );
 }
+
+#[test]
+fn the_last_line_is_masked_before_it_is_cut() {
+    let secret = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+    let said = format!("{} {secret} and more\nsecond line", "x".repeat(190));
+    let text = [
+        user("u1", json!("push it")),
+        assistant("a1", json!([{"type": "text", "text": said}])),
+        user("u2", json!("thanks")),
+    ]
+    .concat();
+    let (_d, path) = log(&text);
+    let (line, read) = last_line(&path).unwrap();
+    let (line, _) = line.unwrap();
+    assert!(line.starts_with("xxxx") && !line.contains("ghp_"), "{line}");
+    assert!(
+        line.chars().count() <= MAX_LINE + 1,
+        "{}",
+        line.chars().count()
+    );
+    assert_eq!(read, text.len() as u64);
+}
+
+#[test]
+fn the_last_line_is_the_first_of_the_last_thing_said_or_done() {
+    let text = [
+        assistant(
+            "a1",
+            json!([{"type": "text", "text": "\n\nAll done.\nDetails follow"}]),
+        ),
+        assistant(
+            "a2",
+            json!([{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}}]),
+        ),
+        user("u1", json!("what now?")),
+    ]
+    .concat();
+    let (_d, path) = log(&text);
+    assert_eq!(last_line(&path).unwrap().0.unwrap().0, "Ran ls");
+    let (_d, empty) = log(&user("u1", json!("hello")));
+    assert_eq!(last_line(&empty).unwrap().0, None);
+}
+
+#[test]
+fn the_last_line_reads_only_the_end_of_a_big_log() {
+    let filler = assistant("a0", json!([{"type": "text", "text": "y".repeat(10_000)}]));
+    let mut text = filler.repeat(100);
+    text.push_str(&assistant(
+        "a1",
+        json!([{"type": "text", "text": "Latest"}]),
+    ));
+    // A line still being written is left out.
+    text.push_str("{\"type\":\"assistant\"");
+    let (_d, path) = log(&text);
+    let (line, read) = last_line(&path).unwrap();
+    assert_eq!(line.unwrap().0, "Latest");
+    assert!(read <= TAIL + 1, "{read}");
+}
