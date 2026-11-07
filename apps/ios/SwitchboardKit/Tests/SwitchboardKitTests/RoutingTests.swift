@@ -47,6 +47,21 @@ private func session(_ id: String, project: String, lifecycle: String = "running
     #expect(r.options.map(\.title) == ["Continue mono1/claude", "New task in kraft", "New task in niti"])
 }
 
+@Test func aNewTaskCanBeAddedWhenTheHubWouldContinueAnAgent() throws {
+    let preview: Schemas.MessagePreview = try decode(
+        #"{"outcome":"send","message":"Sends to mono1/claude.","target":{"kind":"agent","machine_id":"mac","agent":"mono1/claude","label":"mono1/claude"},"options":[]}"#
+    )
+    let r = RouteOptions.build(preview: preview, sessions: [], context: nil)
+    #expect(r.options.map(\.title) == ["Continue mono1/claude"])
+    #expect(r.projectsWithoutNewTask(["kraft", "niti"]) == ["kraft", "niti"])
+    let added = r.withNewTask(in: "kraft")
+    #expect(added.options.map(\.title) == ["Continue mono1/claude", "New task in kraft"])
+    #expect(added.options[1].action == .start(projectId: "kraft"))
+    #expect(added.suggested == r.suggested)
+    #expect(added.projectsWithoutNewTask(["kraft", "niti"]) == ["niti"])
+    #expect(added.withNewTask(in: "kraft") == added)
+}
+
 @Test func changesDecodeWithoutCountsForNewFiles() throws {
     let c: Schemas.Changes = try decode(#"{"files":[{"path":"a.rs","added":3,"deleted":1},{"path":"new.rs"}],"truncated":false}"#)
     #expect(c.files.map(\.added) == [3, nil])

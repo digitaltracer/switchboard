@@ -31,6 +31,17 @@ public enum RouteOptions {
             self.options = options
             self.suggested = suggested
         }
+
+        /// These options plus a new task in `project`, unless one is already offered.
+        public func withNewTask(in project: String) -> Result {
+            let o = RouteOptions.newTask(project)
+            return options.contains { $0.id == o.id } ? self : Result(options: options + [o], suggested: suggested)
+        }
+
+        /// The projects in `all` with no new-task option yet, for the "New task in…" picker.
+        public func projectsWithoutNewTask(_ all: [String]) -> [String] {
+            all.filter { p in !options.contains { $0.id == RouteOptions.newTask(p).id } }
+        }
     }
 
     static let maxAlternatives = 3
@@ -69,6 +80,11 @@ public enum RouteOptions {
             rest = Array(rest.prefix(maxAlternatives))
         }
         return Result(options: (top.map { [$0] } ?? []) + rest, suggested: top?.id)
+    }
+
+    /// A new task in `project`, picked by the user rather than offered by the hub.
+    public static func newTask(_ project: String) -> RouteOption {
+        startOption(project, machine: nil, action: .start(projectId: project))
     }
 
     private static func matches(_ o: RouteOption?, _ t: Schemas.TargetView) -> Bool {

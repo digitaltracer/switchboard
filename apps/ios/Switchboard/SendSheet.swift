@@ -10,6 +10,8 @@ struct SendSheet: View {
     @State private var preview: Schemas.MessagePreview?
     @State private var routes = RouteOptions.Result(options: [], suggested: nil)
     @State private var picked: String?
+    /// A project picked under "New task in…", offered alongside the hub's options.
+    @State private var newProject: String?
     @State private var note: String?
     @State private var sending = false
     /// One per draft and destination, so a retried send is never typed twice.
@@ -19,7 +21,9 @@ struct SendSheet: View {
     @State private var skillsError: String?
 
     private var current: Schemas.TargetView? { voice.context ?? model.current }
-    private var chosen: RouteOption? { routes.options.first { $0.id == (picked ?? routes.suggested) } }
+    private var shown: RouteOptions.Result { newProject.map { routes.withNewTask(in: $0) } ?? routes }
+    private var chosen: RouteOption? { shown.options.first { $0.id == (picked ?? shown.suggested) } }
+    private var unoffered: [String] { shown.projectsWithoutNewTask(model.projects.map(\.id)) }
     private var empty: Bool { voice.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     var body: some View {
@@ -51,7 +55,7 @@ struct SendSheet: View {
                     .focused($focused)
                     .accessibilityIdentifier("composeField")
                 if SkillSearch.isTyping(voice.text), let current { skillList(for: current) }
-                if !routes.options.isEmpty {
+                if !shown.options.isEmpty {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(preview?.message ?? "Goes to")
                             .font(.footnote.weight(.semibold))
@@ -59,9 +63,16 @@ struct SendSheet: View {
                             .padding(.horizontal, 4)
                             .accessibilityIdentifier("previewMessage")
                         VStack(spacing: 0) {
-                            ForEach(Array(routes.options.enumerated()), id: \.element.id) { i, o in
+                            ForEach(Array(shown.options.enumerated()), id: \.element.id) { i, o in
                                 RouteRow(option: o, selected: o.id == chosen?.id, first: i == 0) {
                                     picked = o.id
+                                    requestId = UUID().uuidString
+                                }
+                            }
+                            if !unoffered.isEmpty {
+                                NewTaskRow(projects: unoffered) { p in
+                                    newProject = p
+                                    picked = RouteOptions.newTask(p).id
                                     requestId = UUID().uuidString
                                 }
                             }
@@ -213,7 +224,7 @@ struct SendSheet: View {
             guard !Task.isCancelled else { return }
             preview = p
             routes = RouteOptions.build(preview: p, sessions: model.sessions, context: voice.context)
-            if let picked, !routes.options.contains(where: { $0.id == picked }) { self.picked = nil }
+            if let picked, !shown.options.contains(where: { $0.id == picked }) { self.picked = nil }
         } catch {
             if !Task.isCancelled { note = error.localizedDescription }
         }
@@ -237,7 +248,8 @@ struct SendSheet: View {
             note = r.message
             switch r.outcome {
             case "started", "sent", "selected":
-                model.current = r.current
+                // Only `use <x>` makes a default; a send doesn't, so the home screen asks again.
+                if r.outcome == "selected" { model.current = r.current }
                 model.record(sent: text, to: r.current, started: r.outcome == "started")
                 UINotificationFeedbackGenerator().notificationOccurred(.success)
                 voice.finish()
@@ -269,7 +281,6 @@ struct SendSheet: View {
         switch state {
         case .started(let sessionId, _):
             if let s = try? await hub.session(sessionId) {
-                model.current = .session(s)
                 model.record(sent: text, to: .session(s), started: true)
             }
             voice.finish()
@@ -278,6 +289,37 @@ struct SendSheet: View {
         case .failed:
             note = "That didn't reach the hub. Send it again."
         }
+    }
+}
+
+/// The last row under "Goes to": a menu of projects to start a new task in.
+private struct NewTaskRow: View {
+    let projects: [String]
+    let pick: (String) -> Void
+
+    var body: some View {
+        Menu {
+            ForEach(projects, id: \.self) { p in Button(p) { pick(p) } }
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "plus")
+                    .font(.system(size: 15, weight: .semibold))
+                    .frame(width: 32, height: 32)
+                    .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("New task in…").font(.body.weight(.semibold))
+                    Text("Pick a project").font(.footnote).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.up.chevron.down").font(.footnote).foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 14)
+            .frame(minHeight: 56)
+            .overlay(alignment: .top) { Divider().padding(.leading, 58) }
+            .contentShape(Rectangle())
+        }
+        .foregroundStyle(.primary)
+        .accessibilityIdentifier("routeNewTask")
     }
 }
 
