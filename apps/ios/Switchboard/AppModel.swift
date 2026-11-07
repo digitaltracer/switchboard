@@ -26,6 +26,7 @@ final class AppModel {
     private(set) var unreachable = false
     private(set) var meta: Schemas.Meta?
     var pairingError: String?
+    /// A short notice over every screen, such as why a notification opened nothing new.
     var banner: String?
     /// Set from a notification tap; the sessions screen opens it.
     var openSessionId: String?

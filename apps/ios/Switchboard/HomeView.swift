@@ -90,6 +90,25 @@ struct HomeView: View {
         }
         .scaleEffect(voice.squeeze ? 0.982 : 1, anchor: .bottom)
         .animation(.spring(response: 0.3, dampingFraction: 1), value: voice.squeeze)
+        .overlay(alignment: .top) {
+            if let banner = model.banner {
+                Text(banner)
+                    .font(.footnote.weight(.medium))
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(.regularMaterial, in: Capsule())
+                    .padding(.horizontal, 16)
+                    .padding(.top, 4)
+                    .onTapGesture { model.banner = nil }
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .accessibilityIdentifier("banner")
+                    .task(id: banner) {
+                        try? await Task.sleep(for: .seconds(6))
+                        if model.banner == banner { model.banner = nil }
+                    }
+            }
+        }
+        .animation(.snappy, value: model.banner)
         .overlay { VoiceOverlay() }
         .sheet(isPresented: Binding(
             get: { voice.phase == .review },
@@ -109,11 +128,26 @@ struct HomeView: View {
                 model.openSessionId = nil
             }
         }
-        // Only an attention that still waits opens; a moved-on or replaced agent stays closed.
+        // Opens the agent that asked, and says so when its question is no longer open. The id is
+        // cleared only after the lookup: clearing it first would cancel this very task.
         .task(id: model.openAttentionId) {
             guard let id = model.openAttentionId, let hub = model.hub else { return }
-            model.openAttentionId = nil
-            guard let a = try? await hub.attention(id), a.state == "open" else { return }
+            let a: Schemas.Attention
+            do {
+                a = try await hub.attention(id)
+            } catch {
+                if Task.isCancelled { return }
+                if model.openAttentionId == id { model.openAttentionId = nil }
+                model.banner = "Couldn't reach the hub to open that notification. Try again in a moment."
+                return
+            }
+            if model.openAttentionId == id { model.openAttentionId = nil }
+            switch a.state {
+            case "open": break
+            case "answered": model.banner = "That question was already answered."
+            case "expired": model.banner = "That question expired. Here's the agent now."
+            default: model.banner = "The agent has moved on from that question. Here it is now."
+            }
             if let s = a.sessionId { path = NavigationPath([s]) } else { path = NavigationPath([AgentRef(machine: a.machineId, name: a.agent)]) }
         }
     }
