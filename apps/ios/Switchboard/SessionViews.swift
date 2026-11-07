@@ -112,8 +112,8 @@ struct HerdrSessionView: View {
             }
         }
         .navigationTitle(key.name)
-        .task(id: model.wakes) {
-            while !Task.isCancelled {
+        .task(id: model.followKey) {
+            while model.followKey != nil, !Task.isCancelled {
                 await model.refreshAgents()
                 try? await Task.sleep(for: .seconds(6))
             }

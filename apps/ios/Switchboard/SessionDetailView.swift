@@ -47,7 +47,7 @@ struct SessionDetailView: View {
         .navigationTitle(session?.label ?? "Session")
         .navigationBarTitleDisplayMode(.large)
         .refreshable { await refresh() }
-        .task(id: model.wakes) { await follow() }
+        .task(id: model.followKey) { await follow() }
         .task(id: model.followKey) { await convo.follow(model) }
         .confirmationDialog(
             running
@@ -144,7 +144,7 @@ struct SessionDetailView: View {
     private func follow() async {
         pollError = nil
         var revision: Int64?
-        while !Task.isCancelled {
+        while model.followKey != nil, !Task.isCancelled {
             guard let hub = model.hub else { return }
             do {
                 let s = try await hub.session(sessionId, after: revision)

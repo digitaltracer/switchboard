@@ -192,9 +192,10 @@ final class AppModel {
         startPolling()
     }
 
-    /// The app left the foreground: following stops until it comes back.
+    /// The app left the foreground: following and the session list's long-poll stop until it comes back.
     func wentInactive() {
         active = false
+        pollTask?.cancel()
     }
 
     /// Remembers a message this phone sent, for the session page and the home screen.
@@ -223,7 +224,7 @@ final class AppModel {
     /// Re-reads agents often while a message waits, since only sessions are long-polled; gives up after 15 s.
     private func watch(_ key: String, _ entry: Awaiting) async {
         let end = entry.at.addingTimeInterval(15)
-        while Date() < end, awaiting[key]?.at == entry.at {
+        while active, Date() < end, awaiting[key]?.at == entry.at {
             if entry.target.sessionId == nil { await refreshAgents() }
             try? await Task.sleep(for: .milliseconds(1500))
         }

@@ -81,8 +81,8 @@ struct HomeView: View {
                 }
             }
             .refreshable { model.startPolling(); await model.refreshAgents() }
-            .task(id: model.wakes) {
-                while !Task.isCancelled {
+            .task(id: model.followKey) {
+                while model.followKey != nil, !Task.isCancelled {
                     await model.refreshAgents(activity: true)
                     await loadLastLines()
                     try? await Task.sleep(for: .seconds(5))
