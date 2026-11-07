@@ -45,7 +45,8 @@ extension HerdrSession.Agent {
             let when = isEnded ? "Ended \(Ago.short(s.updatedAt)) ago" : status.text
             return [when, s.agent.capitalized, s.branch].compactMap { $0 }.joined(separator: " · ")
         case .live(let a):
-            return [status.text, a.title ?? a.kind?.capitalized].compactMap { $0 }.joined(separator: " · ")
+            let detail = a.isNamed ? a.shownTitle ?? a.kind?.capitalized : a.shownTitle.flatMap { _ in a.kind?.capitalized }
+            return [status.text, detail].compactMap { $0 }.joined(separator: " · ")
         case .ended(let e):
             return ["Ended \(Ago.short(e.endedAt)) ago", e.title ?? e.kind?.capitalized].compactMap { $0 }.joined(separator: " · ")
         }

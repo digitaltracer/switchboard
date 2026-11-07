@@ -67,13 +67,20 @@ private func session(_ id: String, project: String, lifecycle: String = "running
     #expect(c.files.map(\.added) == [3, nil])
 }
 
-@Test func anAgentWithoutANameGoesByItsKindAndPane() throws {
+@Test func anAgentGoesByItsSpaceAndNameOrTitleOrKindOrPane() throws {
     let agents: Schemas.Agents = try decode(#"""
-    {"agents":[{"machine_id":"mac","name":"mono1/claude","agent_status":"idle","title":"Ignored"},
-               {"machine_id":"mac","name":"mono1/w1:p2","kind":"claude","agent_status":"idle","title":"Session approval"},
+    {"agents":[{"machine_id":"mac","name":"meeting-booking/orchestrator","agent_status":"idle","title":"Ignored","space":"MindTickle Problem"},
+               {"machine_id":"mac","name":"meeting-booking/w1:pE","kind":"claude","agent_status":"idle","title":"Release log errors","space":"MindTickle Problem"},
+               {"machine_id":"mac","name":"db-pool/w1:p1","kind":"claude","agent_status":"idle","title":"  ","space":"inbound-se-backend"},
+               {"machine_id":"mac","name":"mono1/claude","agent_status":"idle","space":"1"},
+               {"machine_id":"mac","name":"mono1/w1:p2","kind":"codex","agent_status":"idle","space":" "},
                {"machine_id":"mac","name":"mono1/w1:p3","agent_status":"idle"}]}
     """#)
-    #expect(agents.agents.map(\.displayName) == ["mono1/claude", "claude · w1:p2", "agent · w1:p3"])
+    #expect(agents.agents.map(\.displayName) == [
+        "MindTickle Problem › orchestrator", "MindTickle Problem › Release log errors", "inbound-se-backend › Claude",
+        "claude", "Codex", "w1:p3",
+    ])
+    #expect(agents.agents.map(\.isNamed) == [true, false, false, true, false, false])
 }
 
 private func page(_ json: String) throws -> Schemas.Transcript { try decode(json) }

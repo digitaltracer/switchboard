@@ -476,11 +476,28 @@ public final class Hub: Sendable {
 }
 
 extension Schemas.AgentView {
-    /// Its Herdr name, or its kind and pane when it has none, e.g. `claude · w2:p1`. Its terminal
-    /// title is what it's working on, not a name.
+    /// `<space> › <agent>`, as Herdr shows it, e.g. `MindTickle Problem › orchestrator`. A space
+    /// labelled only with a number, Herdr's default, is left out.
     public var displayName: String {
-        guard let pane = name.split(separator: "/").last, pane.contains(":") else { return name }
-        return "\(kind ?? "agent") · \(pane)"
+        let space = space?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let numbered = space.allSatisfy { $0.isASCII && $0.isNumber }
+        return numbered ? agentLabel : "\(space) › \(agentLabel)"
+    }
+
+    /// Its Herdr name without the session; with none, its terminal title, then its kind, then its pane.
+    public var agentLabel: String {
+        let last = name.split(separator: "/").last.map(String.init) ?? name
+        if isNamed { return last }
+        if let title = shownTitle { return title }
+        return kind.map { $0.prefix(1).uppercased() + $0.dropFirst() } ?? last
+    }
+
+    /// Whether it has a Herdr name, rather than going by its pane.
+    public var isNamed: Bool { !(name.split(separator: "/").last ?? "").contains(":") }
+
+    /// Its terminal title, when it says anything.
+    public var shownTitle: String? {
+        title.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.flatMap { $0.isEmpty ? nil : $0 }
     }
 }
 

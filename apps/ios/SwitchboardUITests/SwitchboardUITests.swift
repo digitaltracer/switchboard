@@ -132,10 +132,10 @@ final class SwitchboardUITests: XCTestCase {
         XCTAssertTrue(crm.waitForExistence(timeout: 15), app.debugDescription)
         snapshot(app, "home")
         crm.tap()
-        XCTAssertTrue(app.staticTexts["orchestrator"].waitForExistence(timeout: 10), app.debugDescription)
-        XCTAssertTrue(app.staticTexts["codex · w1:p2"].exists, "an unnamed agent goes by its kind and pane")
+        XCTAssertTrue(app.staticTexts["Imports › orchestrator"].waitForExistence(timeout: 10), app.debugDescription)
+        XCTAssertTrue(app.staticTexts["Review the import"].exists, "an unnamed agent goes by its title, and a numbered space is left out")
         snapshot(app, "session")
-        app.staticTexts["orchestrator"].tap()
+        app.staticTexts["Imports › orchestrator"].tap()
         XCTAssertTrue(app.descendants(matching: .any)["latest"].waitForExistence(timeout: 10), "tapping an agent opens its page")
         // Its question shows as options; the free-text row is shown but can't be picked.
         XCTAssertTrue(app.descendants(matching: .any)["dialog-card"].waitForExistence(timeout: 15), app.debugDescription)
@@ -145,7 +145,7 @@ final class SwitchboardUITests: XCTestCase {
         app.navigationBars.buttons.firstMatch.tap()
 
         // The Codex agent waits at a permission dialog; its deny needs no Face ID.
-        app.staticTexts["codex · w1:p2"].tap()
+        app.staticTexts["Review the import"].tap()
         let no = app.buttons["option-No, and tell Codex what to do differently (esc)"]
         XCTAssertTrue(no.waitForExistence(timeout: 15), app.debugDescription)
         XCTAssertFalse(app.buttons["option-Yes, and don't ask again (p)"].isEnabled, "a standing approval isn't offered")

@@ -83,12 +83,12 @@ extension HerdrSession.Agent {
         }
     }
 
-    /// Its name within its session: the Herdr name without the session, or its kind and pane when
-    /// it has none, e.g. `claude · w2:p1`.
+    /// Its name within its session: a task's label, a live agent's `<space> › <agent>`, or an
+    /// ended agent's Herdr name, or its kind and pane when it has none, e.g. `claude · w2:p1`.
     public var shortName: String {
         switch self {
         case .task(let s): s.label
-        case .live(let a): Self.short(a.name, kind: a.kind)
+        case .live(let a): a.displayName
         case .ended(let e): Self.short(e.name, kind: e.kind)
         }
     }

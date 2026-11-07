@@ -245,7 +245,7 @@ final class AppModel {
         var names = ["Switchboard", "Herdr", "Claude", "Codex", "worktree"]
         for p in projects { names += [p.id] + p.aliases }
         for s in sessions { names += [s.label, s.branch].compactMap { $0 } }
-        for a in agents where a.displayName == a.name { names.append(a.name.split(separator: "/").last.map(String.init) ?? a.name) }
+        for a in agents where a.isNamed { names.append(a.name.split(separator: "/").last.map(String.init) ?? a.name) }
         var seen = Set<String>()
         var out: [String] = []
         for name in names {
