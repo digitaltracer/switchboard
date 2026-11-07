@@ -8,6 +8,8 @@ use super::{Result, Store};
 
 /// Ended agents are forgotten after this long.
 const KEEP_ENDED_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+/// How stale a live agent's `last_seen` may get before a listing writes it again.
+pub const LAST_SEEN_EVERY_MS: i64 = 60_000;
 
 /// One agent from a machine's listing.
 #[derive(Debug, Clone, PartialEq)]
@@ -55,21 +57,25 @@ impl Store {
             let tx = c.transaction()?;
             let mut kept = HashSet::new();
             for a in live {
-                let id: Option<i64> = tx
+                let row: Option<(i64, String, Option<String>, i64)> = tx
                     .query_row(
-                        "SELECT id FROM seen_agents WHERE machine_id = ?1 AND herdr_session IS ?2
-                         AND pane_id = ?3 AND kind IS ?4 AND ended_at IS NULL",
+                        "SELECT id, name, title, last_seen FROM seen_agents WHERE machine_id = ?1
+                         AND herdr_session IS ?2 AND pane_id = ?3 AND kind IS ?4 AND ended_at IS NULL",
                         params![machine, a.herdr_session, a.pane_id, a.kind],
-                        |r| r.get(0),
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
                     )
                     .optional()?;
-                let id = match id {
-                    Some(id) => {
-                        tx.execute(
-                            "UPDATE seen_agents SET name = ?2, title = COALESCE(?3, title),
-                             last_seen = ?4 WHERE id = ?1",
-                            params![id, a.name, a.title, now],
-                        )?;
+                let id = match row {
+                    Some((id, name, title, last_seen)) => {
+                        // `last_seen` only dates an agent that ends unseen, so a minute stale is fine.
+                        let changed = name != a.name || a.title.as_ref().is_some_and(|t| title.as_ref() != Some(t));
+                        if changed || now - last_seen > LAST_SEEN_EVERY_MS {
+                            tx.execute(
+                                "UPDATE seen_agents SET name = ?2, title = COALESCE(?3, title),
+                                 last_seen = ?4 WHERE id = ?1",
+                                params![id, a.name, a.title, now],
+                            )?;
+                        }
                         id
                     }
                     None => {

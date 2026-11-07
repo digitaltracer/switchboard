@@ -364,6 +364,24 @@ async fn revoking_a_device_rejects_its_next_request() {
     token(&d, &replacement, &new_id).await;
 }
 
+#[tokio::test]
+async fn last_seen_is_written_at_most_once_a_minute() {
+    let (d, clock) = devices().await;
+    let phone = Phone::new();
+    let id = paired(&d, &phone).await;
+    let t = token(&d, &phone, &id).await;
+    let seen = || async { d.device(&id).await.unwrap().unwrap().last_seen_at };
+    d.authenticate(&t.access_token).await.unwrap();
+    let first = seen().await;
+    assert!(first.is_some());
+    clock.advance(Duration::from_secs(30));
+    d.authenticate(&t.access_token).await.unwrap();
+    assert_eq!(seen().await, first, "within a minute");
+    clock.advance(Duration::from_secs(31));
+    d.authenticate(&t.access_token).await.unwrap();
+    assert_eq!(seen().await, first.map(|f| f + 61_000));
+}
+
 #[test]
 fn a_cryptokit_signature_verifies() {
     // Made once by Apple's CryptoKit, as the phone signs; the fixture also pins the message format.

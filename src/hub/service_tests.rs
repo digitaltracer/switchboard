@@ -857,6 +857,32 @@ async fn unanswered_approval_is_denied_at_its_deadline_and_the_runner_told() {
 }
 
 #[tokio::test]
+async fn a_sweep_with_nothing_due_takes_no_write_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("hub.db");
+    let r = rig_with(Store::open(&path).await.unwrap()).await;
+    let (_vps, _) = with_approval(&r).await;
+    // Another writer holds the lock; a sweep that tried to write would wait out the busy timeout.
+    let other = tokio_rusqlite::rusqlite::Connection::open(&path).unwrap();
+    other.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let start = std::time::Instant::now();
+    assert_eq!(r.svc.sweep().await.unwrap(), 0);
+    assert!(
+        start.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        start.elapsed()
+    );
+    other.execute_batch("ROLLBACK").unwrap();
+    drop(other);
+    r.clock.advance(Duration::from_millis(275_000));
+    assert_eq!(
+        r.svc.sweep().await.unwrap(),
+        1,
+        "a due approval is still denied"
+    );
+}
+
+#[tokio::test]
 async fn deciding_an_expired_approval_before_the_sweep_denies_it() {
     let r = rig().await;
     let (mut vps, sid) = with_approval(&r).await;

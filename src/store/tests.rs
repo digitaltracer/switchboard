@@ -697,3 +697,79 @@ async fn a_waiting_push_follows_agent_session_and_global_mutes() {
         .unwrap();
     assert_eq!(waiting_keys(&store).await, ["waiting:at4"]);
 }
+
+/// Rows changed on the store's connection so far.
+async fn changes(store: &Store) -> u64 {
+    store.call(|c| Ok(c.total_changes())).await.unwrap()
+}
+
+#[tokio::test]
+async fn a_repeated_listing_writes_agent_rows_only_when_they_change_or_once_a_minute() {
+    let store = Store::open_in_memory().await.unwrap();
+    let a = seen("mono1", "w1:p1", "claude", Some("Fix the build"));
+    let b = seen("mono1", "w1:p2", "codex", None);
+    store
+        .record_agents("mac", vec![a.clone(), b.clone()], 1_000)
+        .await
+        .unwrap();
+    let before = changes(&store).await;
+    store
+        .record_agents("mac", vec![a.clone(), b.clone()], 31_000)
+        .await
+        .unwrap();
+    assert_eq!(
+        changes(&store).await,
+        before,
+        "same names and titles within a minute"
+    );
+
+    let renamed = SeenAgent {
+        title: Some("Fix the tests".into()),
+        ..a.clone()
+    };
+    store
+        .record_agents("mac", vec![renamed.clone(), b.clone()], 32_000)
+        .await
+        .unwrap();
+    assert_eq!(
+        changes(&store).await,
+        before + 1,
+        "a new title is written at once"
+    );
+
+    let before = changes(&store).await;
+    store
+        .record_agents("mac", vec![renamed.clone(), b.clone()], 62_000)
+        .await
+        .unwrap();
+    assert_eq!(
+        changes(&store).await,
+        before + 1,
+        "the codex agent's last_seen is a minute old"
+    );
+
+    // A missing agent still ends at once.
+    store
+        .record_agents("mac", vec![renamed], 63_000)
+        .await
+        .unwrap();
+    let ended = store.ended_agents(0).await.unwrap();
+    assert_eq!(
+        (ended.len(), ended[0].pane_id.as_str(), ended[0].ended_at),
+        (1, "w1:p2", Some(63_000))
+    );
+}
+
+#[tokio::test]
+async fn the_next_deadline_is_the_earliest_undecided_one() {
+    let store = store_with_session().await;
+    assert_eq!(store.next_deadline().await.unwrap(), None);
+    store.create_approval(approval("a1", 500)).await.unwrap();
+    store.create_approval(approval("a2", 50)).await.unwrap();
+    assert_eq!(store.next_deadline().await.unwrap(), Some(50));
+    store
+        .decide_approval("a2", Decision::Deny, None, 10)
+        .await
+        .unwrap();
+    assert_eq!(store.next_deadline().await.unwrap(), Some(500));
+}

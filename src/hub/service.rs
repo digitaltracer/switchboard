@@ -2182,7 +2182,14 @@ impl SessionService {
 
     /// Denies approvals past their deadline. The background sweeper calls this every second.
     pub async fn sweep(self: &Arc<Self>) -> Result<usize, HubError> {
-        let expired = self.store.expire_approvals(self.now()).await?;
+        let now = self.now();
+        // A read first, so an idle hub takes no write lock; a failed read sweeps anyway.
+        match self.store.next_deadline().await {
+            Ok(Some(deadline)) if deadline <= now => {}
+            Ok(_) => return Ok(0),
+            Err(e) => tracing::warn!(error = %e, "reading the next approval deadline"),
+        }
+        let expired = self.store.expire_approvals(now).await?;
         for a in &expired {
             self.audit_denied("hub", a).await?;
             self.notify_next(a).await?;

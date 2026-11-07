@@ -839,6 +839,18 @@ impl Store {
         .await
     }
 
+    /// The earliest deadline of an undecided approval, read without taking the write lock.
+    pub async fn next_deadline(&self) -> Result<Option<i64>> {
+        self.call(|c| {
+            Ok(c.query_row(
+                "SELECT MIN(deadline) FROM approvals WHERE outcome IS NULL",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .await
+    }
+
     /// Denies every undecided approval whose deadline has passed.
     pub async fn expire_approvals(&self, now: i64) -> Result<Vec<ApprovalRecord>> {
         self.approvals_returning(

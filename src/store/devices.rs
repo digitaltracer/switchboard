@@ -394,7 +394,10 @@ impl Store {
                 .optional()?
                 .map(RawDevice::finish)
                 .transpose()?;
-            if let Some(d) = &d {
+            // Only shown on the paired devices list, so a minute stale is fine.
+            if let Some(d) = &d
+                && d.last_seen_at.is_none_or(|t| now - t > LAST_SEEN_EVERY_MS)
+            {
                 c.execute(
                     "UPDATE devices SET last_seen_at = ?2 WHERE id = ?1",
                     params![d.id, now],
@@ -405,6 +408,9 @@ impl Store {
         .await
     }
 }
+
+/// How stale a device's `last_seen_at` may get before an authentication writes it again.
+pub const LAST_SEEN_EVERY_MS: i64 = 60_000;
 
 impl Store {
     /// Uses an answer challenge; false if it didn't match, was used or expired.
