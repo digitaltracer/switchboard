@@ -16,7 +16,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::transcript;
+use super::logcache::{self, LogCache};
 use crate::agents::dialog::{Dialog, Recognised};
 use crate::agents::{claude, codex};
 use crate::auth::device::label_sha256;
@@ -404,6 +404,9 @@ pub struct HerdrPane {
     pub herdr: Client,
     pub target: String,
     pub log: Option<PathBuf>,
+    /// Where the pending call is remembered, under the pane's key.
+    pub logs: Arc<LogCache>,
+    pub key: logcache::Key,
 }
 
 impl DialogIo for HerdrPane {
@@ -431,8 +434,8 @@ impl DialogIo for HerdrPane {
     }
 
     async fn pending_call(&self) -> Option<String> {
-        let log = self.log.clone()?;
-        tokio::task::spawn_blocking(move || transcript::pending_call(&log))
+        let (log, logs, key) = (self.log.clone()?, self.logs.clone(), self.key.clone());
+        tokio::task::spawn_blocking(move || logs.pending_call(&key, &log))
             .await
             .ok()
             .flatten()

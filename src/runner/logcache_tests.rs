@@ -274,3 +274,71 @@ fn a_codex_rescan_reads_only_new_or_changed_logs() {
     c.search(codex(&d), vec![]);
     assert_eq!(c.header_reads(), 4);
 }
+
+fn tool_use(id: &str) -> String {
+    let v = json!({"type": "assistant", "uuid": "a1", "message": {"content": [
+        {"type": "tool_use", "id": id, "name": "Bash", "input": {"command": "ls"}}]}});
+    format!("{v}\n")
+}
+
+/// A cached Claude pane whose log asks for tool call `toolu_A`.
+fn pending_rig(d: &Dirs) -> (LogCache, PathBuf) {
+    let log = d.claude_log(OLD);
+    std::fs::write(&log, tool_use("toolu_A")).unwrap();
+    d.record(PID, json!({"pid": PID, "sessionId": OLD}));
+    let c = d.cache();
+    find(&c, &claude("t1"));
+    (c, log)
+}
+
+#[test]
+fn an_unchanged_log_is_parsed_once_for_the_same_pending_call() {
+    let d = dirs();
+    let (c, log) = pending_rig(&d);
+    let key = claude("t1").key();
+    for _ in 0..4 {
+        assert_eq!(c.pending_call(&key, &log), transcript::pending_call(&log));
+    }
+    assert_eq!(c.pending_call(&key, &log).as_deref(), Some("toolu_A"));
+    assert_eq!(c.parses(), 1);
+}
+
+#[test]
+fn a_grown_log_is_parsed_again() {
+    let d = dirs();
+    let (c, log) = pending_rig(&d);
+    let key = claude("t1").key();
+    assert_eq!(c.pending_call(&key, &log).as_deref(), Some("toolu_A"));
+    tick();
+    let result = json!({"type": "user", "uuid": "u1", "message": {"content": [
+        {"type": "tool_result", "tool_use_id": "toolu_A", "content": "ok"}]}});
+    let mut f = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
+    std::io::Write::write_all(&mut f, format!("{result}\n").as_bytes()).unwrap();
+    drop(f);
+    assert_eq!(c.pending_call(&key, &log), None);
+    assert_eq!(c.parses(), 2);
+}
+
+#[test]
+fn a_same_length_rewrite_is_parsed_again() {
+    let d = dirs();
+    let (c, log) = pending_rig(&d);
+    let key = claude("t1").key();
+    assert_eq!(c.pending_call(&key, &log).as_deref(), Some("toolu_A"));
+    tick();
+    std::fs::write(&log, tool_use("toolu_B")).unwrap();
+    assert_eq!(c.pending_call(&key, &log).as_deref(), Some("toolu_B"));
+}
+
+#[test]
+fn the_pending_call_goes_with_its_pane() {
+    let d = dirs();
+    let (c, log) = pending_rig(&d);
+    let key = claude("t1").key();
+    c.pending_call(&key, &log);
+    c.retain(Path::new("/herdr.sock"), &HashSet::new());
+    // With no entry the call is still read, just not kept.
+    assert_eq!(c.pending_call(&key, &log).as_deref(), Some("toolu_A"));
+    assert_eq!(c.pending_call(&key, &log).as_deref(), Some("toolu_A"));
+    assert_eq!(c.parses(), 3);
+}

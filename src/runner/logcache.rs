@@ -39,6 +39,25 @@ impl Pane {
     }
 }
 
+/// A file's identity and size, which change with any write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Stamp {
+    pub ino: u64,
+    pub len: u64,
+    pub modified: SystemTime,
+}
+
+impl Stamp {
+    pub fn of(path: &Path) -> Option<Self> {
+        let m = std::fs::metadata(path).ok()?;
+        Some(Self {
+            ino: m.ino(),
+            len: m.len(),
+            modified: m.modified().ok()?,
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 enum Resolved {
     /// The session `pid`'s record named, of the pane's foreground `pids`.
@@ -62,6 +81,8 @@ struct Entry {
     log: PathBuf,
     ino: u64,
     searched: Instant,
+    /// The dialog check's pending call, by the log's stamp when it was parsed.
+    pending: Option<(Stamp, Option<String>)>,
 }
 
 pub struct LogCache {
@@ -71,6 +92,7 @@ pub struct LogCache {
     entries: Mutex<HashMap<Key, Entry>>,
     headers: transcript::CodexHeaders,
     searches: AtomicU64,
+    parses: AtomicU64,
 }
 
 impl LogCache {
@@ -90,12 +112,18 @@ impl LogCache {
             entries: Mutex::default(),
             headers: Default::default(),
             searches: AtomicU64::new(0),
+            parses: AtomicU64::new(0),
         }
     }
 
     /// Full searches so far.
     pub fn searches(&self) -> u64 {
         self.searches.load(Ordering::Relaxed)
+    }
+
+    /// Pending-call parses so far.
+    pub fn parses(&self) -> u64 {
+        self.parses.load(Ordering::Relaxed)
     }
 
     /// Codex first lines read so far.
@@ -179,6 +207,10 @@ impl LogCache {
         let ino = std::fs::metadata(&found.log).ok().map(|m| m.ino());
         match (resolved, ino, &pane.terminal_id) {
             (Some(resolved), Some(ino), Some(_)) => {
+                let pending = entries
+                    .remove(&key)
+                    .filter(|old| old.log == found.log)
+                    .and_then(|old| old.pending);
                 entries.insert(
                     key,
                     Entry {
@@ -187,6 +219,7 @@ impl LogCache {
                         log: found.log.clone(),
                         ino,
                         searched: Instant::now(),
+                        pending,
                     },
                 );
             }
@@ -238,6 +271,32 @@ impl LogCache {
             day_modified,
         };
         Some((found, Some(resolved)))
+    }
+
+    /// The pending tool call in `log`, parsed again only when the log changed. Kept with the
+    /// pane's entry, so it goes when the entry does; a pane without one parses each time.
+    pub fn pending_call(&self, key: &Key, log: &Path) -> Option<String> {
+        let before = Stamp::of(log)?;
+        {
+            let entries = self.entries.lock().unwrap();
+            if let Some(e) = entries.get(key)
+                && e.log == log
+                && let Some((stamp, call)) = &e.pending
+                && *stamp == before
+            {
+                return call.clone();
+            }
+        }
+        self.parses.fetch_add(1, Ordering::Relaxed);
+        let call = transcript::pending_call(log);
+        // A write during the parse leaves nothing cached.
+        if Stamp::of(log) == Some(before)
+            && let Some(e) = self.entries.lock().unwrap().get_mut(key)
+            && e.log == log
+        {
+            e.pending = Some((before, call.clone()));
+        }
+        call
     }
 }
 

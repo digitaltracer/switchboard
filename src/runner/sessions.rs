@@ -664,6 +664,8 @@ impl Sessions {
             .map(|f| f.log);
         Ok(DialogPane {
             io: HerdrPane {
+                key: (herdr.socket().to_owned(), pane_id.clone()),
+                logs: self.logs.clone(),
                 herdr,
                 target: name.to_owned(),
                 log,
