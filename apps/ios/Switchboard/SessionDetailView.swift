@@ -22,7 +22,7 @@ struct SessionDetailView: View {
 
     init(sessionId: String) {
         self.sessionId = sessionId
-        _convo = State(initialValue: ConversationModel(.session(sessionId)))
+        _convo = State(initialValue: ConversationModel(.session(sessionId), drawsTerminal: false))
     }
 
     var body: some View {

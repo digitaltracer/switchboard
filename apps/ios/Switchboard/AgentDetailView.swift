@@ -11,7 +11,7 @@ struct AgentDetailView: View {
 
     init(agent: AgentRef) {
         self.agent = agent
-        _convo = State(initialValue: ConversationModel(.agent(machine: agent.machine, name: agent.name)))
+        _convo = State(initialValue: ConversationModel(.agent(machine: agent.machine, name: agent.name), drawsTerminal: false))
     }
 
     private var target: Schemas.TargetView { .agent(machine: agent.machine, name: agent.name, label: label) }

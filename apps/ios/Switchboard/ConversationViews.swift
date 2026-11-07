@@ -9,11 +9,13 @@ struct ConversationRef: Hashable {
     var screen = false
 }
 
-/// One agent's conversation, and its terminal, followed while a screen shows them.
+/// One agent's conversation, and its terminal, followed while a screen shows them. Pages that
+/// don't draw the terminal pass false for `drawsTerminal`, and its screen is never read.
 @MainActor
 @Observable
 final class ConversationModel {
     let source: ConversationSource
+    private let drawsTerminal: Bool
     private(set) var conversation = Conversation()
     /// Why there's no conversation, e.g. no log yet or an older hub; the terminal stands in.
     private(set) var unavailable: String?
@@ -29,9 +31,11 @@ final class ConversationModel {
     private(set) var wantsTerminal = false
     /// Wakes the screen loop when the screen is shown.
     private let screenBell = Bell()
+    private var backoff = UnavailableBackoff()
 
-    init(_ source: ConversationSource) {
+    init(_ source: ConversationSource, drawsTerminal: Bool = true) {
         self.source = source
+        self.drawsTerminal = drawsTerminal
     }
 
     /// Follows until cancelled or the app leaves the foreground: the conversation as the hub
@@ -43,11 +47,17 @@ final class ConversationModel {
     }
 
     private func followConversation(_ model: AppModel) async {
-        await Follow.repeating(going: { model.active }) { await refresh(model.hub, wait: true) }
+        await Follow.repeating(going: { model.active }) {
+            let ok = await refresh(model.hub, wait: true)
+            let extra = backoff.extra(unavailable: unavailable != nil)
+            if extra > .zero { try? await Task.sleep(for: extra) }
+            return ok
+        }
     }
 
     private func followScreen(_ model: AppModel) async {
-        await Follow.screens(bell: screenBell, shown: { wantsTerminal || unavailable != nil }, going: { model.active }) {
+        await Follow.screens(bell: screenBell, shown: { Follow.readsScreen(draws: drawsTerminal, wanted: wantsTerminal, unavailable: unavailable != nil) },
+                             going: { model.active }) {
             await loadTerminal(model.hub)
         }
     }

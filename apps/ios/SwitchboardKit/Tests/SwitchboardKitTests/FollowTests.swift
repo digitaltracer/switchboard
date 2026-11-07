@@ -137,3 +137,18 @@ private final class Reads {
     loop.cancel()
     await loop.value
 }
+
+@Test func onlyAPageThatDrawsTheTerminalReadsTheScreen() {
+    #expect(Follow.readsScreen(draws: true, wanted: true, unavailable: false))
+    #expect(Follow.readsScreen(draws: true, wanted: false, unavailable: true), "it stands in")
+    #expect(!Follow.readsScreen(draws: true, wanted: false, unavailable: false))
+    #expect(!Follow.readsScreen(draws: false, wanted: true, unavailable: true), "session and agent pages never read it")
+}
+
+@Test func anUnavailableConversationBacksOffToAMinuteAndResetsOnceItsThere() {
+    var b = UnavailableBackoff()
+    let waits = (1...7).map { _ in Follow.retry + b.extra(unavailable: true) }
+    #expect(waits == [3, 6, 12, 24, 48, 60, 60].map { Duration.seconds($0) })
+    #expect(b.extra(unavailable: false) == .zero)
+    #expect(Follow.retry + b.extra(unavailable: true) == Follow.retry)
+}

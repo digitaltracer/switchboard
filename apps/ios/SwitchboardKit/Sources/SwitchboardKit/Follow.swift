@@ -16,6 +16,14 @@ public enum Follow {
     public static let every: Duration = .seconds(1)
     /// After a failed request.
     public static let retry: Duration = .seconds(3)
+    /// The longest an unavailable conversation waits before it's asked for again.
+    public static let unavailableMax: Duration = .seconds(60)
+
+    /// Whether a conversation's screen is read: only where it's drawn, while wanted or standing
+    /// in for a missing conversation.
+    public static func readsScreen(draws: Bool, wanted: Bool, unavailable: Bool) -> Bool {
+        draws && (wanted || unavailable)
+    }
 
     /// A page of the conversation. With `wait`, one that continues from `after` waits for more;
     /// only following asks for that, since a refresh someone is waiting on mustn't hang.
@@ -77,6 +85,24 @@ public enum Follow {
                 do { try await sleep(rest) } catch { return }
             }
         }
+    }
+}
+
+/// How long an unavailable conversation waits before it's asked for again: `Follow.retry`,
+/// doubling each time to `Follow.unavailableMax`, and back to the usual pace once it's there.
+public struct UnavailableBackoff: Sendable {
+    private var times = 0
+
+    public init() {}
+
+    /// The wait after a round beyond the usual retry, given whether the conversation was unavailable.
+    public mutating func extra(unavailable: Bool) -> Duration {
+        guard unavailable else {
+            times = 0
+            return .zero
+        }
+        times = min(times + 1, 16)
+        return min(Follow.retry * (1 << (times - 1)), Follow.unavailableMax) - Follow.retry
     }
 }
 
