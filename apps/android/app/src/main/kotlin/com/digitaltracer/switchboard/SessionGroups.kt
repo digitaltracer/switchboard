@@ -91,8 +91,8 @@ fun SessionRow(model: AppModel, session: HerdrSession, showMachine: Boolean, fir
 /** A Herdr session's agents: running ones first, then those that ended today. */
 @Composable
 fun HerdrSessionScreen(model: AppModel, key: HerdrSession.Key) {
-    LaunchedEffect(key, model.wakes) {
-        while (true) {
+    LaunchedEffect(key, model.wakes, model.foreground) {
+        while (model.foreground) {
             model.refreshAgents()
             delay(6_000)
         }

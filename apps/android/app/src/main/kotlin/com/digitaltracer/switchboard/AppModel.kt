@@ -115,8 +115,8 @@ class AppModel(context: Context, val keys: DeviceKeys) {
     var wakes by mutableStateOf(0)
         private set
 
-    /** False while the app isn't in the foreground; nothing is followed then. */
-    var foreground by mutableStateOf(true)
+    /** False until an activity is shown and while the app isn't in the foreground; nothing polls then. */
+    var foreground by mutableStateOf(false)
         private set
 
     /** What this phone last said to each session or agent. Kept on the phone only: the hub doesn't store prompts. */
@@ -185,7 +185,8 @@ class AppModel(context: Context, val keys: DeviceKeys) {
         pairing = p
         hub = Hub.paired(p, keys, build)
         phase = Phase.Paired
-        startPolling()
+        // A process started for a push loads the pairing too, with nothing on screen.
+        if (foreground) startPolling()
         sendPushToken()
     }
 
@@ -350,7 +351,7 @@ class AppModel(context: Context, val keys: DeviceKeys) {
 
     /** Re-reads agents often while a message waits, since only sessions are long-polled; gives up after 15 s. */
     private suspend fun watch(key: String, entry: Awaiting) {
-        while (System.currentTimeMillis() < entry.at + AWAIT_MS && awaiting[key] === entry) {
+        while (foreground && System.currentTimeMillis() < entry.at + AWAIT_MS && awaiting[key] === entry) {
             if (entry.target.sessionId == null) refreshAgents()
             delay(1_500)
         }

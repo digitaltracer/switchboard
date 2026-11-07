@@ -118,8 +118,8 @@ fun HomeScreen(model: AppModel, voice: Voice, listen: Listen) {
 
     val pacer = remember { FallbackPacer() }
 
-    LaunchedEffect(model.wakes) {
-        while (true) {
+    LaunchedEffect(model.wakes, model.foreground) {
+        while (model.foreground) {
             model.refreshAgents(activity = true)
             val hub = model.hub ?: break
             // Each tile's line comes from the hub's activity list; where that doesn't cover its machine, from

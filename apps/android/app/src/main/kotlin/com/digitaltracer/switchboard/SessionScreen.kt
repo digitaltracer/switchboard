@@ -110,10 +110,10 @@ fun SessionScreen(model: AppModel, voice: Voice, listen: Listen, sessionId: Stri
     }
 
     // Long-polls until the screen goes away; each change also refreshes the changed files.
-    LaunchedEffect(sessionId, model.wakes) {
+    LaunchedEffect(sessionId, model.wakes, model.foreground) {
         pollError = null
         var revision: Long? = null
-        while (true) {
+        while (model.foreground) {
             val hub = model.hub ?: return@LaunchedEffect
             try {
                 val s = hub.session(sessionId, after = revision)
