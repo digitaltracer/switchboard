@@ -18,6 +18,7 @@ import com.digitaltracer.switchboard.core.HerdrSession
 import com.digitaltracer.switchboard.core.DeviceKeys
 import com.digitaltracer.switchboard.core.Hub
 import com.digitaltracer.switchboard.core.HubError
+import com.digitaltracer.switchboard.core.TileLines
 import com.digitaltracer.switchboard.core.KeyRole
 import com.digitaltracer.switchboard.core.Pairing
 import com.digitaltracer.switchboard.core.PairingLink
@@ -100,6 +101,9 @@ class AppModel(context: Context, val keys: DeviceKeys) {
         private set
     /** Those that ended in the last day. */
     var ended by mutableStateOf<List<EndedAgent>>(emptyList())
+        private set
+    /** Home tiles' last lines, when the hub has them. */
+    var tileLines by mutableStateOf<TileLines?>(null)
         private set
     var projects by mutableStateOf<List<Project>>(emptyList())
         private set
@@ -369,11 +373,13 @@ class AppModel(context: Context, val keys: DeviceKeys) {
             return names.flatMap { listOf(it, it.replace(Regex("[-_/]+"), " ")) }.filter { seen.add(it.lowercase()) }.take(100)
         }
 
-    suspend fun refreshAgents() {
+    /** With [activity], also each agent's last line, for home's tiles. */
+    suspend fun refreshAgents(activity: Boolean = false) {
         val hub = hub ?: return
-        runCatching { hub.agents() }.onSuccess {
+        runCatching { hub.agents(activity) }.onSuccess {
             agents = it.agents
             ended = it.ended.orEmpty()
+            if (activity) tileLines = TileLines.of(it)
             settleAwaiting()
         }
     }

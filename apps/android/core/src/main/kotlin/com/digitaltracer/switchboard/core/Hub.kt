@@ -353,9 +353,8 @@ class Hub private constructor(
     suspend fun preview(text: String, current: TargetView?): MessagePreview =
         authed { messages.previewMessage(MessagePreviewRequest(text, current?.ref)) }
 
-    /** Named Herdr agents Switchboard didn't start. */
-    /** Running agents Switchboard didn't start, and those that ended in the last day. */
-    suspend fun agents(): Agents = authed { agentsApi.listAgents() }
+    /** Running agents Switchboard didn't start, and those that ended in the last day; with [activity], each agent's last line too, from hubs that have it. */
+    suspend fun agents(activity: Boolean = false): Agents = authed { agentsApi.listAgents(if (activity) true else null) }
 
     suspend fun agentOutput(machine: String, agent: String, lines: Int = 80, visible: Boolean = false, ansi: Boolean = false): Output =
         authed { agentsApi.getAgentOutput(machine, agent, lines, visible, ansi) }

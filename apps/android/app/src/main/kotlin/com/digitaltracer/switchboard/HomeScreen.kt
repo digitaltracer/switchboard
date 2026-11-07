@@ -56,7 +56,9 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.digitaltracer.switchboard.core.FallbackPacer
 import com.digitaltracer.switchboard.core.HerdrSession
+import com.digitaltracer.switchboard.core.TileLines
 import com.digitaltracer.switchboard.core.agentStatus
 import com.digitaltracer.switchboard.core.machineId
 import com.digitaltracer.switchboard.core.needsYou
@@ -114,22 +116,36 @@ fun HomeScreen(model: AppModel, voice: Voice, listen: Listen) {
     var refreshing by remember { mutableStateOf(false) }
     var starting by remember { mutableStateOf(false) }
 
+    val pacer = remember { FallbackPacer() }
+
     LaunchedEffect(model.wakes) {
         while (true) {
-            model.refreshAgents()
+            model.refreshAgents(activity = true)
             val hub = model.hub ?: break
-            // Each tile's line comes from the conversation; reading the terminal would scroll it on the Mac.
+            // Each tile's line comes from the hub's activity list; where that doesn't cover its machine, from
+            // the conversation at most every 30 s. Reading the terminal would scroll it on the Mac.
             // The tiles are worked out after the refresh, not from the last composition, which predates it.
-            for (t in busyTiles(model.herdrSessions(since = HerdrSession.startOfToday())).take(8)) {
-                val page = when (val a = t.agent) {
-                    is HerdrSession.Agent.Task -> runCatching { hub.transcript(a.session.id) }.getOrNull()
-                    is HerdrSession.Agent.Live -> runCatching { hub.agentTranscript(a.agent.machineId, a.agent.name) }.getOrNull()
-                    is HerdrSession.Agent.Ended -> null
-                } ?: continue
-                val last = page.items.lastOrNull { it.kind != "user" && it.text != null }?.text
-                last?.split("\n")?.firstOrNull { it.isNotBlank() }?.let { lastLines[t.id] = it }
+            var reads = 0
+            for (t in busyTiles(model.herdrSessions(since = HerdrSession.startOfToday()))) {
+                when (val known = model.tileLines?.line(t.agent) ?: TileLines.Line.Unknown) {
+                    is TileLines.Line.Known -> {
+                        val line = known.line
+                        if (line == null) lastLines.remove(t.id) else lastLines[t.id] = line
+                    }
+                    TileLines.Line.Unknown -> {
+                        if (reads >= 8 || !pacer.due(t.id)) continue
+                        reads++
+                        val page = when (val a = t.agent) {
+                            is HerdrSession.Agent.Task -> runCatching { hub.transcript(a.session.id) }.getOrNull()
+                            is HerdrSession.Agent.Live -> runCatching { hub.agentTranscript(a.agent.machineId, a.agent.name) }.getOrNull()
+                            is HerdrSession.Agent.Ended -> null
+                        } ?: continue
+                        val last = page.items.lastOrNull { it.kind != "user" && it.text != null }?.text
+                        last?.split("\n")?.firstOrNull { it.isNotBlank() }?.let { lastLines[t.id] = it }
+                    }
+                }
             }
-            delay(6_000)
+            delay(5_000)
         }
     }
 
