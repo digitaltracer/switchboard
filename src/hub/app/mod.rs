@@ -821,6 +821,7 @@ pub async fn list_agents(State(st): State<AppState>, _d: DeviceAuth) -> ApiResul
             kind: a.kind,
             agent_status: a.agent_status,
             title: a.title,
+            space: a.space,
         })
         .collect();
     let ended = st

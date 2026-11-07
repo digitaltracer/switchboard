@@ -13,7 +13,8 @@ fn agent(name: Option<&str>, pane: &str, status: &str) -> Value {
 
 fn snapshot(agents: &[Value]) -> Value {
     json!({"type": "session_snapshot", "snapshot": {"version": "0.9.1", "protocol": 22,
-           "workspaces": [], "tabs": [], "panes": [], "layouts": [], "agents": agents}})
+           "workspaces": [{"workspace_id": "w1", "label": "MindTickle Problem", "agent_status": "idle"}],
+           "tabs": [], "panes": [], "layouts": [], "agents": agents}})
 }
 
 /// A Herdr whose agent list the test changes while the watcher runs. Subscriptions stay open.
@@ -76,15 +77,18 @@ fn every_named_agent_is_followed() {
 }
 
 #[tokio::test]
-async fn an_agent_without_a_name_is_listed_by_its_pane_with_its_title() {
+async fn an_agent_is_listed_with_its_title_and_space() {
     let dir = tempfile::tempdir().unwrap();
     let mut unnamed = agent(None, "w1:p2", "idle");
     unnamed["terminal_title_stripped"] = json!("Fix the flaky test");
+    let mut elsewhere = agent(Some("reviewer"), "w2:p1", "idle");
+    elsewhere["workspace_id"] = json!("w2");
     let socket = fake_herdr(
         dir.path(),
         Arc::new(Mutex::new(vec![
             agent(Some("sb-3f9a"), "w1:p1", "working"),
             unnamed,
+            elsewhere,
         ])),
     );
     let sessions = HashMap::from([("sb-3f9a".to_string(), "s1".to_string())]);
@@ -96,6 +100,7 @@ async fn an_agent_without_a_name_is_listed_by_its_pane_with_its_title() {
                 a.name.as_str(),
                 a.session_id.as_deref(),
                 a.title.as_deref(),
+                a.space.as_deref(),
                 a.named(),
             )
         })
@@ -103,8 +108,21 @@ async fn an_agent_without_a_name_is_listed_by_its_pane_with_its_title() {
     assert_eq!(
         got,
         [
-            ("sb-3f9a", Some("s1"), None, true),
-            ("w1:p2", None, Some("Fix the flaky test"), false),
+            (
+                "sb-3f9a",
+                Some("s1"),
+                None,
+                Some("MindTickle Problem"),
+                true
+            ),
+            (
+                "w1:p2",
+                None,
+                Some("Fix the flaky test"),
+                Some("MindTickle Problem"),
+                false
+            ),
+            ("reviewer", None, None, None, true),
         ]
     );
 }

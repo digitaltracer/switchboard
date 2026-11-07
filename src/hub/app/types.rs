@@ -793,6 +793,9 @@ pub struct AgentView {
     /// Its terminal title, usually what it's working on. Untrusted text.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// The label of the Herdr workspace (space) it runs in. Untrusted text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub space: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]

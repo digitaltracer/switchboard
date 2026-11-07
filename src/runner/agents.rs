@@ -23,12 +23,19 @@ pub async fn list(
     sessions: &HashMap<String, String>,
 ) -> Result<Vec<AgentSummary>, HerdrError> {
     let snap = herdr.session_snapshot().await?;
+    let spaces: HashMap<String, String> = snap
+        .workspaces
+        .into_iter()
+        .filter(|w| !w.label.is_empty())
+        .map(|w| (w.workspace_id, w.label))
+        .collect();
     Ok(snap
         .agents
         .into_iter()
         .map(|a| {
             let name = a.name.unwrap_or_else(|| a.pane_id.clone());
             AgentSummary {
+                space: spaces.get(&a.workspace_id).cloned(),
                 session_id: sessions.get(&name).cloned(),
                 herdr_session: None,
                 agent_status: status_str(a.agent_status),

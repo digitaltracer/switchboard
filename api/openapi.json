@@ -1995,6 +1995,13 @@
               "null"
             ],
             "description": "Its terminal title, usually what it's working on. Untrusted text."
+          },
+          "space": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The label of the Herdr workspace (space) it runs in. Untrusted text."
           }
         }
       },

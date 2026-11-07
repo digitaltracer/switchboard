@@ -141,9 +141,11 @@ impl Handler for Fake {
                 };
                 Ok(json!([
                     {"name": "crm/orchestrator", "pane_id": "w1:p1", "kind": "claude",
-                     "agent_status": "blocked", "session_id": null, "herdr_session": "crm"},
+                     "agent_status": "blocked", "session_id": null, "herdr_session": "crm",
+                     "space": "Imports"},
                     {"name": "crm/w1:p2", "pane_id": "w1:p2", "kind": "codex", "agent_status": codex,
-                     "session_id": null, "herdr_session": "crm", "title": "Review the import"}
+                     "session_id": null, "herdr_session": "crm", "title": "Review the import",
+                     "space": "1"}
                 ]))
             }
             Op::Dialog { agent } => Ok(dialog(&agent, self.answered.load(Ordering::SeqCst))),

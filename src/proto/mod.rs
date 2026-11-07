@@ -268,6 +268,9 @@ pub struct AgentSummary {
     /// Its terminal title. Untrusted text.
     #[serde(default)]
     pub title: Option<String>,
+    /// The label of the Herdr workspace it runs in. Untrusted text.
+    #[serde(default)]
+    pub space: Option<String>,
 }
 
 impl AgentSummary {
