@@ -55,6 +55,22 @@ class RoutingTest {
     }
 
     @Test
+    fun aNewTaskCanBeAddedWhenTheHubWouldContinueAnAgent() {
+        val preview: MessagePreview = decode(
+            """{"outcome":"send","message":"Sends to mono1/claude.","target":{"kind":"agent","machine_id":"mac","agent":"mono1/claude","label":"mono1/claude"},"options":[]}""",
+        )
+        val r = RouteOptions.build(preview, emptyList(), null)
+        assertEquals(listOf("Continue mono1/claude"), r.options.map { it.title })
+        assertEquals(listOf("kraft", "niti"), r.projectsWithoutNewTask(listOf("kraft", "niti")))
+        val added = r.withNewTask("kraft")
+        assertEquals(listOf("Continue mono1/claude", "New task in kraft"), added.options.map { it.title })
+        assertEquals(RouteOption.Action.Start("kraft"), added.options[1].action)
+        assertEquals(r.suggested, added.suggested)
+        assertEquals(listOf("niti"), added.projectsWithoutNewTask(listOf("kraft", "niti")))
+        assertEquals(added, added.withNewTask("kraft"))
+    }
+
+    @Test
     fun changesDecodeWithoutCountsForNewFiles() {
         val c: Changes = decode("""{"files":[{"path":"a.rs","added":3,"deleted":1},{"path":"new.rs"}],"truncated":false}""")
         assertEquals(listOf<Long?>(3, null), c.files.map { it.added })

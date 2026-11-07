@@ -28,6 +28,8 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.outlined.MicOff
 import androidx.compose.material.icons.outlined.MonitorHeart
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -77,6 +79,8 @@ fun SendSheet(model: AppModel, voice: Voice, listen: Listen) {
     var preview by remember { mutableStateOf<MessagePreview?>(null) }
     var routes by remember { mutableStateOf(RouteOptions.Result(emptyList(), null)) }
     var picked by remember { mutableStateOf<String?>(null) }
+    // A project picked under "New task in…", offered alongside the hub's options.
+    var newProject by remember { mutableStateOf<String?>(null) }
     var note by remember { mutableStateOf<String?>(null) }
     var sending by remember { mutableStateOf(false) }
     // One per draft and destination, so a retried send is never typed twice.
@@ -85,7 +89,9 @@ fun SendSheet(model: AppModel, voice: Voice, listen: Listen) {
     val view = LocalView.current
     val focus = remember { FocusRequester() }
     val current = voice.target ?: model.current
-    val chosen = routes.options.firstOrNull { it.id == (picked ?: routes.suggested) }
+    val shown = newProject?.let { routes.withNewTask(it) } ?: routes
+    val chosen = shown.options.firstOrNull { it.id == (picked ?: shown.suggested) }
+    val unoffered = shown.projectsWithoutNewTask(model.projects.map { it.id })
     val empty = voice.text.isBlank()
 
     // Asks the hub where the text would go, after a short pause in typing.
@@ -103,7 +109,8 @@ fun SendSheet(model: AppModel, voice: Voice, listen: Listen) {
             val p = hub.preview(text, current)
             preview = p
             routes = RouteOptions.build(p, model.sessions, voice.target)
-            if (picked != null && routes.options.none { it.id == picked }) picked = null
+            val offered = newProject?.let { routes.withNewTask(it) } ?: routes
+            if (picked != null && offered.options.none { it.id == picked }) picked = null
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -125,7 +132,6 @@ fun SendSheet(model: AppModel, voice: Voice, listen: Listen) {
         when (val s = state) {
             is StartState.Started -> {
                 runCatching { hub.session(s.sessionId) }.onSuccess {
-                    model.current = sessionTarget(it)
                     model.record(text, sessionTarget(it), started = true)
                 }
                 voice.finish()
@@ -150,7 +156,8 @@ fun SendSheet(model: AppModel, voice: Voice, listen: Listen) {
                 note = r.message
                 when (r.outcome) {
                     "started", "sent", "selected" -> {
-                        model.current = r.current
+                        // Only `use <x>` makes a default; a send doesn't, so the home screen asks again.
+                        if (r.outcome == "selected") model.current = r.current
                         model.record(text, r.current, started = r.outcome == "started")
                         view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
                         voice.finish()
@@ -227,16 +234,23 @@ fun SendSheet(model: AppModel, voice: Voice, listen: Listen) {
                 if (SkillSearch.isTyping(voice.text) && current != null) {
                     SkillList(model, current, voice.text) { voice.text = "$it " }
                 }
-                if (routes.options.isNotEmpty()) {
+                if (shown.options.isNotEmpty()) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(
                             preview?.message ?: "Goes to", Modifier.padding(horizontal = 4.dp).testTag("previewMessage"),
                             style = Type.footnote, fontWeight = FontWeight.SemiBold, color = palette.secondary,
                         )
                         Column(Modifier.fillMaxWidth().card(14.dp, palette.card)) {
-                            routes.options.forEachIndexed { i, o ->
+                            shown.options.forEachIndexed { i, o ->
                                 RouteRow(o, o.id == chosen?.id, i == 0) {
                                     picked = o.id
+                                    requestId = UUID.randomUUID().toString()
+                                }
+                            }
+                            if (unoffered.isNotEmpty()) {
+                                NewTaskRow(unoffered) { p ->
+                                    newProject = p
+                                    picked = RouteOptions.newTask(p).id
                                     requestId = UUID.randomUUID().toString()
                                 }
                             }
@@ -271,6 +285,32 @@ fun SendSheet(model: AppModel, voice: Voice, listen: Listen) {
                         )
                     }
                 }
+            }
+        }
+    }
+}
+
+/** The last row under "Goes to": a menu of projects to start a new task in. */
+@Composable
+private fun NewTaskRow(projects: List<String>, pick: (String) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        Column(Modifier.fillMaxWidth().clickable { open = true }.testTag("routeNewTask")) {
+            HorizontalDivider(Modifier.padding(start = 58.dp), 0.5.dp, palette.separator)
+            Row(Modifier.heightIn(min = 56.dp).padding(horizontal = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(32.dp).background(palette.fill, RoundedCornerShape(9.dp)), Alignment.Center) {
+                    Icon(Icons.Filled.Add, null, Modifier.size(18.dp), tint = palette.label)
+                }
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("New task in…", style = Type.body, fontWeight = FontWeight.SemiBold, color = palette.label, maxLines = 1)
+                    Text("Pick a project", style = Type.footnote, color = palette.secondary, maxLines = 1)
+                }
+            }
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            projects.forEach { p ->
+                DropdownMenuItem(text = { Text(p) }, onClick = { open = false; pick(p) }, modifier = Modifier.testTag("newTask-$p"))
             }
         }
     }

@@ -32,7 +32,20 @@ object RouteOptions {
         val options: List<RouteOption>,
         /** The option picked until the user picks another; none when the hub has to ask. */
         val suggested: String?,
-    )
+    ) {
+        /** These options plus a new task in [project], unless one is already offered. */
+        fun withNewTask(project: String): Result {
+            val o = newTask(project)
+            return if (options.any { it.id == o.id }) this else copy(options = options + o)
+        }
+
+        /** The projects in [all] with no new-task option yet, for the "New task in…" picker. */
+        fun projectsWithoutNewTask(all: List<String>): List<String> =
+            all.filter { p -> options.none { it.id == newTask(p).id } }
+    }
+
+    /** A new task in [project], picked by the user rather than offered by the hub. */
+    fun newTask(project: String) = startOption(project, null, RouteOption.Action.Start(project))
 
     private const val MAX_ALTERNATIVES = 3
 
