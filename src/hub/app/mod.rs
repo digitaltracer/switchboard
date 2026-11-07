@@ -1105,6 +1105,7 @@ pub async fn get_agent_dialog(
         machine_id: q.machine_id,
         agent: q.agent,
         dialog: d.dialog.map(Into::into),
+        waiting: d.blocked,
     }))
 }
 

@@ -1949,6 +1949,10 @@
           "dialog": {
             "$ref": "#/components/schemas/Dialog",
             "description": "None when the screen shows no dialog Switchboard recognises; show the screen instead."
+          },
+          "waiting": {
+            "type": "boolean",
+            "description": "The agent is waiting on its owner. With no `dialog`, it waits on something the phone\ncan't show as options: say so and offer the screen. Absent from older hubs."
           }
         }
       },

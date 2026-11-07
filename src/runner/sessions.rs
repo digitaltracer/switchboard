@@ -672,7 +672,9 @@ impl Sessions {
         let seen = dialogs::look(&p.io).await?;
         let refuse = || self.key_refusal(p.owned.as_ref());
         let view = dialogs::view(&seen, &refuse, &self.answered);
-        Ok(json!({ "dialog": view, "occurrence": seen.occurrence }))
+        Ok(
+            json!({ "dialog": view, "occurrence": seen.occurrence, "blocked": seen.process.blocked }),
+        )
     }
 
     async fn answer(&self, agent: &str, req: &dialogs::AnswerRequest) -> Result<Value, ProtoError> {

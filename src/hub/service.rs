@@ -263,6 +263,9 @@ fn fingerprint(args: &Value) -> String {
 pub struct AgentDialog {
     pub dialog: Option<DialogView>,
     pub occurrence: String,
+    /// Herdr says the agent is waiting on its owner; false from runners older than this field.
+    #[serde(default)]
+    pub blocked: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]

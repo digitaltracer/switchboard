@@ -1119,6 +1119,10 @@ pub struct AgentDialog {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(nullable = false)]
     pub dialog: Option<Dialog>,
+    /// The agent is waiting on its owner. With no `dialog`, it waits on something the phone
+    /// can't show as options: say so and offer the screen. Absent from older hubs.
+    #[serde(default)]
+    pub waiting: bool,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
