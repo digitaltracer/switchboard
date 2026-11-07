@@ -7,6 +7,7 @@ pub mod herdrs;
 pub mod hooks;
 pub mod link;
 pub mod local;
+pub mod logcache;
 pub mod logwatch;
 pub mod sessions;
 pub mod skills;

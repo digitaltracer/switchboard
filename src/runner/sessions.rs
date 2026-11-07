@@ -16,12 +16,13 @@ use super::codex::{CodexPane, clear_startup, excerpt};
 use super::dialogs::{self, Answered, HerdrPane, PaneLocks};
 use super::herdrs::{Herdrs, qualified, split_qualified};
 use super::hooks::{DecideError, HookHub};
-use super::logwatch::{self, Found, LogWatch, Switch};
+use super::logcache::{self, LogCache};
+use super::logwatch::{self, Found, LogWatch};
 use super::{skills, transcript};
 use crate::agents::{claude, codex, hook_command};
 use crate::cli::Agent;
 use crate::herdr::types::{
-    AgentPromptParams, AgentStartParams, AgentStatus, ReadSource, WorktreeCreateParams,
+    AgentInfo, AgentPromptParams, AgentStartParams, AgentStatus, ReadSource, WorktreeCreateParams,
 };
 use crate::herdr::{Client, HerdrError};
 use crate::hook::wire::SecretFile;
@@ -90,6 +91,8 @@ pub struct Sessions {
     cfg: SessionsConfig,
     sessions: Mutex<HashMap<String, RunnerSession>>,
     pub(crate) logwatch: Arc<LogWatch>,
+    /// Which log each pane's agent writes.
+    pub(crate) logs: Arc<LogCache>,
     /// Transcript reads waiting for their log to grow.
     transcript_waits: tokio::sync::Semaphore,
     /// Agents whose Herdr status really changed, by the name the hub uses.
@@ -168,6 +171,10 @@ impl Sessions {
             events,
             sessions: Mutex::default(),
             logwatch: LogWatch::new(),
+            logs: Arc::new(LogCache::new(
+                cfg.claude_projects.clone(),
+                cfg.codex_sessions.clone(),
+            )),
             transcript_waits: tokio::sync::Semaphore::new(logwatch::MAX_WAITS),
             status_changes: tokio::sync::broadcast::channel(256).0,
             pane_locks: PaneLocks::default(),
@@ -540,56 +547,42 @@ impl Sessions {
     async fn find_log(&self, agent: &str) -> Result<Found, ProtoError> {
         let (herdr, name, owned) = self.resolve_agent(agent);
         let snap = herdr.session_snapshot().await.map_err(herdr_err)?;
+        let panes = snap.agents.iter().map(|a| a.pane_id.clone()).collect();
+        self.logs.retain(herdr.socket(), &panes);
         let info = snap
             .agents
             .into_iter()
             .find(|a| a.name.as_deref() == Some(name) || a.pane_id == name)
             .ok_or_else(|| err(ErrorCode::NotFound, format!("no agent {agent:?}")))?;
+        self.log_for(&herdr, owned, info).await
+    }
+
+    /// The log of the agent Herdr describes as `info`: the cached one while it still holds,
+    /// else a full search. Pids are read only for a search.
+    async fn log_for(
+        &self,
+        herdr: &Client,
+        owned: Option<RunnerSession>,
+        info: AgentInfo,
+    ) -> Result<Found, ProtoError> {
         let none = || {
             err(
                 ErrorCode::NotFound,
                 "no conversation log for this agent yet",
             )
         };
-        let find: Box<dyn FnOnce() -> Option<Found> + Send> = match info.agent.as_deref() {
-            Some("claude") => {
-                let pids = herdr
-                    .pane_foreground_pids(&info.pane_id)
-                    .await
-                    .unwrap_or_default();
-                let reported = info.agent_session.map(|s| s.value);
-                let projects = self.cfg.claude_projects.clone();
-                Box::new(move || {
-                    let dir = projects.parent()?;
-                    let live = transcript::live_claude_session(dir, &pids);
-                    let session = live.or(reported)?;
-                    Some(Found {
-                        log: transcript::find_log(&projects, &session)?,
-                        switch: Switch::Claude {
-                            records: dir.join("sessions"),
-                            pids,
-                            session,
-                        },
-                    })
-                })
-            }
-            Some("codex") => {
-                // A session's own worktree, else wherever Herdr says the agent runs.
-                let cwd = owned
-                    .and_then(|s| s.worktree_path)
-                    .or(info.cwd)
-                    .ok_or_else(none)?;
-                let sessions = self.cfg.codex_sessions.clone();
-                Box::new(move || {
-                    Some(Found {
-                        log: transcript::find_codex_log(&sessions, Path::new(&cwd))?,
-                        switch: Switch::Codex {
-                            day: logwatch::codex_day(&sessions, 0),
-                            next: logwatch::codex_day(&sessions, 1),
-                        },
-                    })
-                })
-            }
+        let (kind, cwd) = match info.agent.as_deref() {
+            Some("claude") => ("claude", info.cwd),
+            // A session's own worktree, else wherever Herdr says the agent runs.
+            Some("codex") => (
+                "codex",
+                Some(
+                    owned
+                        .and_then(|s| s.worktree_path)
+                        .or(info.cwd)
+                        .ok_or_else(none)?,
+                ),
+            ),
             _ => {
                 return Err(err(
                     ErrorCode::BadRequest,
@@ -597,9 +590,33 @@ impl Sessions {
                 ));
             }
         };
-        tokio::task::spawn_blocking(find)
-            .await
-            .map_err(|e| err(ErrorCode::Internal, e.to_string()))?
+        let pane = logcache::Pane {
+            server: herdr.socket().to_owned(),
+            pane_id: info.pane_id,
+            terminal_id: info.terminal_id,
+            kind: kind.to_owned(),
+            reported: info.agent_session.map(|s| s.value),
+            cwd,
+        };
+        let blocking = |f: Box<dyn FnOnce() -> Option<Found> + Send>| async move {
+            tokio::task::spawn_blocking(f)
+                .await
+                .map_err(|e| err(ErrorCode::Internal, e.to_string()))
+        };
+        let (logs, probe) = (self.logs.clone(), pane.clone());
+        if let Some(found) = blocking(Box::new(move || logs.hit(&probe))).await? {
+            return Ok(found);
+        }
+        let pids = match kind {
+            "claude" => herdr
+                .pane_foreground_pids(&pane.pane_id)
+                .await
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        let logs = self.logs.clone();
+        blocking(Box::new(move || logs.search(pane, pids)))
+            .await?
             .ok_or_else(none)
     }
 
@@ -638,14 +655,20 @@ impl Sessions {
             .0
             .map(str::to_owned)
             .or_else(|| owned.as_ref().and_then(|s| s.herdr_session.clone()));
-        let log = self.find_log(agent).await.ok().map(|f| f.log);
+        let pane_id = info.pane_id.clone();
+        // The agent just fetched is what the log is checked against; no second Herdr call.
+        let log = self
+            .log_for(&herdr, owned.clone(), info)
+            .await
+            .ok()
+            .map(|f| f.log);
         Ok(DialogPane {
             io: HerdrPane {
                 herdr,
                 target: name.to_owned(),
                 log,
             },
-            pane_id: info.pane_id,
+            pane_id,
             server,
             owned,
         })

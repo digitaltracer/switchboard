@@ -7,8 +7,10 @@ use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{LazyLock, Mutex};
 use std::time::SystemTime;
 
 use regex::Regex;
@@ -31,6 +33,11 @@ const MAX_OUTPUT: usize = 4_000;
 /// (a resumed or forked session) names that job, and the job's record has the session it is on
 /// now. Only the `.json` records are read.
 pub fn live_claude_session(claude_dir: &Path, pids: &[u32]) -> Option<String> {
+    live_claude_record(claude_dir, pids).map(|(_, s)| s)
+}
+
+/// As `live_claude_session`, with the pid whose record named it.
+pub fn live_claude_record(claude_dir: &Path, pids: &[u32]) -> Option<(u32, String)> {
     let sessions = claude_dir.join("sessions");
     let record = |path: &Path| -> Option<Value> {
         serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
@@ -55,7 +62,7 @@ pub fn live_claude_session(claude_dir: &Path, pids: &[u32]) -> Option<String> {
                 .find(|r| r.get("jobId").and_then(Value::as_str) == Some(job))
                 .and_then(|r| id(&r))
         });
-        job.or_else(|| id(&v))
+        job.or_else(|| id(&v)).map(|s| (*pid, s))
     })
 }
 
@@ -81,17 +88,56 @@ const CODEX_CANDIDATES: usize = 200;
 /// Herdr reports no session id for Codex, so the folder is the link; a Switchboard session's
 /// own worktree makes it exact.
 pub fn find_codex_log(sessions: &Path, cwd: &Path) -> Option<PathBuf> {
-    let mut logs = Vec::new();
-    collect_logs(sessions, 0, &mut logs);
-    logs.sort_by_key(|(_, modified)| Reverse(*modified));
-    let want = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_owned());
-    logs.into_iter()
-        .take(CODEX_CANDIDATES)
-        .map(|(p, _)| p)
-        .find(|p| codex_cwd(p).is_some_and(|c| std::fs::canonicalize(&c).unwrap_or(c) == want))
+    codex_logs(sessions, cwd, &CodexHeaders::default())
+        .into_iter()
+        .next()
 }
 
-fn collect_logs(dir: &Path, depth: usize, out: &mut Vec<(PathBuf, SystemTime)>) {
+/// Every Codex log among the latest started in `cwd`, newest-modified first. `headers` remembers
+/// each log's folder, so only new or changed logs are opened.
+pub fn codex_logs(sessions: &Path, cwd: &Path, headers: &CodexHeaders) -> Vec<PathBuf> {
+    let mut logs = Vec::new();
+    collect_logs(sessions, 0, &mut logs);
+    logs.sort_by_key(|(_, modified, _)| Reverse(*modified));
+    logs.truncate(CODEX_CANDIDATES);
+    let want = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_owned());
+    let mut memo = headers.0.lock().unwrap();
+    let mut seen = HashMap::with_capacity(logs.len());
+    let mut out = Vec::new();
+    for (path, modified, ino) in logs {
+        let stamp = (ino, modified);
+        let cwd = match memo.remove(&path) {
+            Some((s, cwd)) if s == stamp => cwd,
+            _ => {
+                headers.1.fetch_add(1, Ordering::Relaxed);
+                codex_cwd(&path).map(|c| std::fs::canonicalize(&c).unwrap_or(c))
+            }
+        };
+        if cwd.as_deref() == Some(want.as_path()) {
+            out.push(path.clone());
+        }
+        seen.insert(path, (stamp, cwd));
+    }
+    // Only the logs just looked at are kept, so the memo stays as small as the candidates.
+    *memo = seen;
+    out
+}
+
+/// A log's inode and modification time, and the folder its first line names.
+type Header = ((u64, SystemTime), Option<PathBuf>);
+
+/// Each Codex log's folder, by path, kept while its inode and modification time stay the same.
+#[derive(Default)]
+pub struct CodexHeaders(Mutex<HashMap<PathBuf, Header>>, AtomicU64);
+
+impl CodexHeaders {
+    /// First lines read so far.
+    pub fn reads(&self) -> u64 {
+        self.1.load(Ordering::Relaxed)
+    }
+}
+
+fn collect_logs(dir: &Path, depth: usize, out: &mut Vec<(PathBuf, SystemTime, u64)>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -105,7 +151,8 @@ fn collect_logs(dir: &Path, depth: usize, out: &mut Vec<(PathBuf, SystemTime)>) 
                 .file_name()
                 .is_some_and(|n| n.to_string_lossy().starts_with("rollout-"))
         {
-            out.push((path, meta.modified().unwrap_or(SystemTime::UNIX_EPOCH)));
+            let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+            out.push((path, modified, meta.ino()));
         }
     }
 }
