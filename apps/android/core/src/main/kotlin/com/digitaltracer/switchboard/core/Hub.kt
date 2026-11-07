@@ -68,6 +68,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerializationException
+import okhttp3.Dispatcher
 import okhttp3.Interceptor
 import okhttp3.OkHttpClient
 
@@ -178,7 +179,7 @@ class Hub private constructor(
         fun client(auth: Interceptor?) = transport.newBuilder().apply {
             interceptors().add(0, Interceptor { it.proceed(it.request().newBuilder().header("x-switchboard-build", "$build").build()) })
             auth?.let { addInterceptor(it) }
-            relay?.let { addInterceptor(RelayInterceptor(it, transport)) }
+            relay?.let { addInterceptor(RelayInterceptor(it)) }
         }.build()
         val open = client(null)
         tokens = pairing?.let { TokenSource(AuthApi(baseUrl, open), it.deviceId, keys) }
@@ -214,8 +215,15 @@ class Hub private constructor(
 
         private fun transport(relay: RelayRoute?, base: OkHttpClient) = if (relay != null) RelayInterceptor.client(base) else base
 
+        /**
+         * Every hub client's calls, shared. Long-polls and screens' reads go to one host, often the
+         * relay, so OkHttp's default of 5 at a time stalls the app.
+         */
+        private val dispatcher = Dispatcher().apply { maxRequestsPerHost = 16 }
+
         /** Long-polls answer within 25 s, so a request silent for 40 s is on a dead connection. */
-        fun directTransport(): OkHttpClient = OkHttpClient.Builder().readTimeout(40, TimeUnit.SECONDS).build()
+        fun directTransport(): OkHttpClient =
+            OkHttpClient.Builder().dispatcher(dispatcher).readTimeout(40, TimeUnit.SECONDS).build()
 
         /** Runs a generated call, surfacing the hub's own error instead of the client's wrapper. */
         internal suspend fun <T> unwrap(call: suspend () -> T): T = try {

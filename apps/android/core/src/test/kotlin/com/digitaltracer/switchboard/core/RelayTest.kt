@@ -1,21 +1,33 @@
 package com.digitaltracer.switchboard.core
 
+import java.net.InetAddress
+import java.net.ServerSocket
+import java.net.Socket
 import java.net.URLEncoder
 import java.security.SecureRandom
 import java.security.interfaces.ECPublicKey
 import java.util.Base64
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.concurrent.thread
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import mockwebserver3.Dispatcher
 import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
 import mockwebserver3.RecordedRequest
 import mockwebserver3.SocketEffect
+import okhttp3.Dispatcher as CallDispatcher
 import okhttp3.OkHttpClient
 
 class RelayTest {
@@ -112,6 +124,77 @@ class RelayTest {
         relay.drops = 2
         assertNull(runCatching { hub.meta() }.getOrNull(), "only one retry")
         assertEquals(4, relay.epks.size)
+    }
+
+    @Test
+    fun cancellingARelayCallFreesItsSlotAndClosesItsConnection() = cancelsPromptly(drops = 0)
+
+    @Test
+    fun cancellingDuringTheFreshEnvelopeRetryFreesItsSlotToo() = cancelsPromptly(drops = 1)
+
+    /** Holds a relay call after [drops] dropped connections, cancels it, and checks it's gone within a second. */
+    private fun cancelsPromptly(drops: Int) = runBlocking {
+        HoldingRelay(drops).use { relay ->
+            val calls = CallDispatcher()
+            val route = RelayRoute.of(
+                "http://127.0.0.1:${relay.port}/relay",
+                P256.sec1(RelaySeal.ephemeral().public as ECPublicKey).base64Url,
+                SoftwareKeys().publicKey(KeyRole.Auth).base64Url,
+            )!!
+            val transport = OkHttpClient.Builder().dispatcher(calls).build()
+            val hub = Hub.paired(Pairing(route.relayUrl, "h1", "d1", "Phone", route), SoftwareKeys(), 3, transport)
+            val job = launch(Dispatchers.IO) { runCatching { hub.meta() } }
+            assertTrue(relay.holding.await(5, TimeUnit.SECONDS), "the relay holds the call")
+            assertEquals(drops + 1, relay.requests.get())
+            assertEquals(1, calls.runningCallsCount())
+            job.cancel()
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(1)
+            while (calls.runningCallsCount() > 0 && System.nanoTime() < deadline) Thread.sleep(10)
+            assertEquals(0, calls.runningCallsCount(), "the dispatcher slot is free")
+            assertTrue(relay.closed.await(1, TimeUnit.SECONDS), "the relay sees the connection close")
+        }
+    }
+
+    /** A relay that drops the first [drops] requests' connections, then reads the next and never answers it. */
+    private class HoldingRelay(@Volatile var drops: Int) : AutoCloseable {
+        private val server = ServerSocket(0, 50, InetAddress.getLoopbackAddress())
+        val port = server.localPort
+        val requests = AtomicInteger()
+        val holding = CountDownLatch(1)
+        val closed = CountDownLatch(1)
+
+        init {
+            thread(isDaemon = true) {
+                while (!server.isClosed) {
+                    val s = runCatching { server.accept() }.getOrNull() ?: break
+                    thread(isDaemon = true) { serve(s) }
+                }
+            }
+        }
+
+        private fun serve(s: Socket) = s.use {
+            val input = s.getInputStream()
+            val head = StringBuilder()
+            while (!head.endsWith("\r\n\r\n")) {
+                val b = input.read()
+                if (b < 0) return
+                head.append(b.toChar())
+            }
+            val length = Regex("(?i)content-length: *(\\d+)").find(head)?.groupValues?.get(1)?.toInt() ?: 0
+            repeat(length) { if (input.read() < 0) return }
+            requests.incrementAndGet()
+            synchronized(this) {
+                if (drops > 0) {
+                    drops--
+                    return
+                }
+            }
+            holding.countDown()
+            runCatching { while (input.read() >= 0) Unit }
+            closed.countDown()
+        }
+
+        override fun close() = server.close()
     }
 
     /** Plays relay and hub at once: opens the phone's envelope with the hub key and answers it. */

@@ -131,10 +131,11 @@ class RelayFailure(val error: HubError) : IOException(error.message)
 
 /**
  * Sends each API request through the relay, encrypted to the hub. The generated client and
- * everything above it don't know the difference. It answers instead of calling `proceed`, so it
- * must be the last interceptor.
+ * everything above it don't know the difference. It replaces the request with the sealed one and
+ * sends that on with `proceed`, in the same call, so cancelling the call cancels it; it must be
+ * the last interceptor.
  */
-class RelayInterceptor(private val route: RelayRoute, private val http: OkHttpClient) : Interceptor {
+class RelayInterceptor(private val route: RelayRoute) : Interceptor {
     private val base = route.relayUrl.toHttpUrl()
 
     override fun intercept(chain: Interceptor.Chain): Response {
@@ -167,7 +168,7 @@ class RelayInterceptor(private val route: RelayRoute, private val http: OkHttpCl
                 .url("${route.relayUrl}/h/${route.relayId}")
                 .post(RelaySeal.json.encodeToString(envelope).toRequestBody(JSON))
                 .build()
-            return http.newCall(post).execute().use { Triple(it.code, it.body.bytes(), keys) }
+            return chain.proceed(post).use { Triple(it.code, it.body.bytes(), keys) }
         }
         // A connection that died under the request is retried once, sealed afresh: the hub refuses a
         // key it has already seen, and mutating calls carry request ids, so a second copy is safe.
