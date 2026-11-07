@@ -28,6 +28,12 @@ object Follow {
     /** After a failed request. */
     const val RETRY_MS = 3_000L
 
+    /** The longest an unavailable conversation waits before it's asked for again. */
+    const val UNAVAILABLE_MAX_MS = 60_000L
+
+    /** Whether a conversation's screen is read: only where it's drawn, while wanted or standing in for a missing conversation. */
+    fun readsScreen(draws: Boolean, wanted: Boolean, unavailable: Boolean): Boolean = draws && (wanted || unavailable)
+
     /**
      * A page of the conversation. With [wait], one that continues from [after] waits for more;
      * only following asks for that, since a refresh someone is waiting on mustn't hang.
@@ -88,6 +94,24 @@ object Follow {
             val rest = (if (ok) everyMs else retryMs) - (now() - start)
             if (rest > 0) delay(rest)
         }
+    }
+}
+
+/**
+ * How long an unavailable conversation waits before it's asked for again: [Follow.RETRY_MS],
+ * doubling each time to [Follow.UNAVAILABLE_MAX_MS], and back to the usual pace once it's there.
+ */
+class UnavailableBackoff {
+    private var times = 0
+
+    /** The wait after a round beyond the usual retry, given whether the conversation was unavailable. */
+    fun extraMs(unavailable: Boolean): Long {
+        if (!unavailable) {
+            times = 0
+            return 0
+        }
+        times = (times + 1).coerceAtMost(16)
+        return (Follow.RETRY_MS shl (times - 1)).coerceAtMost(Follow.UNAVAILABLE_MAX_MS) - Follow.RETRY_MS
     }
 }
 

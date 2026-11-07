@@ -4,6 +4,7 @@ import java.util.UUID
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -144,5 +145,22 @@ class FollowTest {
         assertEquals(2, reads.count, "a ring during a read starts one more after it, not one beside it")
         assertEquals(1, reads.most)
         loop.cancel()
+    }
+
+    @Test
+    fun onlyAPageThatDrawsTheTerminalReadsTheScreen() {
+        assertTrue(Follow.readsScreen(draws = true, wanted = true, unavailable = false))
+        assertTrue(Follow.readsScreen(draws = true, wanted = false, unavailable = true), "it stands in")
+        assertFalse(Follow.readsScreen(draws = true, wanted = false, unavailable = false))
+        assertFalse(Follow.readsScreen(draws = false, wanted = true, unavailable = true), "session and agent pages never read it")
+    }
+
+    @Test
+    fun anUnavailableConversationBacksOffToAMinuteAndResetsOnceItsThere() {
+        val b = UnavailableBackoff()
+        val waits = (1..7).map { Follow.RETRY_MS + b.extraMs(unavailable = true) }
+        assertEquals(listOf(3_000L, 6_000L, 12_000L, 24_000L, 48_000L, 60_000L, 60_000L), waits)
+        assertEquals(0L, b.extraMs(unavailable = false))
+        assertEquals(Follow.RETRY_MS, Follow.RETRY_MS + b.extraMs(unavailable = true))
     }
 }

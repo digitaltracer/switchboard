@@ -65,7 +65,7 @@ import com.digitaltracer.switchboard.api.models.DeleteResponse
 @Composable
 fun SessionScreen(model: AppModel, voice: Voice, listen: Listen, sessionId: String) {
     var session by remember { mutableStateOf<Session?>(null) }
-    val convo = rememberConversation(ConversationSource.Session(sessionId))
+    val convo = rememberConversation(ConversationSource.Session(sessionId), drawsTerminal = false)
     var changes by remember { mutableStateOf<Changes?>(null) }
     // From the last action the user took; polls don't clear it.
     var error by remember { mutableStateOf<String?>(null) }

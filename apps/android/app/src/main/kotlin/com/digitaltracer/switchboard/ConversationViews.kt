@@ -123,13 +123,17 @@ import com.digitaltracer.switchboard.core.ConversationSource
 import com.digitaltracer.switchboard.core.Follow
 import com.digitaltracer.switchboard.core.Hub
 import com.digitaltracer.switchboard.core.HubError
+import com.digitaltracer.switchboard.core.UnavailableBackoff
 import kotlin.math.min
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 
-/** One agent's conversation, and its terminal, followed while a screen shows them. */
-class ConversationModel(val source: ConversationSource) {
+/**
+ * One agent's conversation, and its terminal, followed while a screen shows them. Pages that
+ * don't draw the terminal pass false for [drawsTerminal], and its screen is never read.
+ */
+class ConversationModel(val source: ConversationSource, private val drawsTerminal: Boolean = true) {
     var conversation by mutableStateOf(Conversation())
         private set
     /** Why there's no conversation, e.g. no log yet or an older hub; the terminal stands in. */
@@ -155,6 +159,7 @@ class ConversationModel(val source: ConversationSource) {
 
     /** Wakes the screen loop when the screen is shown. */
     private val screenBell = Bell()
+    private val backoff = UnavailableBackoff()
 
     /**
      * Follows until cancelled or the app leaves the foreground: the conversation as the hub sends
@@ -162,9 +167,15 @@ class ConversationModel(val source: ConversationSource) {
      */
     suspend fun follow(model: AppModel) {
         coroutineScope {
-            launch { Follow.repeating(going = { model.foreground }) { model.hub?.let { refresh(it, wait = true) } ?: false } }
             launch {
-                Follow.screens(screenBell, { wantsTerminal || unavailable != null }, { model.foreground }) {
+                Follow.repeating(going = { model.foreground }) {
+                    val ok = model.hub?.let { refresh(it, wait = true) } ?: false
+                    delay(backoff.extraMs(unavailable != null))
+                    ok
+                }
+            }
+            launch {
+                Follow.screens(screenBell, { Follow.readsScreen(drawsTerminal, wantsTerminal, unavailable != null) }, { model.foreground }) {
                     model.hub?.let { loadTerminal(it) } ?: false
                 }
             }
@@ -247,7 +258,8 @@ class ConversationModel(val source: ConversationSource) {
 }
 
 @Composable
-fun rememberConversation(source: ConversationSource): ConversationModel = remember(source) { ConversationModel(source) }
+fun rememberConversation(source: ConversationSource, drawsTerminal: Boolean = true): ConversationModel =
+    remember(source) { ConversationModel(source, drawsTerminal) }
 
 /** The whole conversation, with the agent's screen a tab away, and a message bar under both. */
 @Composable

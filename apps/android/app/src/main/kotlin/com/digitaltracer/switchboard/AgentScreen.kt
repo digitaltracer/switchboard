@@ -29,7 +29,7 @@ import kotlinx.coroutines.delay
  */
 @Composable
 fun AgentScreen(model: AppModel, voice: Voice, listen: Listen, machine: String, name: String) {
-    val convo = rememberConversation(ConversationSource.Agent(machine, name))
+    val convo = rememberConversation(ConversationSource.Agent(machine, name), drawsTerminal = false)
     val info = model.agents.firstOrNull { it.machineId == machine && it.name == name }
     val label = info?.displayName ?: name
 
