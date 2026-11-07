@@ -81,6 +81,7 @@ impl Rig {
                 error: None,
                 start_commit: None,
                 herdr_session: None,
+                name: None,
             })
             .await
             .unwrap();

@@ -302,7 +302,7 @@ pub struct Session {
 impl From<SessionView> for Session {
     fn from(s: SessionView) -> Self {
         Self {
-            label: crate::hub::route::label(&s.project_id, &s.id),
+            label: crate::hub::route::label(&s.project_id, &s.id, s.name.as_deref()),
             machine_status: enum_str(&s.machine),
             lifecycle: s.lifecycle.as_str().to_owned(),
             pending_approvals: s.pending_approvals.into_iter().map(Into::into).collect(),
@@ -381,7 +381,7 @@ pub struct StartResponse {
 impl From<StartResult> for StartResponse {
     fn from(r: StartResult) -> Self {
         Self {
-            label: crate::hub::route::label(&r.project_id, &r.session_id),
+            label: crate::hub::route::label(&r.project_id, &r.session_id, r.name.as_deref()),
             outcome: enum_str(&r.outcome),
             session_id: r.session_id,
             project_id: r.project_id,

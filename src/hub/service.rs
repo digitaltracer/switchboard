@@ -331,6 +331,9 @@ pub struct StartResult {
     pub muted: bool,
     pub outcome: StartOutcome,
     pub operation_id: String,
+    /// The owner's name for the session; absent in results recorded before names existed.
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 impl StartResult {
@@ -345,6 +348,7 @@ impl StartResult {
             muted: s.muted,
             outcome,
             operation_id: operation_id.to_owned(),
+            name: s.name.clone(),
         }
     }
 }
@@ -402,6 +406,8 @@ pub struct SessionView {
     pub start_commit: Option<String>,
     /// The Herdr session it runs in: `herdr session attach <name>` opens it.
     pub herdr_session: Option<String>,
+    /// The owner's name for it, given when it was started.
+    pub name: Option<String>,
 }
 
 /// Every session, newest first, at one list revision.
@@ -890,11 +896,13 @@ impl SessionService {
                 machine: machine.clone(),
             })?
             .clone();
-        if req.prompt.trim().is_empty() {
+        let (name, prompt) = route::parse_name(&req.prompt);
+        let name = name.map(|n| crate::redact::redact_str(&n));
+        if prompt.trim().is_empty() {
             return Err(HubError::BadRequest("prompt is empty".into()));
         }
         let agent = req.agent.unwrap_or(project.default_agent);
-        let prompt_sha256 = sha256_hex(&req.prompt);
+        let prompt_sha256 = sha256_hex(&prompt);
         let fp = fingerprint(&json!({
             "project": project.id, "machine": machine, "agent": agent.as_str(),
             "prompt_sha256": prompt_sha256, "notify": req.notify,
@@ -953,6 +961,7 @@ impl SessionService {
             error: None,
             start_commit: None,
             herdr_session: None,
+            name,
         };
         let op_id = rid
             .map(str::to_owned)
@@ -974,7 +983,8 @@ impl SessionService {
             "session_start",
             json!({
                 "project_id": project.id, "machine_id": machine, "agent": agent.as_str(),
-                "branch": record.branch, "notify": req.notify, "prompt": req.prompt,
+                "branch": record.branch, "notify": req.notify, "prompt": prompt,
+                "name": record.name,
                 "operation_id": op_id,
             }),
         )
@@ -986,7 +996,7 @@ impl SessionService {
             repo_path: repo.to_string_lossy().into_owned(),
             branch: record.branch.clone().expect("set above"),
             agent,
-            prompt: req.prompt.clone(),
+            prompt: prompt.clone(),
             deny_patterns: project.deny_patterns.clone(),
         };
         match self.runners.call(&machine, op, START_TIMEOUT).await {
@@ -1592,7 +1602,7 @@ impl SessionService {
             .into_iter()
             .filter(|s| matches!(s.lifecycle, Lifecycle::Starting | Lifecycle::Running))
         {
-            let label = route::label(&s.project_id, &s.id);
+            let label = route::label(&s.project_id, &s.id, s.name.as_deref());
             let mut names = vec![
                 route::norm(&s.id),
                 route::norm(&label),
@@ -2432,6 +2442,7 @@ impl SessionService {
             muted: s.muted,
             start_commit: s.start_commit,
             herdr_session: s.herdr_session,
+            name: s.name,
         })
     }
 

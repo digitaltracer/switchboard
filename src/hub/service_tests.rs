@@ -219,6 +219,29 @@ async fn running(r: &Rig, runner: &mut FakeRunner) -> String {
 // Routing and validation.
 
 #[tokio::test]
+async fn a_start_named_in_its_prompt_keeps_the_name_and_sends_the_rest() {
+    let r = rig().await;
+    let mut mac = connect(&r.svc, "mac", vec![]).await;
+    let task = spawn_start(
+        &r,
+        start_req("mac", "fix the login test and name it auth-fix", None),
+    );
+    let req = mac.req().await;
+    let Op::StartSession { prompt, .. } = &req.op else {
+        panic!("{:?}", req.op);
+    };
+    assert_eq!(prompt, "fix the login test");
+    mac.ok(req.id, json!({"workspace_id": "w2", "pane_id": "w2:p1"}))
+        .await;
+    let started = task.await.unwrap().unwrap();
+    assert_eq!(started.name.as_deref(), Some("auth-fix"));
+    let live = r.svc.live().await.unwrap();
+    let hits = route::match_target("auth-fix", &live);
+    assert_eq!(hits.len(), 1, "`use auth-fix` finds it");
+    assert_eq!(hits[0].label(), "auth-fix");
+}
+
+#[tokio::test]
 async fn start_goes_to_the_requested_machine_and_is_recorded_before_the_runner_is_asked() {
     let r = rig().await;
     let mut vps = connect(&r.svc, "vps", vec![]).await;

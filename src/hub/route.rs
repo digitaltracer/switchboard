@@ -90,9 +90,104 @@ pub fn machines_named(text: &str, machines: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// A session's short label: its project and the first four characters of its id.
-pub fn label(project_id: &str, session_id: &str) -> String {
-    format!("{project_id}-{}", &session_id[..session_id.len().min(4)])
+/// A session's short label: the owner's name for it, or its project and the first four
+/// characters of its id.
+pub fn label(project_id: &str, session_id: &str, name: Option<&str>) -> String {
+    match name {
+        Some(n) => n.to_owned(),
+        None => format!("{project_id}-{}", &session_id[..session_id.len().min(4)]),
+    }
+}
+
+/// Longest name a session can be given.
+const MAX_NAME: usize = 40;
+
+/// Words after "name it" that start a sentence rather than name a session.
+const NOT_NAMES: &[&str] = &[
+    "a",
+    "after",
+    "an",
+    "anything",
+    "as",
+    "by",
+    "for",
+    "however",
+    "like",
+    "something",
+    "so",
+    "that",
+    "the",
+    "this",
+    "to",
+    "what",
+    "whatever",
+    "with",
+];
+
+/// A name given in a start prompt as "name it <x>", "call it <x>", "name the session <x>" or
+/// "call this session <x>", and the prompt without those words or an "and" just before them.
+/// Bare "called <x>" doesn't count: prompts say that about code all the time.
+pub fn parse_name(prompt: &str) -> (Option<String>, String) {
+    let mut spans = Vec::new();
+    let mut start = None;
+    for (i, c) in prompt.char_indices().chain([(prompt.len(), ' ')]) {
+        match (c.is_whitespace(), start) {
+            (true, Some(s)) => {
+                spans.push((s, i));
+                start = None;
+            }
+            (false, None) => start = Some(i),
+            _ => {}
+        }
+    }
+    let tok = |k: usize| prompt[spans[k].0..spans[k].1].to_lowercase();
+    for i in 0..spans.len() {
+        if !matches!(tok(i).as_str(), "name" | "call") {
+            continue;
+        }
+        let mut j = i + 1;
+        match spans.get(j).map(|_| tok(j)).as_deref() {
+            Some("it") => j += 1,
+            Some("this") => {
+                j += 1;
+                if spans.get(j).is_some() && tok(j) == "session" {
+                    j += 1;
+                }
+            }
+            Some("the") if spans.get(j + 1).is_some() && tok(j + 1) == "session" => j += 2,
+            _ => continue,
+        }
+        let Some(&(s, e)) = spans.get(j) else {
+            continue;
+        };
+        const QUOTES: [char; 7] = ['"', '\'', '“', '”', '‘', '’', '`'];
+        let name = prompt[s..e]
+            .trim_start_matches(QUOTES)
+            .trim_end_matches(|c| {
+                QUOTES.contains(&c) || [',', '.', ';', ':', '!', '?'].contains(&c)
+            });
+        let ok = !name.is_empty()
+            && name.len() <= MAX_NAME
+            && !NOT_NAMES.contains(&name.to_lowercase().as_str())
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+        if !ok {
+            continue;
+        }
+        let from = if i > 0 && tok(i - 1) == "and" {
+            spans[i - 1].0
+        } else {
+            spans[i].0
+        };
+        let (left, right) = (prompt[..from].trim_end(), prompt[e..].trim_start());
+        let rest = match (left.is_empty(), right.is_empty()) {
+            (false, false) => format!("{left} {right}"),
+            _ => format!("{left}{right}"),
+        };
+        return (Some(name.to_owned()), rest);
+    }
+    (None, prompt.to_owned())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -342,6 +437,46 @@ mod tests {
     }
 
     #[test]
+    fn a_start_prompt_can_name_its_session() {
+        let (name, rest) = parse_name(
+            "create a new session in udp backend and name it cdp-investigation and then start a claude code",
+        );
+        assert_eq!(name.as_deref(), Some("cdp-investigation"));
+        assert_eq!(
+            rest,
+            "create a new session in udp backend and then start a claude code"
+        );
+        let (name, rest) = parse_name("Call this session \"auth-fix\". Fix the login test");
+        assert_eq!(name.as_deref(), Some("auth-fix"));
+        assert_eq!(rest, "Fix the login test");
+        assert_eq!(
+            parse_name("fix it, and name the session v2_rollout")
+                .0
+                .as_deref(),
+            Some("v2_rollout")
+        );
+        assert_eq!(
+            label("udp-backend", "5896c78f12cc", None),
+            "udp-backend-5896"
+        );
+        assert_eq!(label("udp-backend", "5896c78f12cc", Some("cdp")), "cdp");
+    }
+
+    #[test]
+    fn code_talk_is_not_a_session_name() {
+        for prompt in [
+            "rename the function called parse_new",
+            "start a claude code with name orchestrator",
+            "name it after the ticket",
+            "call it what you like: it's a long story with spaces",
+            "name it",
+        ] {
+            let (name, rest) = parse_name(prompt);
+            assert_eq!((name, rest.as_str()), (None, prompt), "{prompt}");
+        }
+    }
+
+    #[test]
     fn machines_by_word() {
         let m = vec!["mac".to_string(), "vps".to_string()];
         assert_eq!(machines_named("on mac, run the tests", &m), ["mac"]);
@@ -349,7 +484,7 @@ mod tests {
     }
 
     fn session(id: &str, project: &str, aliases: &[&str]) -> Live {
-        let lbl = label(project, id);
+        let lbl = label(project, id, None);
         let mut names = vec![
             norm(id),
             norm(&lbl),

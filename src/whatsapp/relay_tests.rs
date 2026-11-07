@@ -314,7 +314,7 @@ async fn naming_a_project_starts_a_session_and_makes_it_current() {
     );
     let done = started(&mut r).await;
     let s = &rig.svc.list().await.unwrap()[0];
-    let label = route::label("switchboard", &s.id);
+    let label = route::label("switchboard", &s.id, None);
     assert_eq!(
         done,
         format!(
@@ -427,8 +427,8 @@ async fn use_picks_sessions_and_agents_and_asks_when_ambiguous() {
     let a = start_from_chat(&mut r, "in switchboard, one").await;
     let b = start_from_chat(&mut r, "in switchboard, two").await;
     let (la, lb) = (
-        route::label("switchboard", &a),
-        route::label("switchboard", &b),
+        route::label("switchboard", &a, None),
+        route::label("switchboard", &b, None),
     );
 
     assert_eq!(
@@ -513,7 +513,7 @@ async fn an_agent_at_a_dialog_is_told_apart_from_a_pending_approval() {
         reply(&mut r, "keep going").await,
         format!(
             "{} is waiting for approval {n} (Bash), so I didn't send that. Reply approve {n} or deny {n} first.",
-            route::label("hub", &id)
+            route::label("hub", &id, None)
         )
     );
 }
@@ -523,7 +523,7 @@ async fn approvals_by_number_decide_once_and_replay_the_recorded_outcome() {
     let rig = Rig::new().await;
     let mut r = rig.relay();
     let id = start_from_chat(&mut r, "in switchboard, deploy").await;
-    let label = route::label("switchboard", &id);
+    let label = route::label("switchboard", &id, None);
 
     let a = rig
         .ask(
@@ -609,7 +609,7 @@ async fn mutes_go_through_the_session_service() {
     let mut r = rig.relay();
     let id = start_from_chat(&mut r, "in hub, go").await;
     let agent = crate::runner::sessions::agent_name(&id);
-    let label = route::label("hub", &id);
+    let label = route::label("hub", &id, None);
 
     assert_eq!(
         reply(&mut r, &format!("mute {label}")).await,
@@ -1025,10 +1025,10 @@ async fn stop_keeps_the_worktree_and_refuses_agents_switchboard_didnt_start() {
     let mut r = rig.relay();
     let id = start_from_chat(&mut r, "in hub, go").await;
     assert_eq!(
-        reply(&mut r, &format!("stop {}", route::label("hub", &id))).await,
+        reply(&mut r, &format!("stop {}", route::label("hub", &id, None))).await,
         format!(
             "Stopped {}. Its worktree and branch sb/{id} are kept.",
-            route::label("hub", &id)
+            route::label("hub", &id, None)
         )
     );
     assert_eq!(

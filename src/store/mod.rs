@@ -127,6 +127,8 @@ pub struct SessionRecord {
     pub start_commit: Option<String>,
     /// The Herdr session the task runs in.
     pub herdr_session: Option<String>,
+    /// The owner's name for it, given when it was started; `None` shows `<project>-<id>`.
+    pub name: Option<String>,
 }
 
 /// Fields to change on a session; `None` leaves a field as it is. Every update bumps the revision.
@@ -1232,8 +1234,8 @@ fn insert_session(c: &rusqlite::Connection, s: &SessionRecord) -> Result<()> {
     c.execute(
         "INSERT INTO sessions (id, project_id, machine_id, agent, prompt_sha256, branch,
          worktree_path, workspace_id, pane_id, lifecycle, agent_status, revision,
-         created_at, updated_at, agent_name, muted, hook_failed, error, start_commit, herdr_session)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+         created_at, updated_at, agent_name, muted, hook_failed, error, start_commit, herdr_session, name)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
         params![
             s.id,
             s.project_id,
@@ -1254,7 +1256,8 @@ fn insert_session(c: &rusqlite::Connection, s: &SessionRecord) -> Result<()> {
             s.hook_failed,
             s.error,
             s.start_commit,
-            s.herdr_session
+            s.herdr_session,
+            s.name
         ],
     )?;
     Ok(())
@@ -1336,6 +1339,7 @@ fn raw_session(r: &Row<'_>) -> rusqlite::Result<RawSession> {
             error: r.get("error")?,
             start_commit: r.get("start_commit")?,
             herdr_session: r.get("herdr_session")?,
+            name: r.get("name")?,
         },
         r.get("lifecycle")?,
     ))

@@ -399,7 +399,7 @@ impl Relay {
     pub fn started(&mut self, s: Started) -> Outgoing {
         let text = match s.result {
             Ok(r) => {
-                let label = route::label(&r.project_id, &r.session_id);
+                let label = route::label(&r.project_id, &r.session_id, r.name.as_deref());
                 self.current = Some(Target::Session {
                     id: r.session_id.clone(),
                     label: label.clone(),
@@ -625,7 +625,7 @@ impl Relay {
         if s.agent_name.as_deref().is_none_or(|n| !state.notifies(n)) {
             return vec![];
         }
-        let label = route::label(&s.project_id, &s.id);
+        let label = route::label(&s.project_id, &s.id, s.name.as_deref());
         let n = a.number.unwrap_or_default();
         let minutes = ((a.deadline - self.svc.now()).max(0) + 59_999) / 60_000;
         let text = fit_one(&format!(
@@ -678,9 +678,9 @@ impl Relay {
             else {
                 continue;
             };
-            let label = session
-                .as_ref()
-                .map_or(agent.clone(), |s| route::label(&s.project_id, &s.id));
+            let label = session.as_ref().map_or(agent.clone(), |s| {
+                route::label(&s.project_id, &s.id, s.name.as_deref())
+            });
             let text = match notify {
                 Notify::Blocked => {
                     // Its approval message already says what it's waiting for.

@@ -654,7 +654,7 @@ async fn resolve(svc: &SessionService, t: &TargetRef) -> Result<Target, AppError
         (Some(id), ..) => {
             let s = svc.get(id, None, Duration::ZERO).await?;
             Ok(Target::Session {
-                label: route::label(&s.project_id, &s.id),
+                label: route::label(&s.project_id, &s.id, s.name.as_deref()),
                 id: s.id,
                 machine: s.machine_id,
                 agent: s.agent_name,
@@ -706,7 +706,11 @@ async fn follow(
                     },
                 )
                 .await?;
-            let label = route::label(&started.project_id, &started.session_id);
+            let label = route::label(
+                &started.project_id,
+                &started.session_id,
+                started.name.as_deref(),
+            );
             let target = Target::Session {
                 id: started.session_id.clone(),
                 label: label.clone(),
