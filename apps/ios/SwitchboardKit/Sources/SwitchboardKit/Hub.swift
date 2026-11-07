@@ -362,8 +362,11 @@ public final class Hub: Sendable {
     }
 
     /// Running agents Switchboard didn't start, and those that ended in the last day.
-    public func agents() async throws -> Schemas.Agents {
-        try await Self.unwrap { try await client.listAgents().ok.body.json }
+    /// With `activity`, each agent's last line too, from hubs that have it.
+    public func agents(activity: Bool = false) async throws -> Schemas.Agents {
+        try await Self.unwrap {
+            try await client.listAgents(query: .init(activity: activity ? true : nil)).ok.body.json
+        }
     }
 
     public func agentOutput(machine: String, agent: String, lines: Int = 80, visible: Bool = false, ansi: Bool = false) async throws -> Schemas.Output {

@@ -22,6 +22,7 @@ struct HomeView: View {
     @State private var showingDevices = false
     /// The last line each busy agent said, by `Tile.id`.
     @State private var lastLines: [String: String] = [:]
+    @State private var pacer = FallbackPacer()
 
     private var waiting: [Schemas.Session] { model.sessions.filter { !$0.pendingApprovals.isEmpty } }
     private var groups: [HerdrSession] { model.herdrSessions(since: HerdrSession.startOfToday()) }
@@ -82,9 +83,9 @@ struct HomeView: View {
             .refreshable { model.startPolling(); await model.refreshAgents() }
             .task(id: model.wakes) {
                 while !Task.isCancelled {
-                    await model.refreshAgents()
+                    await model.refreshAgents(activity: true)
                     await loadLastLines()
-                    try? await Task.sleep(for: .seconds(6))
+                    try? await Task.sleep(for: .seconds(5))
                 }
             }
         }
@@ -265,19 +266,28 @@ struct HomeView: View {
         }
     }
 
-    /// Each tile's line comes from the conversation; reading the terminal would scroll it on the Mac.
+    /// Each tile's line comes from the hub's activity list; where that doesn't cover its machine,
+    /// from the conversation at most every 30 s. Reading the terminal would scroll it on the Mac.
     private func loadLastLines() async {
         guard let hub = model.hub else { return }
-        for t in busy.prefix(8) {
-            let page: Schemas.Transcript?
-            switch t.agent {
-            case .task(let s): page = try? await hub.transcript(s.id)
-            case .live(let a): page = try? await hub.agentTranscript(machine: a.machineId, agent: a.name)
-            case .ended: page = nil
+        var reads = 0
+        for t in busy {
+            switch model.tileLines?.line(for: t.agent) ?? .unknown {
+            case .known(let line):
+                lastLines[t.id] = line
+            case .unknown:
+                guard reads < 8, pacer.due(t.id) else { continue }
+                reads += 1
+                let page: Schemas.Transcript?
+                switch t.agent {
+                case .task(let s): page = try? await hub.transcript(s.id)
+                case .live(let a): page = try? await hub.agentTranscript(machine: a.machineId, agent: a.name)
+                case .ended: page = nil
+                }
+                guard let page else { continue }
+                let last = page.items.last { $0.kind != "user" && $0.text != nil }?.text
+                lastLines[t.id] = last?.split(separator: "\n").first { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.map(String.init)
             }
-            guard let page else { continue }
-            let last = page.items.last { $0.kind != "user" && $0.text != nil }?.text
-            lastLines[t.id] = last?.split(separator: "\n").first { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.map(String.init)
         }
     }
 }

@@ -38,6 +38,8 @@ final class AppModel {
     private(set) var agents: [Schemas.AgentView] = []
     /// Those that ended in the last day.
     private(set) var ended: [Schemas.EndedAgent] = []
+    /// Home tiles' last lines, when the hub has them.
+    private(set) var tileLines: TileLines?
     private(set) var projects: [Schemas.Project] = []
     /// Bumped each time the app comes back to the foreground; screens restart their polls on it,
     /// since a long-poll begun before the phone slept may be on a dead connection.
@@ -256,10 +258,12 @@ final class AppModel {
         return Array(out.prefix(100))
     }
 
-    func refreshAgents() async {
-        guard let hub, let list = try? await hub.agents() else { return }
+    /// With `activity`, also each agent's last line, for home's tiles.
+    func refreshAgents(activity: Bool = false) async {
+        guard let hub, let list = try? await hub.agents(activity: activity) else { return }
         agents = list.agents
         ended = list.ended ?? []
+        if activity { tileLines = TileLines(list) }
         settleAwaiting()
     }
 
