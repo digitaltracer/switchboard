@@ -14,6 +14,7 @@ use tokio::time::Instant;
 use super::agents;
 use super::backend::{self, Facts, Read, Server};
 use super::codex::{CodexPane, clear_startup, excerpt};
+use super::core_watch::{self, Core};
 use super::dialogs::{self, Answered, PaneLocks, ServerPane};
 use super::herdrs::{Herdrs, qualified, split_qualified};
 use super::hooks::{DecideError, HookHub};
@@ -103,6 +104,8 @@ pub struct Sessions {
     answered: Arc<Answered>,
     /// Occurrences already reported as waiting.
     waited: Mutex<std::collections::VecDeque<String>>,
+    /// This machine's herdr-core, when the runner follows one.
+    core: std::sync::OnceLock<Arc<Core>>,
 }
 
 /// How long an agent stays blocked before its owner's phones are told it's waiting.
@@ -185,8 +188,18 @@ impl Sessions {
             pane_locks: PaneLocks::default(),
             answered: Answered::load(cfg.state_dir.join("dialog-answers.json")),
             waited: Mutex::default(),
+            core: std::sync::OnceLock::new(),
             cfg,
         })
+    }
+
+    /// Follows `core` too; set once, at start.
+    pub fn set_core(&self, core: Arc<Core>) {
+        let _ = self.core.set(core);
+    }
+
+    pub(crate) fn core(&self) -> Option<Arc<Core>> {
+        self.core.get().cloned()
     }
 
     /// The Herdr server a task runs in.
@@ -196,17 +209,54 @@ impl Sessions {
 
     /// The server a task runs in.
     pub(crate) fn server_for(&self, s: &RunnerSession) -> Server {
-        Server::herdr(s.herdr_session.clone(), self.herdr_for(s))
+        match (s.herdr_session.as_deref(), self.core()) {
+            (Some(core_watch::SERVER), Some(core)) => Server::Core(core),
+            _ => Server::herdr(s.herdr_session.clone(), self.herdr_for(s)),
+        }
     }
 
-    /// Every server that answers.
+    /// Every server that answers: the running Herdr sessions, then the core when it's up.
     async fn servers(&self) -> Vec<Server> {
-        self.herdrs
+        let mut out: Vec<Server> = self
+            .herdrs
             .running()
             .await
             .into_iter()
             .map(|(name, client)| Server::herdr(name, client))
-            .collect()
+            .collect();
+        if let Some(core) = self.core().filter(|c| c.core_id().is_some()) {
+            out.push(Server::Core(core));
+        }
+        out
+    }
+
+    /// A TUI pane showing a core terminal (`hc attach`) is listed once, from the core.
+    async fn attached_to_core(&self, server: &Server, facts: &Facts) -> bool {
+        let Some(client) = server.as_herdr() else {
+            return false;
+        };
+        if self.core().is_none_or(|c| c.core_id().is_none()) {
+            return false;
+        }
+        client
+            .pane_foreground_names(&facts.target)
+            .await
+            .is_ok_and(|names| {
+                names
+                    .iter()
+                    .any(|n| matches!(n.rsplit('/').next(), Some("hc" | "herdr-core")))
+            })
+    }
+
+    /// The server's agents without TUI panes that only show a core terminal.
+    async fn listed(&self, server: &Server) -> backend::Result<Vec<Facts>> {
+        let mut out = Vec::new();
+        for f in server.agents().await? {
+            if !self.attached_to_core(server, &f).await {
+                out.push(f);
+            }
+        }
+        Ok(out)
     }
 
     /// Where a named agent lives: `<session>/<agent>`, a task's own agent, or the legacy server.
@@ -216,6 +266,9 @@ impl Sessions {
             s.agent_name == agent && (session.is_none() || s.herdr_session.as_deref() == session)
         });
         match (session, &owned) {
+            (Some(core_watch::SERVER), _) if let Some(core) = self.core() => {
+                (Server::Core(core), agent, owned)
+            }
             (Some(s), _) => (
                 Server::herdr(Some(s.to_owned()), self.herdrs.client(Some(s))),
                 agent,
@@ -235,7 +288,7 @@ impl Sessions {
             .collect();
         let mut out = Vec::new();
         for server in self.servers().await {
-            let Ok(facts) = server.agents().await else {
+            let Ok(facts) = self.listed(&server).await else {
                 continue;
             };
             let name = server.name().map(str::to_owned);
@@ -257,7 +310,7 @@ impl Sessions {
         let mut out = Vec::new();
         let mut logs = std::collections::HashSet::new();
         for srv in self.servers().await {
-            let Ok(facts) = srv.agents().await else {
+            let Ok(facts) = self.listed(&srv).await else {
                 continue;
             };
             let server = srv.name().map(str::to_owned);

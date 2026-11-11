@@ -296,6 +296,9 @@ pub struct Session {
     /// The Herdr session it runs in; `herdr session attach <name>` opens it on the machine.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub herdr_session: Option<String>,
+    /// `herdr` for a Herdr TUI session, `hc` for one in the Herdr app. Older hubs leave it out.
+    #[schema(required = false)]
+    pub backend: String,
     pub pending_approvals: Vec<Approval>,
 }
 
@@ -321,6 +324,7 @@ impl From<SessionView> for Session {
             muted: s.muted,
             notifies: s.notifies,
             start_commit: s.start_commit,
+            backend: backend(s.herdr_session.as_deref()).into(),
             herdr_session: s.herdr_session,
         }
     }
@@ -796,6 +800,19 @@ pub struct AgentView {
     /// The label of the Herdr workspace (space) it runs in. Untrusted text.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub space: Option<String>,
+    /// `herdr` for a Herdr TUI agent, `hc` for one in the Herdr app, named `hc/<agent>`. Older
+    /// hubs leave it out.
+    #[schema(required = false)]
+    pub backend: String,
+}
+
+/// Which Herdr hosts an agent, from the session it runs in.
+pub fn backend(herdr_session: Option<&str>) -> &'static str {
+    if herdr_session == Some(crate::proto::CORE_SERVER) {
+        "hc"
+    } else {
+        "herdr"
+    }
 }
 
 #[derive(Debug, Serialize, ToSchema)]

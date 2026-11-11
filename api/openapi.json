@@ -2042,6 +2042,10 @@
               "null"
             ],
             "description": "The label of the Herdr workspace (space) it runs in. Untrusted text."
+          },
+          "backend": {
+            "type": "string",
+            "description": "`herdr` for a Herdr TUI agent, `hc` for one in the Herdr app, named `hc/<agent>`. Older\nhubs leave it out."
           }
         }
       },
@@ -3355,6 +3359,10 @@
               "null"
             ],
             "description": "The Herdr session it runs in; `herdr session attach <name>` opens it on the machine."
+          },
+          "backend": {
+            "type": "string",
+            "description": "`herdr` for a Herdr TUI session, `hc` for one in the Herdr app. Older hubs leave it out."
           },
           "pending_approvals": {
             "type": "array",

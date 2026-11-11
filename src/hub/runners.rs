@@ -11,7 +11,7 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 
 use crate::proto::conn::{Correlator, QUEUE_CAPACITY};
-use crate::proto::{ErrorCode, Frame, Op, ProtoError, Resp};
+use crate::proto::{CAP_HC, ErrorCode, Frame, Op, ProtoError, Resp};
 use crate::redact::{redact, redact_str};
 
 /// Extra wait past a request's deadline before the caller gives up on its own.
@@ -143,6 +143,13 @@ impl Runners {
         timeout: Duration,
     ) -> Result<Value, ProtoError> {
         let mutating = op.is_mutating();
+        // An older runner would read `hc/<agent>` as a Herdr session named hc.
+        if op.targets_core() && !self.can(machine, CAP_HC) {
+            return Err(ProtoError::new(
+                ErrorCode::NotFound,
+                format!("machine {machine}'s runner doesn't host Herdr app agents"),
+            ));
+        }
         let (tx, req, rx) = {
             let mut slots = self.slots.lock().unwrap();
             let slot = slots

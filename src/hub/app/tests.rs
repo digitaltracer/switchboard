@@ -1765,3 +1765,24 @@ async fn an_android_device_registers_its_fcm_token() {
     let d = r.devices.device(&device).await.unwrap().unwrap();
     assert_eq!(d.push_provider, Some(PushProvider::Apns));
 }
+
+#[tokio::test]
+async fn a_runner_that_doesnt_host_core_agents_is_never_sent_one() {
+    let mut old = rig().await;
+    let err = old.svc.read_agent("mac", "hc/fix login").await.unwrap_err();
+    assert!(err.to_string().contains("Herdr app"), "{err}");
+    assert!(old.runner.try_recv().is_err(), "nothing went to the runner");
+
+    let mut new = rig_advertising("", vec![crate::proto::CAP_HC.into()]).await;
+    let svc = new.svc.clone();
+    let read = tokio::spawn(async move { svc.read_agent("mac", "hc/fix login").await });
+    let frame = tokio::time::timeout(Duration::from_secs(2), new.runner.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(&frame, Frame::Req(r) if r.op.agent() == Some("hc/fix login")),
+        "{frame:?}"
+    );
+    read.abort();
+}

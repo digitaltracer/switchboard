@@ -12,6 +12,10 @@ pub const PROTOCOL_VERSION: u32 = 1;
 pub const MAX_FRAME_BYTES: usize = 1 << 20;
 /// A runner that answers `Op::Activity`.
 pub const CAP_ACTIVITY: &str = "activity";
+/// A runner that hosts herdr-core agents, named `hc/<agent>`.
+pub const CAP_HC: &str = "hc";
+/// The `herdr_session` of a herdr-core agent or session.
+pub const CORE_SERVER: &str = "hc";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -177,6 +181,25 @@ impl Op {
                 | Op::Skills { .. }
                 | Op::Dialog { .. }
         )
+    }
+
+    /// The agent an agent op names, if any.
+    pub fn agent(&self) -> Option<&str> {
+        match self {
+            Op::Answer { agent, .. }
+            | Op::ReadAgent { agent, .. }
+            | Op::PromptAgent { agent, .. }
+            | Op::Transcript { agent, .. }
+            | Op::Skills { agent }
+            | Op::Dialog { agent } => Some(agent),
+            _ => None,
+        }
+    }
+
+    /// Names a herdr-core agent, which only a runner advertising `CAP_HC` can reach.
+    pub fn targets_core(&self) -> bool {
+        self.agent()
+            .is_some_and(|a| a.split_once('/').is_some_and(|(s, _)| s == CORE_SERVER))
     }
 }
 

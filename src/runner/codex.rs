@@ -61,6 +61,7 @@ impl CodexIo for CodexPane {
                 .agent_send_keys(&self.target, keys)
                 .await
                 .map_err(|e| e.to_string()),
+            Server::Core(_) => Err("keys to herdr-core are not supported yet".into()),
         }
     }
 }

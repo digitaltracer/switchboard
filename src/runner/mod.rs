@@ -3,6 +3,7 @@
 pub mod agents;
 pub mod backend;
 pub mod codex;
+pub mod core_watch;
 pub mod dialogs;
 pub mod herdrs;
 pub mod hooks;
@@ -190,6 +191,10 @@ pub async fn start(cfg: Settings) -> anyhow::Result<Started> {
         sessions.clone(),
         agents::RECONCILE,
     ));
+    let core = core_watch::Core::new(crate::hc::socket_from_env(&home));
+    tracing::info!(socket = %core.socket().display(), "following herdr-core");
+    sessions.set_core(core.clone());
+    tokio::spawn(forward_core_agents(sessions.clone(), core));
     Ok(Started {
         sessions,
         events: events_rx,
@@ -245,6 +250,48 @@ pub async fn forward_all_named_agents(
             );
         }
         tokio::time::sleep(reconcile_every).await;
+    }
+}
+
+/// The core's agents' statuses, as `hc/<agent>` unless they are a task's, sent when they change.
+pub async fn forward_core_agents(sessions: Arc<Sessions>, core: Arc<core_watch::Core>) {
+    let (tx, mut rx) = mpsc::channel::<()>(1);
+    let replaced = tx.clone();
+    let (logs, socket) = (sessions.logs.clone(), core.socket().to_owned());
+    let _follower = AbortOnDrop(tokio::spawn(core_watch::follow(
+        core.clone(),
+        move || {
+            let _ = tx.try_send(());
+        },
+        move || {
+            // The same addresses now name another core's terminals.
+            logs.retain(&socket, &Default::default());
+            let _ = replaced.try_send(());
+        },
+    )));
+    let mut forward = StatusForwarder::default();
+    let mut tick = tokio::time::interval(agents::RECONCILE);
+    loop {
+        tokio::select! {
+            got = rx.recv() => if got.is_none() { return },
+            _ = tick.tick() => {}
+        }
+        if core.core_id().is_none() {
+            continue;
+        }
+        let Ok(facts) = core.agents().await else {
+            continue;
+        };
+        let tasks = sessions.all();
+        for f in facts {
+            let local = f.local_name();
+            let name = if tasks.iter().any(|s| s.agent_name == local) {
+                local
+            } else {
+                herdrs::qualified(Some(core_watch::SERVER), &local)
+            };
+            forward.forward(&sessions, name, agents::status_str(f.status));
+        }
     }
 }
 

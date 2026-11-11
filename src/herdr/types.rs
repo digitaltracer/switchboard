@@ -191,6 +191,8 @@ pub struct PaneProcessInfo {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct PaneProcess {
     pub pid: u32,
+    #[serde(default)]
+    pub name: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

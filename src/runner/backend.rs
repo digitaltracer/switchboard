@@ -1,8 +1,10 @@
 //! The runner's own view of an agent server, so callers don't read either backend's types.
-//! One `Server` is one Herdr session's server; the core joins it as a second kind.
+//! A `Server` is one Herdr session's server, or this machine's herdr-core.
 
 use std::path::Path;
+use std::sync::Arc;
 
+use super::core_watch::{self, Core};
 use crate::hc::HcError;
 use crate::herdr::types::{AgentInfo, AgentPromptParams, AgentStatus, ReadSource, SessionSnapshot};
 use crate::herdr::{self, HerdrError, check_agent_target};
@@ -13,14 +15,16 @@ pub enum Server {
         session: Option<String>,
         client: herdr::Client,
     },
+    /// herdr-core, behind the Herdr app.
+    Core(Arc<Core>),
 }
 
 /// What one agent looks like, whichever server it runs in.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Facts {
-    /// The Herdr session, as `Server::name` gives it.
+    /// The Herdr session, or `hc`, as `Server::name` gives it.
     pub server: Option<String>,
-    /// The pane id.
+    /// The pane id, or the core terminal's address.
     pub target: String,
     pub name: Option<String>,
     pub kind: Option<String>,
@@ -29,14 +33,20 @@ pub struct Facts {
     pub title: Option<String>,
     pub space: Option<String>,
     pub tab: Option<String>,
-    /// Herdr's `terminal_id`: a new one is a new process in the pane.
+    /// Herdr's `terminal_id`, or `core:address:pid:created_ms`: a new one is a new process.
     pub identity: Option<String>,
     /// The conversation id Herdr's integration reports.
     pub reported_session: Option<String>,
-    /// Herdr's `state_change_seq`.
+    /// Herdr's `state_change_seq`, or the core's `turn` and `status_ms` together.
     pub seq: u64,
     /// Ready for a prompt.
     pub ready: bool,
+    /// The processes the agent may be, known up front on core; Herdr reads them on demand.
+    pub pids: Vec<u32>,
+    /// What the core says a blocked agent waits for: `permission`, `question` or `auth`.
+    pub blocked_kind: Option<String>,
+    /// The core's `turn`.
+    pub turn: Option<u64>,
 }
 
 impl Facts {
@@ -133,6 +143,9 @@ pub fn herdr_facts(
         identity: a.terminal_id,
         reported_session: a.agent_session.map(|s| s.value),
         seq: a.state_change_seq,
+        pids: Vec::new(),
+        blocked_kind: None,
+        turn: None,
     }
 }
 
@@ -159,13 +172,19 @@ impl Server {
     pub fn name(&self) -> Option<&str> {
         match self {
             Server::Herdr { session, .. } => session.as_deref(),
+            Server::Core(_) => Some(core_watch::SERVER),
         }
+    }
+
+    pub fn is_core(&self) -> bool {
+        matches!(self, Server::Core(_))
     }
 
     /// The server's socket, which keys what is cached about its panes.
     pub fn socket(&self) -> &Path {
         match self {
             Server::Herdr { client, .. } => client.socket(),
+            Server::Core(core) => core.socket(),
         }
     }
 
@@ -173,6 +192,7 @@ impl Server {
     pub fn as_herdr(&self) -> Option<&herdr::Client> {
         match self {
             Server::Herdr { client, .. } => Some(client),
+            Server::Core(_) => None,
         }
     }
 
@@ -182,10 +202,11 @@ impl Server {
                 session.as_deref(),
                 client.session_snapshot().await?,
             )),
+            Server::Core(core) => Ok(core.agents().await?),
         }
     }
 
-    /// One agent, by name or pane.
+    /// One agent, by name or pane; on core by address, then terminal or tab name.
     pub async fn agent(&self, target: &str) -> Result<Facts> {
         match self {
             Server::Herdr { session, client } => Ok(herdr_facts(
@@ -193,6 +214,14 @@ impl Server {
                 client.agent_get(target).await?,
                 &Default::default(),
             )),
+            Server::Core(core) => {
+                let all = core.agents().await?;
+                all.iter()
+                    .find(|f| f.target == target)
+                    .or_else(|| all.iter().find(|f| f.name.as_deref() == Some(target)))
+                    .cloned()
+                    .ok_or_else(|| not_found(target))
+            }
         }
     }
 
@@ -219,6 +248,7 @@ impl Server {
                     truncated: r.truncated,
                 })
             }
+            Server::Core(_) => Err(not_yet()),
         }
     }
 
@@ -233,6 +263,7 @@ impl Server {
                     .ok()
                     .map(|r| r.text)
             }
+            Server::Core(_) => None,
         }
     }
 
@@ -250,6 +281,7 @@ impl Server {
                     .await?;
                 Ok(a.agent_status)
             }
+            Server::Core(_) => Err(not_yet()),
         }
     }
 
@@ -266,6 +298,7 @@ impl Server {
                     blocked: a.agent_status == AgentStatus::Blocked,
                 })
             }
+            Server::Core(_) => Err(not_yet()),
         }
     }
 
@@ -273,6 +306,21 @@ impl Server {
     pub async fn pids(&self, facts: &Facts) -> Result<Vec<u32>> {
         match self {
             Server::Herdr { client, .. } => Ok(client.pane_foreground_pids(&facts.target).await?),
+            Server::Core(_) => Ok(facts.pids.clone()),
         }
     }
+}
+
+fn not_found(target: &str) -> Error {
+    Error::Hc(HcError::Server {
+        method: "terminal.get",
+        kind: "not_found".into(),
+        message: format!("no agent {target:?} on herdr-core"),
+    })
+}
+
+fn not_yet() -> Error {
+    Error::Hc(HcError::InvalidArgument(
+        "not supported on herdr-core yet".into(),
+    ))
 }

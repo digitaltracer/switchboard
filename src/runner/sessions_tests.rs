@@ -1173,3 +1173,89 @@ async fn an_agent_blocked_through_the_hold_is_reported_waiting_once() {
     }
     assert_eq!(waiting, [("cx".to_string(), "t".to_string(), None)]);
 }
+
+/// A Herdr session whose one named agent's pane runs `foreground`.
+fn herdr_running(folder: &Path, agent: &'static str, foreground: &'static str) {
+    std::fs::create_dir_all(folder).unwrap();
+    let listener = UnixListener::bind(folder.join("herdr.sock")).unwrap();
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (read, mut write) = stream.into_split();
+            let mut line = String::new();
+            BufReader::new(read).read_line(&mut line).await.unwrap();
+            let req: Value = serde_json::from_str(&line).unwrap();
+            let result = match req["method"].as_str().unwrap() {
+                "ping" => json!({"type": "pong", "version": "0.9.1", "protocol": 22}),
+                "session.snapshot" => {
+                    let mut a = agent_info("working");
+                    a["name"] = json!(agent);
+                    a["agent"] = json!("claude");
+                    json!({"type": "session_snapshot", "snapshot": {"version": "0.9.1", "protocol": 22,
+                           "workspaces": [], "tabs": [], "panes": [], "layouts": [], "agents": [a]}})
+                }
+                "pane.process_info" => json!({"type": "pane_process_info", "process_info": {
+                    "pane_id": "w2:p1", "foreground_processes": [{"pid": 7, "name": foreground}]}}),
+                _ => json!({"type": "ok"}),
+            };
+            let resp = json!({"id": req["id"], "result": result});
+            write
+                .write_all(format!("{resp}\n").as_bytes())
+                .await
+                .unwrap();
+        }
+    });
+}
+
+#[tokio::test]
+async fn core_agents_are_listed_beside_herdr_ones_and_attached_panes_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let (r, config_dir, _) = multi_rig(dir, vec![]);
+    herdr_running(&config_dir.join("sessions/mono1"), "claude", "2.1.322");
+    // A TUI pane showing a core terminal: Herdr's Claude hook may report into it.
+    herdr_running(&config_dir.join("sessions/viewer"), "claude", "hc");
+    let fake = crate::hc::fake::FakeCore::start();
+    fake.set_doc(json!({ "spaces": [ { "id": "sp1", "name": "Switchboard",
+        "tabs": [ { "id": "tb1", "name": "fix login" } ] } ] }));
+    fake.add(json!({ "argv": ["/x/claude"], "reported": true,
+                     "status": { "state": "blocked", "app": "claude-code", "kind": "permission" },
+                     "labels": { "herdr.space": "sp1", "herdr.tab": "tb1" } }));
+    fake.add(json!({ "argv": ["/bin/zsh"] }));
+    let core = core_watch::Core::new(&fake.socket);
+    r.sessions.set_core(core.clone());
+
+    let names = |list: Vec<crate::proto::AgentSummary>| -> Vec<(String, String, Option<String>)> {
+        list.into_iter()
+            .map(|a| (a.name, a.agent_status, a.space))
+            .collect()
+    };
+    let agents = || async {
+        serde_json::from_value::<Vec<crate::proto::AgentSummary>>(
+            r.sessions.handle(Op::Agents).await.unwrap(),
+        )
+        .unwrap()
+    };
+    // The core isn't up yet: no dial has answered.
+    assert_eq!(
+        names(agents().await),
+        [
+            ("mono1/claude".into(), "working".into(), None),
+            ("viewer/claude".into(), "working".into(), None)
+        ]
+    );
+    core.up("core-a");
+    let list = agents().await;
+    assert_eq!(list[1].herdr_session.as_deref(), Some("hc"));
+    assert_eq!(list[1].pane_id, "t1");
+    assert_eq!(
+        names(list),
+        [
+            ("mono1/claude".into(), "working".into(), None),
+            (
+                "hc/fix login".into(),
+                "blocked".into(),
+                Some("Switchboard".into())
+            ),
+        ]
+    );
+}

@@ -825,6 +825,7 @@ pub async fn list_agents(
         .map(|(machine_id, a)| AgentView {
             machine_id,
             name: a.name,
+            backend: types::backend(a.herdr_session.as_deref()).into(),
             herdr_session: a.herdr_session,
             kind: a.kind,
             agent_status: a.agent_status,

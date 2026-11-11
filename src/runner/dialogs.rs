@@ -438,6 +438,7 @@ impl DialogIo for ServerPane {
                 .agent_send_keys(&self.target, keys.iter().map(|k| (*k).to_owned()).collect())
                 .await
                 .map_err(|e| e.to_string()),
+            Server::Core(_) => Err("keys to herdr-core are not supported yet".into()),
         }
     }
 }
