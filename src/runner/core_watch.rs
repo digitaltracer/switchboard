@@ -301,7 +301,12 @@ pub fn kind_of(t: &Terminal, last_app: Option<&str>) -> Option<String> {
 }
 
 pub fn status_of(t: &Terminal) -> AgentStatus {
-    match t.status.as_ref().map(|s| s.state.as_str()) {
+    word(t.status.as_ref().map(|s| s.state.as_str()))
+}
+
+/// A program's status word as the runner's: `error` is done, none is unknown.
+pub fn word(state: Option<&str>) -> AgentStatus {
+    match state {
         Some("idle") => AgentStatus::Idle,
         Some("working") => AgentStatus::Working,
         Some("blocked") => AgentStatus::Blocked,

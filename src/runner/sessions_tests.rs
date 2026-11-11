@@ -1259,3 +1259,131 @@ async fn core_agents_are_listed_beside_herdr_ones_and_attached_panes_once() {
         ]
     );
 }
+
+/// A runner with no Herdr session running and `fake` as its core, already up.
+fn core_rig(dir: tempfile::TempDir) -> (Rig, crate::hc::fake::FakeCore) {
+    let (r, _, _) = multi_rig(dir, vec![]);
+    let fake = crate::hc::fake::FakeCore::start();
+    let core = core_watch::Core::new(&fake.socket);
+    core.up("core-a");
+    r.sessions.set_core(core);
+    (r, fake)
+}
+
+fn claude_terminal(name: &str, state: &str) -> Value {
+    json!({ "argv": ["/x/claude"], "name": name, "reported": true, "cwd": "/w",
+            "status": { "state": state, "app": "claude-code" } })
+}
+
+#[tokio::test]
+async fn core_agents_are_read_and_prompted_by_name_and_never_forced() {
+    let dir = tempfile::tempdir().unwrap();
+    let (r, fake) = core_rig(dir);
+    let t = fake.add(claude_terminal("worker", "idle"));
+    let shell = fake.add(json!({ "argv": ["/bin/zsh"] }));
+    fake.set_screen(&t, "the screen");
+    let read = |visible: bool, lines: u32| Op::ReadAgent {
+        agent: "hc/worker".into(),
+        lines,
+        visible,
+        ansi: true,
+    };
+    let v = r.sessions.handle(read(true, 0)).await.unwrap();
+    assert_eq!(
+        (v["text"].as_str(), v["ansi"].as_str()),
+        (Some("the screen"), Some("the screen"))
+    );
+    r.sessions.handle(read(false, 30)).await.unwrap();
+    let reads: Vec<Value> = fake
+        .requests()
+        .into_iter()
+        .filter(|q| q["method"] == "terminal.read")
+        .map(|q| q["params"].clone())
+        .collect();
+    assert_eq!(reads[0], json!({ "terminal": t, "lines": 0 }));
+    assert!(reads.contains(&json!({ "terminal": t, "lines": 30 })));
+
+    let prompt = |agent: &str| Op::PromptAgent {
+        agent: agent.into(),
+        text: "fix it".into(),
+    };
+    let sent = r.sessions.handle(prompt("hc/worker")).await.unwrap();
+    assert_eq!(sent["outcome"], "sent");
+    let sends: Vec<Value> = fake
+        .requests()
+        .into_iter()
+        .filter(|q| q["method"] == "terminal.send")
+        .map(|q| q["params"].clone())
+        .collect();
+    assert_eq!(sends, [json!({ "terminal": t, "text": "fix it" })]);
+
+    fake.patch(
+        &t,
+        json!({ "status": { "state": "blocked", "app": "claude-code" } }),
+    );
+    let blocked = r.sessions.handle(prompt("hc/worker")).await.unwrap();
+    assert_eq!(
+        (blocked["outcome"].as_str(), blocked["screen"].as_str()),
+        (Some("blocked"), Some("the screen"))
+    );
+
+    fake.patch(
+        &t,
+        json!({ "status": { "state": "idle", "app": "claude-code" } }),
+    );
+    fake.script("terminal.send", crate::hc::fake::Script::Drop);
+    let lost = r.sessions.handle(prompt("hc/worker")).await.unwrap_err();
+    assert_eq!(lost.code, ErrorCode::OutcomeUnknown);
+
+    // A plain shell is never typed into, by address or otherwise.
+    let shell_prompt = r
+        .sessions
+        .handle(prompt(&format!("hc/{shell}")))
+        .await
+        .unwrap();
+    assert_eq!(shell_prompt["outcome"], "not_found");
+    assert!(
+        !fake
+            .requests()
+            .iter()
+            .any(|q| q["method"] == "terminal.send" && q["params"]["terminal"] == shell)
+    );
+}
+
+#[tokio::test]
+async fn a_core_claudes_conversation_is_found_through_its_process_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let (r, fake) = core_rig(dir);
+    let t = fake.add(claude_terminal("worker", "idle"));
+    let fg = fake.terminal(&t).unwrap()["foreground"]["pid"]
+        .as_u64()
+        .unwrap();
+    let records = r.dir.path().join("sessions");
+    std::fs::create_dir_all(&records).unwrap();
+    std::fs::write(
+        records.join(format!("{fg}.json")),
+        json!({ "pid": fg, "sessionId": CLAUDE_SESSION }).to_string(),
+    )
+    .unwrap();
+    let folder = r.dir.path().join("claude-projects/-w");
+    std::fs::create_dir_all(&folder).unwrap();
+    let line = json!({"type": "user", "uuid": "u1", "message": {"content": "on core"}});
+    std::fs::write(
+        folder.join(format!("{CLAUDE_SESSION}.jsonl")),
+        format!("{line}\n"),
+    )
+    .unwrap();
+    let page: crate::proto::TranscriptPage = serde_json::from_value(
+        r.sessions
+            .handle(Op::Transcript {
+                agent: "hc/worker".into(),
+                after: None,
+                before: None,
+                wait_ms: None,
+            })
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(page.items[0].text.as_deref(), Some("on core"));
+}

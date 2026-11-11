@@ -214,14 +214,7 @@ impl Server {
                 client.agent_get(target).await?,
                 &Default::default(),
             )),
-            Server::Core(core) => {
-                let all = core.agents().await?;
-                all.iter()
-                    .find(|f| f.target == target)
-                    .or_else(|| all.iter().find(|f| f.name.as_deref() == Some(target)))
-                    .cloned()
-                    .ok_or_else(|| not_found(target))
-            }
+            Server::Core(core) => core_agent(core, target).await,
         }
     }
 
@@ -248,11 +241,23 @@ impl Server {
                     truncated: r.truncated,
                 })
             }
-            Server::Core(_) => Err(not_yet()),
+            Server::Core(core) => {
+                let address = core_address(core, target).await?;
+                let lines = match what {
+                    Read::Visible => 0,
+                    Read::Recent(lines) => lines,
+                };
+                let r = core.client().read(&address, lines).await?;
+                Ok(Text {
+                    text: r.text,
+                    revision: 0,
+                    truncated: !r.complete,
+                })
+            }
         }
     }
 
-    /// The visible screen with its colours; none when the server can't give it.
+    /// The visible screen with its colours; plain text on core, none when the server can't give it.
     pub async fn read_ansi(&self, target: &str) -> Option<String> {
         match self {
             Server::Herdr { client, .. } => {
@@ -263,7 +268,7 @@ impl Server {
                     .ok()
                     .map(|r| r.text)
             }
-            Server::Core(_) => None,
+            Server::Core(_) => self.read(target, Read::Visible).await.ok().map(|r| r.text),
         }
     }
 
@@ -281,7 +286,12 @@ impl Server {
                     .await?;
                 Ok(a.agent_status)
             }
-            Server::Core(_) => Err(not_yet()),
+            // Never forced: the core refuses a blocked program.
+            Server::Core(core) => {
+                let address = core_address(core, target).await?;
+                let sent = core.client().send(&address, text).await?;
+                Ok(core_watch::word(sent.status.as_deref()))
+            }
         }
     }
 
@@ -309,6 +319,21 @@ impl Server {
             Server::Core(_) => Ok(facts.pids.clone()),
         }
     }
+}
+
+/// A core agent by address, then by name. Only a listed agent is ever targeted, never a shell.
+async fn core_agent(core: &Core, target: &str) -> Result<Facts> {
+    let all = core.agents().await?;
+    let pos = all
+        .iter()
+        .position(|f| f.target == target)
+        .or_else(|| all.iter().position(|f| f.name.as_deref() == Some(target)))
+        .ok_or_else(|| not_found(target))?;
+    Ok(all.into_iter().nth(pos).expect("found above"))
+}
+
+async fn core_address(core: &Core, target: &str) -> Result<String> {
+    core_agent(core, target).await.map(|f| f.target)
 }
 
 fn not_found(target: &str) -> Error {
