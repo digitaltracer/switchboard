@@ -27,11 +27,12 @@ Each of these has tests. Keep them passing, and add tests when you touch the are
     - keys to a pane with a pending hook call;
     - keys to a Claude pane that Switchboard started, which the hook answers instead.
   - Nothing in `src/whatsapp/` sends keys.
+  - On herdr-core the same keys go by `terminal.keys`, only from those two files. Nothing ever sends `terminal.send` with `force`, and only a listed agent is targeted, never a plain shell.
   - **Residual risk, accepted by the owner:** input at the agent's own terminal within milliseconds of the final Enter can make it answer the next dialog.
 - **Approve rights and signatures.** Approvals go through the session service's decide, which checks the caller's approve right. App approvals need a valid device signature. Deny never needs one.
 - **The relay** forwards ciphertext and routing ids only. Only the app API is reachable through it, never the runner endpoint. Push text is generic, with ids only, and never names a project, tool, command or output.
 - **Worktrees.** Never force-remove one. Only clean and merged worktrees may be removed.
-- **Projects.** Only allowlisted projects. Never reroute a session to another machine.
+- **Projects.** Only allowlisted projects. Never reroute a session to another machine. On herdr-core, only this machine's terminals: an address with `/` is never listed or targeted.
 - **Secrets.** Hub, relay and runner secrets (runner tokens, APNs keys, the FCM service-account key, relay keys, the WhatsApp store) live outside any git working tree, with mode 0600. The code refuses paths inside a repo. Don't weaken that.
 - **The app API contract.** Additive changes only within `/app/v1`. After changing app API types, regenerate `api/openapi.json` with `switchboard admin openapi`. A test fails on drift.
 - **Migrations** in `migrations/` are numbered and append-only. Never edit one that has shipped.
@@ -45,6 +46,7 @@ If a change would bend one of these, stop and ask the user. Don't work around it
 - **Don't disturb the owner's setup.** Never stop, restart or prompt the owner's own Herdr sessions or agents.
 - **Back up any global CLI config before an experiment changes it,** for example `~/.claude.json` or `~/.codex/config.toml`, and restore it afterwards. Say that you did.
 - **Don't run `herdr server stop`** on a session you didn't start.
+- **herdr-core:** Switchboard only dials the core; it never runs `hc server …`. Never touch the owner's core: don't send to, key, kill, remove or label its terminals, or write its layout document. Anything that needs a real core runs in a throwaway one under a unique short `HC_SESSION`, with every `HC_*` variable removed, stopped and its state folder deleted afterwards. Unit tests use the fake core in `src/hc/fake.rs`.
 
 ## Commands
 
@@ -62,6 +64,7 @@ Live tests skip unless their variables are set:
 - `SWITCHBOARD_LIVE_HERDR_SOCKET` and `SWITCHBOARD_LIVE_AGENTS` (`claude`, `codex` or both)
 - `SWITCHBOARD_LIVE_HERDR_SESSIONS`
 - `SWITCHBOARD_HERDR_TEST_SOCKET`
+- `SWITCHBOARD_LIVE_HC=1` with `SWITCHBOARD_LIVE_AGENTS` (`tests/hc_live.rs` starts and removes its own core)
 
 Each test file's header says what it needs.
 
@@ -73,9 +76,12 @@ Each test file's header says what it needs.
   - `route.rs` decides where a message goes (start, send, or ask). Every front door uses it through the session service.
   - `app/` is the app API.
   - `relay_link.rs` is the link to the relay.
+- **herdr-core client:** `src/hc/`: socket discovery, a `hello` per connection, typed calls, the event stream and compare-and-set layout renames. It only dials.
 - **Runner** (`src/runner/`):
   - `local.rs` is the runner built into the hub for its own machine; `link.rs` is a remote runner's WebSocket to the hub. Both carry the same masked frames.
   - `herdrs.rs` is every Herdr session on the machine.
+  - `backend.rs` is the runner's own view of an agent server (a Herdr session or herdr-core), so callers don't read either one's types.
+  - `core_watch.rs` mirrors herdr-core and lists its agents as `hc/<name>`; `core_sessions.rs` starts sessions there (`new_sessions` in the runner config).
   - `sessions.rs` covers worktrees and the agent lifecycle.
   - `hooks.rs` is the hook endpoint.
   - `codex.rs` and `dialogs.rs` are the only key paths: Codex's own startup and deny keys, and the owner's chosen option on a recognised dialog.
@@ -89,6 +95,7 @@ Each test file's header says what it needs.
 - `debate-herdr-bot-gateway.md`: the main plan
 - `debate-native-apps-2.md`: the apps and relay
 - `spike-findings.md`: verified CLI and Herdr behaviour the code relies on
+- `herdr-app/plan.md`: the Herdr app (herdr-core) backend
 - `whatsapp-*.md`: the WhatsApp front door
 
 Read the relevant plan before changing an area. When the build differs from the plan, add a short dated "As built" note to it.
