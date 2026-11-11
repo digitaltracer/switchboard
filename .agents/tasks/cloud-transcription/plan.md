@@ -293,3 +293,24 @@ The phrase test needs the owner's recordings and keys, so its results aren't ava
 - Step 7, not built. `git diff --stat 5abf48f -- src/ api/ migrations/` is empty today.
 - The push check failure in `e2e.sh`.
 - Release waits on all of these, and on the store privacy forms in the release note.
+
+## As built (2026-11-11)
+
+**Verified on `a00618b`**, after about 28 later commits. Nothing in them broke cloud voice.
+- `swift test`: 76 tests pass.
+- `./gradlew :core:test :app:assembleDebug :app:lintDebug`: 87 core tests pass, on a forced rerun, and the build succeeds with no lint errors. No Java is on `PATH`, so Gradle needs `JAVA_HOME=/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home`. Android Studio's bundled JDK is 25, and the toolchain wants 17.
+- `cargo test`: everything passes.
+
+**Fixed: the push check in `e2e.sh`** (`8bdf00c`, test-only).
+- The cause was in the UI test, not in Apple's tooling. "New device paired" did reach the simulator, about two minutes before the check.
+- The scripted runner's two "Approval needed" pushes then arrived, and iOS stacked all three into one group. Only the newest is in the accessibility tree until the stack is expanded, so the label lookup never matched. This is also why it failed at `5abf48f`.
+- The check now taps the app's grouped stack when the note isn't visible. The unchanged `apps/ios/scripts/e2e.sh` passes end to end, both UI tests included, with the cloud voice flow and the push check.
+
+**iPhone.** A Debug build of `8bdf00c` signed with the existing settings (Apple Development, the team provisioning profile, team `N3B962X7RX`) and was installed on the iPhone 11 with `devicectl`. It's a development build: `aps-environment` is development, and the app reports a sandbox token. No phone checks have run on it yet.
+
+**Owner checklist.** `owner-checklist.md` lists the steps only the owner can do: the phrase test, the key checks from steps 3 and 5, the step 7 checks, and the store privacy forms.
+
+**Left**
+- Everything in `owner-checklist.md`: the phrase test and its three decisions, the manual key checks, step 7 on the iPhone, and on Android once a phone is connected (none was on 2026-11-11), and the store forms.
+- The cloud transcription commits (`cb4a235` to `99f2067`) and this pass leave `src/`, `api/` and `migrations/` untouched: `git diff --stat cb4a235^ 99f2067 -- src/ api/ migrations/` is empty. Diffing against `5abf48f` no longer shows that, because later work changed `src/`.
+- Release still waits on these.
