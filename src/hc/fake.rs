@@ -73,6 +73,11 @@ impl FakeCore {
         }
     }
 
+    /// For a test task that changes the core while something else runs.
+    pub fn handle(&self) -> Handle {
+        Handle(self.state.clone())
+    }
+
     pub fn client(&self) -> Client {
         Client::new(&self.socket).with_timeout(std::time::Duration::from_secs(2))
     }
@@ -227,6 +232,22 @@ impl FakeCore {
     }
 }
 
+pub struct Handle(Arc<Mutex<State>>);
+
+impl Handle {
+    /// As `FakeCore::patch`; false when there is no such terminal yet.
+    pub fn patch(&self, address: &str, fields: Value) -> bool {
+        let mut st = self.0.lock().unwrap();
+        let Some(t) = st.terminals.iter_mut().find(|t| t["address"] == address) else {
+            return false;
+        };
+        for (k, v) in fields.as_object().unwrap() {
+            t[k] = v.clone();
+        }
+        true
+    }
+}
+
 fn broadcast(st: &mut State, msg: Value) {
     let line = msg.to_string();
     st.subscribers.retain(|s| s.send(line.clone()).is_ok());
@@ -248,7 +269,11 @@ fn complete(st: &mut State, mut t: Value) -> Value {
         }
     }
     if t.get("foreground").is_none() {
-        let argv = t["argv"].clone();
+        let mut argv = t["argv"].clone();
+        // Switchboard's launcher execs the agent, which is then in front.
+        if argv[3] == "sb-launch" {
+            argv = json!(argv.as_array().unwrap()[4..].to_vec());
+        }
         let name = argv[0]
             .as_str()
             .and_then(|a| a.rsplit('/').next())

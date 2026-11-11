@@ -94,6 +94,11 @@ impl Core {
         st.synced = false;
     }
 
+    /// A terminal as the mirror has it, agent or not.
+    pub fn terminal(&self, address: &str) -> Option<Terminal> {
+        self.inner.lock().unwrap().terminals.get(address).cloned()
+    }
+
     pub fn is_synced(&self) -> bool {
         self.inner.lock().unwrap().synced
     }
@@ -276,6 +281,12 @@ pub fn program(argv: &[String]) -> String {
     let Some(first) = argv.first() else {
         return String::new();
     };
+    // Switchboard's own launcher: `sh -c <prelude> sb-launch <agent> ...`.
+    if argv.get(1).is_some_and(|a| a == "-c")
+        && argv.get(3).is_some_and(|a| a == super::sessions::LAUNCHER)
+    {
+        return argv.get(4).map(|a| base(a)).unwrap_or_default();
+    }
     if base(first) != "env" {
         return base(first);
     }

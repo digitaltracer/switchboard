@@ -9,6 +9,7 @@ use crate::hc::HcError;
 use crate::herdr::types::{AgentInfo, AgentPromptParams, AgentStatus, ReadSource, SessionSnapshot};
 use crate::herdr::{self, HerdrError, check_agent_target};
 
+#[derive(Clone)]
 pub enum Server {
     /// A Herdr server; `session` is its session name, none for the legacy single server.
     Herdr {

@@ -315,6 +315,23 @@ pub struct LocalRunnerConfig {
     pub claude_permission_mode: crate::agents::claude::PermissionMode,
     /// Overrides the Herdr server the `herdr` CLI would find from the environment.
     pub herdr_session: Option<String>,
+    /// Where new sessions start; see `NewSessions`.
+    #[serde(default)]
+    pub new_sessions: NewSessions,
+}
+
+/// Where a runner starts new sessions. A session's later stop, delete and reconciliation follow
+/// where it started, never this setting.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NewSessions {
+    /// In the Herdr app when this machine's herdr-core answers, else in a Herdr TUI session.
+    #[default]
+    Auto,
+    /// Always in the Herdr app; a start fails when herdr-core doesn't answer.
+    Hc,
+    /// Always in a Herdr TUI session of its own.
+    Herdr,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -352,6 +369,9 @@ pub struct RunnerConfig {
     /// actions, `acceptEdits` sends every shell command and tool call to you.
     #[serde(default)]
     pub claude_permission_mode: crate::agents::claude::PermissionMode,
+    /// Where new sessions start; see `NewSessions`.
+    #[serde(default)]
+    pub new_sessions: NewSessions,
 }
 
 fn read(path: &Path) -> Result<String, ConfigError> {
@@ -1088,5 +1108,38 @@ state_dir = "/Users/me/.local/state/switchboard"
 
     fn err_runner(text: &str) -> String {
         RunnerConfig::parse(text).unwrap_err().to_string()
+    }
+}
+
+#[cfg(test)]
+mod new_sessions_tests {
+    use super::*;
+
+    #[test]
+    fn new_sessions_defaults_to_auto_and_takes_only_its_words() {
+        let local = |extra: &str| {
+            HubConfig::parse(&format!(
+                r#"
+                public_url = "https://hub.example.com"
+                listen = "127.0.0.1:0"
+                database = "/var/lib/switchboard/hub.db"
+                [auth]
+                passphrase_hash = "$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA"
+                [[machines]]
+                id = "mac"
+                [machines.local]
+                state_dir = "/var/lib/switchboard/runner"
+                {extra}
+                "#
+            ))
+            .map(|c| c.local_machine().unwrap().1.new_sessions)
+        };
+        assert_eq!(local("").unwrap(), NewSessions::Auto);
+        assert_eq!(local("new_sessions = \"hc\"").unwrap(), NewSessions::Hc);
+        assert_eq!(
+            local("new_sessions = \"herdr\"").unwrap(),
+            NewSessions::Herdr
+        );
+        assert!(local("new_sessions = \"tui\"").is_err());
     }
 }

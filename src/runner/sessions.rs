@@ -29,6 +29,7 @@ use crate::herdr::types::{
 use crate::herdr::{Client, HerdrError};
 use crate::hook::wire::SecretFile;
 use crate::proto::{ErrorCode, Event, Op, OwnedSession, ProtoError};
+pub use core_start::{CoreStarts, LAUNCHER, SESSION_LABEL};
 
 const AGENT_START_TIMEOUT_MS: u64 = 60_000;
 const PANE_BUSY_RETRY: Duration = Duration::from_millis(500);
@@ -61,6 +62,12 @@ pub struct RunnerSession {
     /// False until the agent has started; a runner that finds a false one undoes the start.
     #[serde(default = "launched_before_this_field")]
     pub launched: bool,
+    /// The herdr-core a session in the Herdr app started on.
+    #[serde(default)]
+    pub core_id: Option<String>,
+    /// Its terminal's identity there, `core:address:pid:created_ms`.
+    #[serde(default)]
+    pub terminal_identity: Option<String>,
 }
 
 /// Tasks saved before `launched` existed were saved only after a complete start.
@@ -106,6 +113,7 @@ pub struct Sessions {
     waited: Mutex<std::collections::VecDeque<String>>,
     /// This machine's herdr-core, when the runner follows one.
     core: std::sync::OnceLock<Arc<Core>>,
+    core_starts: std::sync::OnceLock<CoreStarts>,
 }
 
 /// How long an agent stays blocked before its owner's phones are told it's waiting.
@@ -189,6 +197,7 @@ impl Sessions {
             answered: Answered::load(cfg.state_dir.join("dialog-answers.json")),
             waited: Mutex::default(),
             core: std::sync::OnceLock::new(),
+            core_starts: std::sync::OnceLock::new(),
             cfg,
         })
     }
@@ -946,6 +955,7 @@ impl Sessions {
             Agent::Codex => Some(self.codex_version().await?),
             Agent::Claude => None,
         };
+        let on_core = self.choose_core().await?;
 
         let dir = self.dir(&req.session_id);
         create_private_dir(&dir)
@@ -1010,7 +1020,12 @@ impl Sessions {
             start_commit: None,
             herdr_session: None,
             launched: false,
+            core_id: None,
+            terminal_identity: None,
         };
+        if let Some(core) = on_core {
+            return self.start_on_core(session, core, args, req.prompt).await;
+        }
         // Each task gets a Herdr session of its own, named after the project.
         let name = self.herdrs.free_name(&herdr_base, &req.session_id);
         match self.herdrs.create(&name).await {
@@ -1183,7 +1198,9 @@ impl Sessions {
     /// Closes the workspace of a failed start; the worktree and branch are kept.
     async fn abort(&self, s: &RunnerSession, e: &ProtoError) {
         self.hooks.unregister(&s.session_id);
-        if let Some(ws) = &s.workspace_id
+        if core_start::is_core(s) {
+            self.end_core_terminal(s).await;
+        } else if let Some(ws) = &s.workspace_id
             && let Err(close) = self.herdr_for(s).workspace_close(ws).await
         {
             tracing::warn!(error = %close, "closing workspace of failed start");
@@ -1275,7 +1292,9 @@ impl Sessions {
         self.hooks.unregister(session_id);
         let mut removed = false;
         let mut kept_because = None;
-        if let (Some(ws), Some(path)) = (&s.workspace_id, &s.worktree_path) {
+        if core_start::is_core(&s) {
+            (removed, kept_because) = self.stop_core(&s, remove_if_clean).await;
+        } else if let (Some(ws), Some(path)) = (&s.workspace_id, &s.worktree_path) {
             if remove_if_clean {
                 match worktree_clean_and_merged(Path::new(path), &s.repo_path, &s.branch).await {
                     // A failed removal keeps the worktree; the stop itself still completes.
@@ -1292,6 +1311,7 @@ impl Sessions {
         }
         // The task's own Herdr session stops too; it stays listed, with its worktree kept.
         if let Some(name) = &s.herdr_session
+            && !core_start::is_core(&s)
             && let Err(e) = self.herdrs.stop(name).await
         {
             tracing::warn!(error = %e, herdr_session = name, "stopping the task's Herdr session");
@@ -1338,6 +1358,8 @@ impl Sessions {
             }
         };
         let herdr_session_deleted = match &herdr_session {
+            // A session in the Herdr app has no server of its own.
+            Some(name) if name == core_watch::SERVER => false,
             Some(name) => {
                 self.herdrs.delete(name).await.map_err(|e| {
                     err(
@@ -1563,6 +1585,9 @@ fn repo_root(dir: &Path) -> PathBuf {
         .unwrap_or(dir)
         .to_owned()
 }
+
+#[path = "core_sessions.rs"]
+mod core_start;
 
 #[cfg(test)]
 #[path = "sessions_tests.rs"]

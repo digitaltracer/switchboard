@@ -81,6 +81,7 @@ pub async fn run(config: PathBuf) -> anyhow::Result<()> {
         claude_config: cfg.claude_config.clone(),
         claude_permission_mode: cfg.claude_permission_mode,
         herdr_session: cfg.herdr_session.clone(),
+        new_sessions: cfg.new_sessions,
     })
     .await?;
     let link = link::LinkConfig {
@@ -100,6 +101,7 @@ pub struct Settings {
     pub claude_config: Option<PathBuf>,
     pub claude_permission_mode: crate::agents::claude::PermissionMode,
     pub herdr_session: Option<String>,
+    pub new_sessions: crate::config::NewSessions,
 }
 
 /// A runner that is up: its sessions, the events they raise for the hub, and the Herdr version.
@@ -183,6 +185,15 @@ pub async fn start(cfg: Settings) -> anyhow::Result<Started> {
             startup_timeout: Duration::from_secs(20),
         },
     );
+    let core = core_watch::Core::new(crate::hc::socket_from_env(&home));
+    tracing::info!(socket = %core.socket().display(), "following herdr-core");
+    sessions.set_core(core.clone());
+    sessions.set_core_starts(sessions::CoreStarts {
+        new_sessions: cfg.new_sessions,
+        worktrees: home.join(".herdr/worktrees"),
+        home: home.clone(),
+        bins: None,
+    });
     let reloaded = sessions.load().context("reloading sessions")?;
     let undone = sessions.undo_interrupted_starts().await;
     tracing::info!(reloaded, undone, %hook_addr, "hook endpoint listening");
@@ -191,9 +202,7 @@ pub async fn start(cfg: Settings) -> anyhow::Result<Started> {
         sessions.clone(),
         agents::RECONCILE,
     ));
-    let core = core_watch::Core::new(crate::hc::socket_from_env(&home));
-    tracing::info!(socket = %core.socket().display(), "following herdr-core");
-    sessions.set_core(core.clone());
+    tokio::spawn(watch::watch_core(sessions.clone(), core.clone()));
     tokio::spawn(forward_core_agents(sessions.clone(), core));
     Ok(Started {
         sessions,

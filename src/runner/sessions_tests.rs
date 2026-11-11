@@ -1120,6 +1120,8 @@ async fn a_claude_session_switchboard_started_never_gets_dialog_keys() {
             start_commit: None,
             herdr_session: None,
             launched: true,
+            core_id: None,
+            terminal_identity: None,
         })
         .unwrap();
     let v = r
@@ -1494,4 +1496,434 @@ async fn a_new_process_in_a_core_terminal_is_a_new_occurrence() {
     fake.patch(&t, json!({ "turn": 4 }));
     let next_turn = occurrence().await;
     assert!(first != other_process && other_process != next_turn);
+}
+
+/// A runner whose new sessions go to the fake core, with a real git repo to start them in.
+fn core_start_rig(mode: crate::config::NewSessions) -> (Rig, crate::hc::fake::FakeCore, PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let sh = |args: &[&str]| {
+        assert!(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        );
+    };
+    sh(&["init", "-q", "-b", "main"]);
+    std::fs::write(repo.join("a.txt"), "a\n").unwrap();
+    sh(&["add", "."]);
+    sh(&[
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "user.name=t",
+        "commit",
+        "-qm",
+        "init",
+    ]);
+    let root = dir.path().to_owned();
+    let (r, fake) = core_rig(dir);
+    r.sessions.set_core_starts(CoreStarts {
+        new_sessions: mode,
+        worktrees: root.join("worktrees"),
+        home: root.clone(),
+        bins: Some(PathBuf::from("/opt/agents")),
+    });
+    (r, fake, repo)
+}
+
+fn core_req(agent: Agent, repo: &Path) -> StartRequest {
+    StartRequest {
+        repo_path: repo.to_owned(),
+        ..start_req(agent)
+    }
+}
+
+/// Stands in for the agent reporting idle once its terminal exists.
+fn report_idle(fake: &crate::hc::fake::FakeCore, app: &'static str) {
+    let handle = fake.handle();
+    tokio::spawn(async move {
+        loop {
+            if handle.patch(
+                "t1",
+                json!({ "reported": true,
+                "status": { "state": "idle", "app": app }, "status_ms": 5 }),
+            ) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    });
+}
+
+fn requests_of(fake: &crate::hc::fake::FakeCore, method: &str) -> Vec<Value> {
+    fake.requests()
+        .into_iter()
+        .filter(|q| q["method"] == method)
+        .map(|q| q["params"].clone())
+        .collect()
+}
+
+#[tokio::test]
+async fn a_codex_session_starts_on_core_in_a_git_worktree_the_app_adopts() {
+    let (r, fake, repo) = core_start_rig(crate::config::NewSessions::Hc);
+    fake.queue_screens("t1", vec![fixture("folder-access"), fixture("ready")]);
+    report_idle(&fake, "codex");
+    let started = r
+        .sessions
+        .start(core_req(Agent::Codex, &repo))
+        .await
+        .unwrap();
+    assert_eq!(started["herdr_session"], "hc");
+    assert_eq!(started["pane_id"], "t1");
+    let space = started["workspace_id"].as_str().unwrap().to_owned();
+    assert!(space.starts_with("sp") && space.len() == 34, "{space}");
+
+    let run = &requests_of(&fake, "terminal.run")[0];
+    let argv: Vec<&str> = run["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a.as_str().unwrap())
+        .collect();
+    assert_eq!(&argv[..2], ["/bin/sh", "-c"]);
+    assert!(
+        argv[2].contains("HERDR_*|CLAUDE_CODE*|CLAUDECODE") && argv[2].ends_with("exec \"$@\"")
+    );
+    assert_eq!(
+        &argv[3..6],
+        ["sb-launch", "/opt/agents/codex", "--no-daemon"]
+    );
+    let wt = r.dir.path().join("worktrees/repo/sb-s1");
+    assert_eq!(run["cwd"], wt.to_string_lossy().as_ref());
+    assert_eq!(run["name"], "sb-s1");
+    assert_eq!(
+        (run["keep"].as_bool(), run["no_parent"].as_bool()),
+        (Some(true), Some(true))
+    );
+    let labels = &run["labels"];
+    assert_eq!(labels["herdr.space"], space.as_str());
+    assert!(labels["herdr.tab"].as_str().unwrap().starts_with("tb"));
+    assert_eq!(
+        (
+            labels["herdr.seen"].as_str(),
+            labels["switchboard.session"].as_str()
+        ),
+        (Some("0"), Some("s1"))
+    );
+    assert!(wt.join("a.txt").exists(), "a git worktree");
+
+    assert_eq!(
+        requests_of(&fake, "terminal.keys"),
+        [json!({ "terminal": "t1", "keys": ["enter"] })]
+    );
+    assert_eq!(
+        requests_of(&fake, "terminal.send"),
+        [json!({ "terminal": "t1", "text": "do the task" })]
+    );
+    let s = r.sessions.get("s1").unwrap();
+    assert_eq!(
+        (
+            s.core_id.as_deref(),
+            s.terminal_identity.as_deref(),
+            s.launched
+        ),
+        (Some("core-a"), Some("core-a:t1:1001:1000001"), true)
+    );
+    assert!(s.start_commit.is_some());
+    let owned = r.sessions.owned().await;
+    assert_eq!(
+        (
+            owned[0].workspace_id.as_str(),
+            owned[0].agent_status.as_str()
+        ),
+        (space.as_str(), "idle")
+    );
+
+    // Stop: the terminal ends, and the clean, merged worktree goes.
+    let v = r
+        .sessions
+        .handle(Op::Stop {
+            session_id: "s1".into(),
+            remove_worktree_if_clean: true,
+        })
+        .await
+        .unwrap();
+    assert_eq!(v["worktree_removed"], true, "{v}");
+    assert!(!wt.exists());
+    assert_eq!(
+        requests_of(&fake, "terminal.kill"),
+        [json!({ "terminal": "t1" })]
+    );
+    assert_eq!(
+        requests_of(&fake, "terminal.rm"),
+        [json!({ "terminal": "t1" })]
+    );
+
+    // Delete then has no server of its own to delete.
+    let d = r
+        .sessions
+        .handle(Op::Delete {
+            session_id: "s1".into(),
+            herdr_session: Some("hc".into()),
+            repo_path: Some(repo.to_string_lossy().into_owned()),
+            worktree_path: Some(wt.to_string_lossy().into_owned()),
+            branch: Some("sb/s1".into()),
+        })
+        .await
+        .unwrap();
+    assert_eq!(d["herdr_session_deleted"], false);
+}
+
+#[tokio::test]
+async fn a_claude_session_on_core_waits_for_its_hook_then_idle() {
+    let (r, fake, repo) = core_start_rig(crate::config::NewSessions::Auto);
+    let sessions = r.sessions.clone();
+    let start = tokio::spawn(async move { sessions.start(core_req(Agent::Claude, &repo)).await });
+    while r.sessions.get("s1").and_then(|s| s.pane_id).is_none() {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        requests_of(&fake, "terminal.send").is_empty(),
+        "nothing before the hook"
+    );
+    r.sessions.hooks.test_mark_live("s1");
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(
+        requests_of(&fake, "terminal.send").is_empty(),
+        "nothing before idle"
+    );
+    report_idle(&fake, "claude-code");
+    start.await.unwrap().unwrap();
+    let run = &requests_of(&fake, "terminal.run")[0];
+    assert_eq!(run["argv"][4], "/opt/agents/claude");
+    assert_eq!(requests_of(&fake, "terminal.send").len(), 1);
+}
+
+#[tokio::test]
+async fn hc_with_no_core_answering_fails_and_auto_falls_back_to_herdr() {
+    let (r, fake, repo) = core_start_rig(crate::config::NewSessions::Hc);
+    drop(fake);
+    let e = r
+        .sessions
+        .start(core_req(Agent::Codex, &repo))
+        .await
+        .unwrap_err();
+    assert!(e.message.contains("new_sessions is \"hc\""), "{e:?}");
+    assert!(r.sessions.get("s1").is_none() && !r.dir.path().join("state/sessions/s1").exists());
+
+    // With `auto`, the same start goes to a Herdr session of its own.
+    let dir = tempfile::tempdir().unwrap();
+    let (r, _, _) = multi_rig(dir, vec![fixture("folder-access"), fixture("ready")]);
+    let core = core_watch::Core::new("/nonexistent/core.sock");
+    r.sessions.set_core(core);
+    r.sessions.set_core_starts(CoreStarts {
+        new_sessions: crate::config::NewSessions::Auto,
+        worktrees: "/nonexistent".into(),
+        home: "/nonexistent".into(),
+        bins: None,
+    });
+    let started = r.sessions.start(start_req(Agent::Codex)).await.unwrap();
+    assert_eq!(started["herdr_session"], "p-s1");
+}
+
+#[tokio::test]
+async fn a_core_start_that_never_gets_ready_is_undone() {
+    let (r, fake, repo) = core_start_rig(crate::config::NewSessions::Hc);
+    fake.set_screen("t1", "  something we have never seen\n");
+    let e = r
+        .sessions
+        .start(core_req(Agent::Codex, &repo))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, ErrorCode::StartupFailed, "{e:?}");
+    assert!(
+        requests_of(&fake, "terminal.send").is_empty()
+            && requests_of(&fake, "terminal.keys").is_empty()
+    );
+    assert_eq!(
+        requests_of(&fake, "terminal.kill"),
+        [json!({ "terminal": "t1" })]
+    );
+    assert!(r.sessions.get("s1").is_none());
+}
+
+#[tokio::test]
+async fn an_interrupted_core_start_is_undone_by_its_label() {
+    let (r, fake, repo) = core_start_rig(crate::config::NewSessions::Hc);
+    fake.queue_screens("t1", vec![fixture("folder-access"), fixture("ready")]);
+    report_idle(&fake, "codex");
+    r.sessions
+        .start(core_req(Agent::Codex, &repo))
+        .await
+        .unwrap();
+    // As a runner that died before saving the terminal left it.
+    let meta = r.dir.path().join("state/sessions/s1/meta.json");
+    let mut saved: Value = serde_json::from_slice(&std::fs::read(&meta).unwrap()).unwrap();
+    saved["launched"] = json!(false);
+    saved["pane_id"] = Value::Null;
+    std::fs::write(&meta, saved.to_string()).unwrap();
+    r.sessions.load().unwrap();
+    assert_eq!(r.sessions.undo_interrupted_starts().await, 1);
+    assert_eq!(
+        requests_of(&fake, "terminal.kill"),
+        [json!({ "terminal": "t1" })]
+    );
+    // A terminal without the session's label is never touched.
+    let other = fake.add(json!({ "argv": ["claude"], "labels": { "switchboard.session": "s9" } }));
+    assert!(
+        !requests_of(&fake, "terminal.kill")
+            .iter()
+            .any(|k| k["terminal"] == other)
+    );
+}
+
+/// The next exit, or `None` at the next idle status.
+async fn exit_or_idle(rx: &mut mpsc::Receiver<Event>) -> Option<String> {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match rx.recv().await {
+                Some(Event::SessionExited { session_id }) => return Some(session_id),
+                Some(Event::AgentStatus { agent_status, .. }) if agent_status == "idle" => {
+                    return None;
+                }
+                Some(_) => {}
+                None => panic!("events closed"),
+            }
+        }
+    })
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn a_core_task_whose_terminal_is_gone_or_replaced_exits() {
+    let (mut r, fake, repo) = core_start_rig(crate::config::NewSessions::Hc);
+    fake.queue_screens("t1", vec![fixture("folder-access"), fixture("ready")]);
+    report_idle(&fake, "codex");
+    r.sessions
+        .start(core_req(Agent::Codex, &repo))
+        .await
+        .unwrap();
+    let core = r.sessions.core().unwrap();
+    tokio::spawn(core_watch::follow(core.clone(), || {}, || {}));
+    tokio::spawn(super::super::watch::watch_core(
+        r.sessions.clone(),
+        core.clone(),
+    ));
+    assert_eq!(exit_or_idle(&mut r.events).await, None, "running first");
+    // The program is lost and the kept terminal gets another process in the same address.
+    fake.patch("t1", json!({ "pid": 4242 }));
+    fake.drop_subscribers();
+    assert_eq!(exit_or_idle(&mut r.events).await.as_deref(), Some("s1"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn core_tasks_exit_once_the_core_has_been_gone_a_while() {
+    let (mut r, _, _) = core_start_rig(crate::config::NewSessions::Hc);
+    let core = core_watch::Core::new("/nonexistent/core.sock");
+    std::fs::create_dir_all(r.sessions.dir("s1")).unwrap();
+    r.sessions
+        .save(&RunnerSession {
+            session_id: "s1".into(),
+            agent: Agent::Codex,
+            project_id: "p".into(),
+            repo_path: "/srv/repo".into(),
+            branch: "sb/s1".into(),
+            deny_patterns: vec![],
+            agent_name: "sb-s1".into(),
+            workspace_id: Some("sp1".into()),
+            pane_id: Some("t1".into()),
+            worktree_path: None,
+            codex_version: None,
+            start_commit: None,
+            herdr_session: Some("hc".into()),
+            launched: true,
+            core_id: Some("core-a".into()),
+            terminal_identity: Some("core-a:t1:1:1".into()),
+        })
+        .unwrap();
+    tokio::spawn(super::super::watch::watch_core(r.sessions.clone(), core));
+    let exited = tokio::time::timeout(Duration::from_secs(300), async {
+        loop {
+            if let Some(Event::SessionExited { session_id }) = r.events.recv().await {
+                return session_id;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(exited, "s1");
+}
+
+#[tokio::test]
+async fn the_app_adopted_tab_and_space_are_named_after_the_session_and_project() {
+    let (r, fake, repo) = core_start_rig(crate::config::NewSessions::Hc);
+    fake.queue_screens("t1", vec![fixture("folder-access"), fixture("ready")]);
+    report_idle(&fake, "codex");
+    r.sessions
+        .start(core_req(Agent::Codex, &repo))
+        .await
+        .unwrap();
+    let labels = requests_of(&fake, "terminal.run")[0]["labels"].clone();
+    // The app adopts the ids as a new space and tab, with fields of its own.
+    fake.set_doc(json!({ "spaces": [
+        { "id": "spOther", "name": "mine", "tabs": [] },
+        { "id": labels["herdr.space"], "color": "blue",
+          "tabs": [ { "id": labels["herdr.tab"], "root": { "content": { "terminal": "t1" } } } ] },
+    ], "app": { "kept": true } }));
+    for _ in 0..60 {
+        if fake.doc().0["spaces"][1]["tabs"][0]["name"].is_string() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let (doc, _) = fake.doc();
+    assert_eq!(doc["spaces"][1]["tabs"][0]["name"], "p-s1");
+    assert_eq!(doc["spaces"][1]["name"], "p");
+    assert_eq!(doc["spaces"][0]["name"], "mine");
+    assert_eq!(
+        (
+            doc["spaces"][1]["color"].as_str(),
+            doc["app"]["kept"].as_bool()
+        ),
+        (Some("blue"), Some(true))
+    );
+}
+
+#[tokio::test]
+async fn a_core_task_exits_when_another_core_answers() {
+    let (mut r, fake, repo) = core_start_rig(crate::config::NewSessions::Hc);
+    fake.queue_screens("t1", vec![fixture("folder-access"), fixture("ready")]);
+    report_idle(&fake, "codex");
+    r.sessions
+        .start(core_req(Agent::Codex, &repo))
+        .await
+        .unwrap();
+    let core = r.sessions.core().unwrap();
+    tokio::spawn(core_watch::follow(core.clone(), || {}, || {}));
+    tokio::spawn(super::super::watch::watch_core(
+        r.sessions.clone(),
+        core.clone(),
+    ));
+    assert_eq!(exit_or_idle(&mut r.events).await, None);
+    // Its state was wiped: same addresses, another core.
+    fake.set_core_id("core-b");
+    fake.drop_subscribers();
+    assert_eq!(exit_or_idle(&mut r.events).await.as_deref(), Some("s1"));
+    // And its terminals are never ended from the new core.
+    r.sessions
+        .handle(Op::Stop {
+            session_id: "s1".into(),
+            remove_worktree_if_clean: false,
+        })
+        .await
+        .unwrap();
+    assert!(requests_of(&fake, "terminal.kill").is_empty());
 }
