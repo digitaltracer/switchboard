@@ -3,6 +3,7 @@ pub mod agents;
 pub mod auth;
 pub mod cli;
 pub mod config;
+pub mod hc;
 pub mod herdr;
 pub mod hook;
 pub mod hub;
