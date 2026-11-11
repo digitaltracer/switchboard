@@ -797,6 +797,7 @@ impl Sessions {
                 server: srv,
                 target: name.to_owned(),
                 log,
+                said: Default::default(),
             },
             pane_id,
             server,

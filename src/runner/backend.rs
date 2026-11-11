@@ -295,20 +295,51 @@ impl Server {
         }
     }
 
-    /// The process in the agent's pane, for the dialog path.
-    pub async fn process(&self, target: &str) -> Result<super::dialogs::Process> {
+    /// The process in the agent's pane, for the dialog path, read fresh; with what the server
+    /// itself says a blocked agent waits for, when it says.
+    pub async fn process(&self, target: &str) -> Result<(super::dialogs::Process, Option<String>)> {
         match self {
             Server::Herdr { client, .. } => {
                 let a = client.agent_get(target).await?;
-                Ok(super::dialogs::Process {
+                let p = super::dialogs::Process {
                     kind: a.agent,
                     terminal_id: a.terminal_id,
                     agent_session: a.agent_session.map(|s| s.value),
                     state_change_seq: a.state_change_seq,
                     blocked: a.agent_status == AgentStatus::Blocked,
-                })
+                };
+                Ok((p, None))
             }
-            Server::Core(_) => Err(not_yet()),
+            Server::Core(core) => {
+                let address = core_address(core, target).await?;
+                let t = core.client().get(&address).await?;
+                let f = core.fresh(&t).ok_or_else(|| not_found(target))?;
+                // The identity and the process in front together: either changing is another process.
+                let fg = t.foreground.as_ref().map_or(0, |f| f.pid);
+                let p = super::dialogs::Process {
+                    kind: f.kind,
+                    terminal_id: f.identity.map(|id| format!("{id}:{fg}")),
+                    agent_session: None,
+                    state_change_seq: f.seq,
+                    blocked: f.status == AgentStatus::Blocked,
+                };
+                Ok((p, f.blocked_kind))
+            }
+        }
+    }
+
+    /// A core agent's address, from its name or address; a Herdr target as given.
+    pub async fn address(&self, target: &str) -> Result<String> {
+        match self {
+            Server::Herdr { .. } => Ok(target.to_owned()),
+            Server::Core(core) => core_address(core, target).await,
+        }
+    }
+
+    pub fn as_core(&self) -> Option<&Arc<Core>> {
+        match self {
+            Server::Core(core) => Some(core),
+            Server::Herdr { .. } => None,
         }
     }
 
@@ -342,10 +373,4 @@ fn not_found(target: &str) -> Error {
         kind: "not_found".into(),
         message: format!("no agent {target:?} on herdr-core"),
     })
-}
-
-fn not_yet() -> Error {
-    Error::Hc(HcError::InvalidArgument(
-        "not supported on herdr-core yet".into(),
-    ))
 }

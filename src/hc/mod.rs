@@ -326,8 +326,9 @@ impl Client {
         .await
     }
 
-    /// Named keys; the core refuses an unknown name before sending any byte.
-    pub async fn keys(&self, terminal: &str, keys: &[String]) -> Result<KeysResult> {
+    /// Named keys; the core refuses an unknown name before sending any byte. Only the runner's
+    /// dialog and Codex key paths call this.
+    pub async fn send_keys(&self, terminal: &str, keys: &[String]) -> Result<KeysResult> {
         check_local(terminal)?;
         self.typed_waiting(
             "terminal.keys",

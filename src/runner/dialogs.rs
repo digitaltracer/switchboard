@@ -18,7 +18,7 @@ use sha2::{Digest, Sha256};
 
 use super::backend::{Read, Server};
 use super::logcache::{self, LogCache};
-use crate::agents::dialog::{Dialog, Recognised};
+use crate::agents::dialog::{Dialog, DialogKind, Recognised};
 use crate::agents::{claude, codex};
 use crate::auth::device::label_sha256;
 use crate::proto::{DialogOptionView, DialogView, ErrorCode, ProtoError};
@@ -62,6 +62,21 @@ pub trait DialogIo {
     /// The pending tool call's id from the agent's log, when it shows one.
     fn pending_call(&self) -> impl Future<Output = Option<String>> + Send;
     fn send(&self, keys: &[&'static str]) -> impl Future<Output = Result<(), String>> + Send;
+    /// What the server said a blocked agent waits for at the last `process`; Herdr never says.
+    fn blocked_kind(&self) -> Option<String> {
+        None
+    }
+}
+
+/// Whether the server's own word for a block fits the dialog recognised. A server that didn't
+/// say agrees; Claude calls its plan approval a permission.
+fn kinds_agree(said: Option<&str>, kind: DialogKind) -> bool {
+    match said {
+        None => true,
+        Some("permission") => matches!(kind, DialogKind::Permission | DialogKind::Plan),
+        Some("question") => kind == DialogKind::Question,
+        Some(_) => false,
+    }
 }
 
 /// Why keys may not go to a pane, asked at the first read and again just before Enter.
@@ -111,10 +126,17 @@ impl Seen {
 pub async fn look<I: DialogIo>(io: &I) -> Result<Seen, ProtoError> {
     let herdr = |e: String| ProtoError::new(ErrorCode::Herdr, e);
     let process = io.process().await.map_err(herdr)?;
+    let said = io.blocked_kind();
     let screen = io.screen().await.map_err(herdr)?;
     let call = io.pending_call().await;
     let dialog = match recognise(process.kind.as_deref(), &screen) {
-        Recognised::Dialog(d) => Some(d),
+        // A server that says the agent waits for something else: shown, never answered.
+        Recognised::Dialog(mut d) => {
+            if !kinds_agree(said.as_deref(), d.kind) {
+                d.actionable = false;
+            }
+            Some(d)
+        }
         Recognised::Unknown => None,
     };
     let material = format!(
@@ -406,14 +428,23 @@ pub struct ServerPane {
     /// Where the pending call is remembered, under the pane's key.
     pub logs: Arc<LogCache>,
     pub key: logcache::Key,
+    /// The server's word for the block at the last `process`.
+    pub said: Mutex<Option<String>>,
 }
 
 impl DialogIo for ServerPane {
     async fn process(&self) -> Result<Process, String> {
-        self.server
+        let (p, said) = self
+            .server
             .process(&self.target)
             .await
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        *self.said.lock().unwrap() = said;
+        Ok(p)
+    }
+
+    fn blocked_kind(&self) -> Option<String> {
+        self.said.lock().unwrap().clone()
     }
 
     async fn screen(&self) -> Result<String, String> {
@@ -438,7 +469,19 @@ impl DialogIo for ServerPane {
                 .agent_send_keys(&self.target, keys.iter().map(|k| (*k).to_owned()).collect())
                 .await
                 .map_err(|e| e.to_string()),
-            Server::Core(_) => Err("keys to herdr-core are not supported yet".into()),
+            Server::Core(core) => {
+                let address = self
+                    .server
+                    .address(&self.target)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let keys: Vec<String> = keys.iter().map(|k| (*k).to_owned()).collect();
+                core.client()
+                    .send_keys(&address, &keys)
+                    .await
+                    .map(drop)
+                    .map_err(|e| e.to_string())
+            }
         }
     }
 }

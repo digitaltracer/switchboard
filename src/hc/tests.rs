@@ -109,7 +109,7 @@ async fn errors_split_into_not_sent_unknown_and_refused() {
     assert_eq!(refused.kind(), Some("blocked"));
     assert!(!refused.outcome_unknown());
 
-    let unknown_key = c.keys("t1", &["nope".into()]).await.unwrap_err();
+    let unknown_key = c.send_keys("t1", &["nope".into()]).await.unwrap_err();
     assert_eq!(unknown_key.kind(), Some("invalid_params"));
 
     let other_machine = c.send("vps/t1", "hi").await.unwrap_err();
@@ -173,7 +173,7 @@ async fn typed_calls_send_what_the_schema_names() {
     core.set_screen(&t.address, "hello");
     assert_eq!(c.read(&t.address, 0).await.unwrap().text, "hello");
     assert_eq!(c.send(&t.address, "go").await.unwrap().turn, 0);
-    c.keys(&t.address, &["down".into(), "enter".into()])
+    c.send_keys(&t.address, &["down".into(), "enter".into()])
         .await
         .unwrap();
     assert_eq!(c.list_labelled(&labels).await.unwrap().len(), 1);

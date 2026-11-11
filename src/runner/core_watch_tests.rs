@@ -327,3 +327,125 @@ fn the_program_is_found_through_env() {
     assert_eq!(p(&["claude"]), "claude");
     assert_eq!(p(&[]), "");
 }
+
+#[test]
+fn only_the_key_paths_send_keys_to_core_terminals() {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
+    let mut offenders = Vec::new();
+    let mut stack = vec![std::path::PathBuf::from(dir)];
+    while let Some(p) = stack.pop() {
+        for entry in std::fs::read_dir(&p).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                let text = std::fs::read_to_string(&path).unwrap();
+                let rel = path
+                    .strip_prefix(dir)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned();
+                let calls = text.matches(concat!(".send", "_keys(")).count();
+                let allowed = ["runner/codex.rs", "runner/dialogs.rs"];
+                if calls > 0 && !allowed.contains(&rel.as_str()) && !rel.starts_with("hc/") {
+                    offenders.push(rel.clone());
+                }
+                // Nothing asks the core to type into a blocked program.
+                if text.contains(concat!("\"for", "ce\"")) && !rel.starts_with("hc/") {
+                    offenders.push(format!("{rel}: force"));
+                }
+            }
+        }
+    }
+    assert!(offenders.is_empty(), "{offenders:?}");
+}
+
+#[tokio::test]
+async fn codexs_deny_esc_goes_to_its_core_terminal() {
+    use crate::cli::Agent;
+    use crate::runner::backend::Server;
+    use crate::runner::codex::{CodexPane, FallbackOutcome, deny_dialog};
+    let fixture = |name: &str| {
+        std::fs::read_to_string(format!(
+            "{}/tests/fixtures/codex-0.163.0/{name}.txt",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap()
+    };
+    let fake = FakeCore::start();
+    let t = fake.add(json!({ "argv": ["codex"], "name": "sb-1a2b", "reported": true,
+                             "status": { "state": "blocked", "app": "codex", "kind": "permission" } }));
+    fake.queue_screens(
+        &t,
+        vec![fixture("permission-command"), fixture("after-deny-command")],
+    );
+    let core = Core::new(&fake.socket);
+    core.up("core-a");
+    let pane = CodexPane::on(Server::Core(core), Agent::Codex, "sb-1a2b").unwrap();
+    assert!(matches!(
+        deny_dialog(&pane).await,
+        FallbackOutcome::Denied { .. }
+    ));
+    let keys: Vec<Value> = fake
+        .requests()
+        .into_iter()
+        .filter(|q| q["method"] == "terminal.keys")
+        .map(|q| q["params"].clone())
+        .collect();
+    assert_eq!(keys, [json!({ "terminal": t, "keys": ["esc"] })]);
+}
+
+/// Screens read with `terminal.read` from core terminals.
+fn core_fixture(path: &str) -> String {
+    std::fs::read_to_string(format!(
+        "{}/tests/fixtures/dialogs/core/{path}.txt",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .unwrap()
+}
+
+#[test]
+fn dialogs_read_from_core_terminals_are_recognised() {
+    use crate::agents::dialog::{DialogKind, Recognised};
+    use crate::runner::dialogs::recognise;
+    let cases = [
+        (
+            "claude",
+            "claude-2.1.322/question-single",
+            DialogKind::Question,
+            5,
+            None,
+        ),
+        (
+            "claude",
+            "claude-2.1.322/permission-bash",
+            DialogKind::Permission,
+            4,
+            Some(4),
+        ),
+        ("claude", "claude-2.1.322/plan", DialogKind::Plan, 3, None),
+        (
+            "codex",
+            "codex-0.167.0/permission-command",
+            DialogKind::Permission,
+            3,
+            Some(3),
+        ),
+    ];
+    for (kind, path, want, rows, deny) in cases {
+        let Recognised::Dialog(d) = recognise(Some(kind), &core_fixture(path)) else {
+            panic!("{path} not recognised");
+        };
+        assert_eq!(
+            (d.kind, d.options.len(), d.selected),
+            (want, rows, 0),
+            "{path}"
+        );
+        assert!(d.actionable, "{path}");
+        assert_eq!(
+            d.options.iter().find(|o| o.is_deny).map(|o| o.number),
+            deny,
+            "{path}"
+        );
+    }
+}

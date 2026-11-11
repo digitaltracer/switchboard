@@ -1387,3 +1387,111 @@ async fn a_core_claudes_conversation_is_found_through_its_process_record() {
     .unwrap();
     assert_eq!(page.items[0].text.as_deref(), Some("on core"));
 }
+
+fn codex_terminal(kind: &str) -> Value {
+    json!({ "argv": ["/x/codex"], "name": "cx", "reported": true, "turn": 3, "status_ms": 77,
+            "status": { "state": "blocked", "app": "codex", "kind": kind } })
+}
+
+#[tokio::test]
+async fn a_core_codex_dialog_is_answered_by_arrows_then_enter_on_its_terminal() {
+    let dir = tempfile::tempdir().unwrap();
+    let (r, fake) = core_rig(dir);
+    let t = fake.add(codex_terminal("permission"));
+    fake.queue_screens(
+        &t,
+        vec![
+            dialog_screen("permission-command", 1),
+            dialog_screen("permission-command", 1),
+            dialog_screen("permission-command", 3),
+            std::fs::read_to_string(format!(
+                "{}/tests/fixtures/dialogs/codex-0.165.0/after-deny-command.txt",
+                env!("CARGO_MANIFEST_DIR")
+            ))
+            .unwrap(),
+        ],
+    );
+    let v = r
+        .sessions
+        .handle(Op::Dialog {
+            agent: "hc/cx".into(),
+        })
+        .await
+        .unwrap();
+    let d: crate::proto::DialogView = serde_json::from_value(v["dialog"].clone()).unwrap();
+    assert!(d.answerable, "{d:?}");
+    let no = &d.options[2];
+    r.sessions
+        .handle(Op::Answer {
+            agent: "hc/cx".into(),
+            occurrence: d.occurrence.clone(),
+            option: no.id.clone(),
+            label_sha256: no.label_sha256.clone(),
+            deny_only: true,
+        })
+        .await
+        .unwrap();
+    let keys: Vec<Value> = fake
+        .requests()
+        .into_iter()
+        .filter(|q| q["method"] == "terminal.keys")
+        .map(|q| q["params"].clone())
+        .collect();
+    assert_eq!(
+        keys,
+        [
+            json!({ "terminal": t, "keys": ["down", "down"] }),
+            json!({ "terminal": t, "keys": ["enter"] })
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_dialog_the_core_calls_something_else_is_shown_read_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let (r, fake) = core_rig(dir);
+    let t = fake.add(codex_terminal("question"));
+    fake.set_screen(&t, &dialog_screen("permission-command", 1));
+    let v = r
+        .sessions
+        .handle(Op::Dialog {
+            agent: "hc/cx".into(),
+        })
+        .await
+        .unwrap();
+    let d: crate::proto::DialogView = serde_json::from_value(v["dialog"].clone()).unwrap();
+    assert_eq!(
+        (d.answerable, d.reason.as_deref()),
+        (false, Some("read_only"))
+    );
+    assert!(!fake.methods().contains(&"terminal.keys".to_owned()));
+}
+
+#[tokio::test]
+async fn a_new_process_in_a_core_terminal_is_a_new_occurrence() {
+    let dir = tempfile::tempdir().unwrap();
+    let (r, fake) = core_rig(dir);
+    let t = fake.add(codex_terminal("permission"));
+    fake.set_screen(&t, &dialog_screen("permission-command", 1));
+    let occurrence = || async {
+        r.sessions
+            .handle(Op::Dialog {
+                agent: "hc/cx".into(),
+            })
+            .await
+            .unwrap()["occurrence"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let first = occurrence().await;
+    assert_eq!(first, occurrence().await);
+    fake.patch(
+        &t,
+        json!({ "foreground": { "pid": 999, "name": "codex", "argv": ["codex"], "cwd": "/w" } }),
+    );
+    let other_process = occurrence().await;
+    fake.patch(&t, json!({ "turn": 4 }));
+    let next_turn = occurrence().await;
+    assert!(first != other_process && other_process != next_turn);
+}

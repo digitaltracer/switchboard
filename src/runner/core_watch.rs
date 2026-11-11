@@ -184,6 +184,21 @@ impl Core {
         })
     }
 
+    /// One terminal just read from the core, as the listing would show it; none if it isn't an
+    /// agent now.
+    pub fn fresh(&self, t: &Terminal) -> Option<Facts> {
+        let st = self.inner.lock().unwrap();
+        let core_id = st.core_id.clone()?;
+        listing(
+            &core_id,
+            std::iter::once(t),
+            &st.spaces,
+            &st.apps,
+            &st.terminals,
+        )
+        .pop()
+    }
+
     /// The agents, from the mirror when it's synced, else read from the core now.
     pub async fn agents(&self) -> hc::Result<Vec<Facts>> {
         let facts = match self.facts() {

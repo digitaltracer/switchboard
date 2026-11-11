@@ -30,7 +30,7 @@ struct State {
     core_id: String,
     seq: u64,
     terminals: Vec<Value>,
-    screens: HashMap<String, String>,
+    screens: HashMap<String, VecDeque<String>>,
     doc: (Value, u64),
     requests: Vec<Value>,
     scripted: HashMap<String, VecDeque<Script>>,
@@ -108,11 +108,16 @@ impl FakeCore {
     }
 
     pub fn set_screen(&self, address: &str, text: &str) {
+        self.queue_screens(address, vec![text.to_owned()]);
+    }
+
+    /// Screens one read each, the last one staying.
+    pub fn queue_screens(&self, address: &str, screens: Vec<String>) {
         self.state
             .lock()
             .unwrap()
             .screens
-            .insert(address.to_owned(), text.to_owned());
+            .insert(address.to_owned(), screens.into());
     }
 
     pub fn set_doc(&self, value: Value) {
@@ -346,11 +351,11 @@ fn handle(st: &mut State, req: &Value) -> Answer {
             let Some(address) = find(st, &target).map(|t| t["address"].clone()) else {
                 return Answer::Error(error("not_found"));
             };
-            let text = st
-                .screens
-                .get(address.as_str().unwrap())
-                .cloned()
-                .unwrap_or_default();
+            let text = match st.screens.get_mut(address.as_str().unwrap()) {
+                Some(q) if q.len() > 1 => q.pop_front().unwrap_or_default(),
+                Some(q) => q.front().cloned().unwrap_or_default(),
+                None => String::new(),
+            };
             Answer::Reply(json!({ "text": text, "complete": true, "how": "screen" }))
         }
         "terminal.send" | "terminal.keys" => {
