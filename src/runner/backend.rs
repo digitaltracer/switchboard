@@ -1,0 +1,278 @@
+//! The runner's own view of an agent server, so callers don't read either backend's types.
+//! One `Server` is one Herdr session's server; the core joins it as a second kind.
+
+use std::path::Path;
+
+use crate::hc::HcError;
+use crate::herdr::types::{AgentInfo, AgentPromptParams, AgentStatus, ReadSource, SessionSnapshot};
+use crate::herdr::{self, HerdrError, check_agent_target};
+
+pub enum Server {
+    /// A Herdr server; `session` is its session name, none for the legacy single server.
+    Herdr {
+        session: Option<String>,
+        client: herdr::Client,
+    },
+}
+
+/// What one agent looks like, whichever server it runs in.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Facts {
+    /// The Herdr session, as `Server::name` gives it.
+    pub server: Option<String>,
+    /// The pane id.
+    pub target: String,
+    pub name: Option<String>,
+    pub kind: Option<String>,
+    pub status: AgentStatus,
+    pub cwd: Option<String>,
+    pub title: Option<String>,
+    pub space: Option<String>,
+    pub tab: Option<String>,
+    /// Herdr's `terminal_id`: a new one is a new process in the pane.
+    pub identity: Option<String>,
+    /// The conversation id Herdr's integration reports.
+    pub reported_session: Option<String>,
+    /// Herdr's `state_change_seq`.
+    pub seq: u64,
+    /// Ready for a prompt.
+    pub ready: bool,
+}
+
+impl Facts {
+    /// Its name on its own server: the agent name, else the pane id.
+    pub fn local_name(&self) -> String {
+        self.name.clone().unwrap_or_else(|| self.target.clone())
+    }
+
+    /// Whether `target` names this agent, by name or pane.
+    pub fn is(&self, target: &str) -> bool {
+        self.name.as_deref() == Some(target) || self.target == target
+    }
+}
+
+pub enum Read {
+    Visible,
+    /// The last lines; a backend that can't read history while an agent sits at a dialog gives
+    /// the visible screen instead.
+    Recent(u32),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Text {
+    pub text: String,
+    pub revision: u64,
+    pub truncated: bool,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error(transparent)]
+    Herdr(#[from] HerdrError),
+    #[error(transparent)]
+    Hc(#[from] HcError),
+}
+
+impl Error {
+    pub fn outcome_unknown(&self) -> bool {
+        match self {
+            Error::Herdr(e) => e.outcome_unknown(),
+            Error::Hc(e) => e.outcome_unknown(),
+        }
+    }
+
+    pub fn server_gone(&self) -> bool {
+        match self {
+            Error::Herdr(e) => e.server_gone(),
+            Error::Hc(e) => e.server_gone(),
+        }
+    }
+
+    /// The agent sits at a dialog, so the server refused to type.
+    pub fn is_blocked(&self) -> bool {
+        match self {
+            Error::Herdr(e) => e.server_code() == Some("agent_blocked"),
+            Error::Hc(e) => e.kind() == Some("blocked"),
+        }
+    }
+
+    pub fn is_not_found(&self) -> bool {
+        match self {
+            Error::Herdr(e) => e.server_code() == Some("agent_not_found"),
+            Error::Hc(e) => e.kind() == Some("not_found"),
+        }
+    }
+
+    pub fn is_invalid_argument(&self) -> bool {
+        matches!(
+            self,
+            Error::Herdr(HerdrError::InvalidArgument(_)) | Error::Hc(HcError::InvalidArgument(_))
+        )
+    }
+}
+
+pub type Result<T> = std::result::Result<T, Error>;
+
+/// A Herdr agent as the runner sees it; `spaces` maps workspace ids to their labels.
+pub fn herdr_facts(
+    session: Option<&str>,
+    a: AgentInfo,
+    spaces: &std::collections::HashMap<String, String>,
+) -> Facts {
+    Facts {
+        server: session.map(str::to_owned),
+        space: spaces.get(&a.workspace_id).cloned(),
+        tab: None,
+        ready: a.interactive_ready && !a.launch_pending,
+        target: a.pane_id,
+        name: a.name,
+        kind: a.agent,
+        status: a.agent_status,
+        cwd: a.cwd,
+        title: a.terminal_title_stripped.filter(|t| !t.is_empty()),
+        identity: a.terminal_id,
+        reported_session: a.agent_session.map(|s| s.value),
+        seq: a.state_change_seq,
+    }
+}
+
+/// Every agent in one Herdr snapshot.
+pub fn snapshot_facts(session: Option<&str>, snap: SessionSnapshot) -> Vec<Facts> {
+    let spaces = snap
+        .workspaces
+        .into_iter()
+        .filter(|w| !w.label.is_empty())
+        .map(|w| (w.workspace_id, w.label))
+        .collect();
+    snap.agents
+        .into_iter()
+        .map(|a| herdr_facts(session, a, &spaces))
+        .collect()
+}
+
+impl Server {
+    pub fn herdr(session: Option<String>, client: herdr::Client) -> Self {
+        Server::Herdr { session, client }
+    }
+
+    /// The Herdr session name.
+    pub fn name(&self) -> Option<&str> {
+        match self {
+            Server::Herdr { session, .. } => session.as_deref(),
+        }
+    }
+
+    /// The server's socket, which keys what is cached about its panes.
+    pub fn socket(&self) -> &Path {
+        match self {
+            Server::Herdr { client, .. } => client.socket(),
+        }
+    }
+
+    /// The Herdr client, for what only Herdr does.
+    pub fn as_herdr(&self) -> Option<&herdr::Client> {
+        match self {
+            Server::Herdr { client, .. } => Some(client),
+        }
+    }
+
+    pub async fn agents(&self) -> Result<Vec<Facts>> {
+        match self {
+            Server::Herdr { session, client } => Ok(snapshot_facts(
+                session.as_deref(),
+                client.session_snapshot().await?,
+            )),
+        }
+    }
+
+    /// One agent, by name or pane.
+    pub async fn agent(&self, target: &str) -> Result<Facts> {
+        match self {
+            Server::Herdr { session, client } => Ok(herdr_facts(
+                session.as_deref(),
+                client.agent_get(target).await?,
+                &Default::default(),
+            )),
+        }
+    }
+
+    pub async fn read(&self, target: &str, what: Read) -> Result<Text> {
+        match self {
+            Server::Herdr { client, .. } => {
+                check_agent_target(target)?;
+                let r = match what {
+                    Read::Visible => client.agent_read(target, ReadSource::Visible, None).await,
+                    Read::Recent(lines) => match client
+                        .agent_read(target, ReadSource::RecentUnwrapped, Some(lines))
+                        .await
+                    {
+                        // Herdr refuses history reads while an agent sits at a dialog.
+                        Err(e) if e.server_code() == Some("agent_not_idle") => {
+                            client.agent_read(target, ReadSource::Visible, None).await
+                        }
+                        other => other,
+                    },
+                }?;
+                Ok(Text {
+                    text: r.text,
+                    revision: r.revision,
+                    truncated: r.truncated,
+                })
+            }
+        }
+    }
+
+    /// The visible screen with its colours; none when the server can't give it.
+    pub async fn read_ansi(&self, target: &str) -> Option<String> {
+        match self {
+            Server::Herdr { client, .. } => {
+                check_agent_target(target).ok()?;
+                client
+                    .agent_read_screen_ansi(target)
+                    .await
+                    .ok()
+                    .map(|r| r.text)
+            }
+        }
+    }
+
+    /// Types `text` as a prompt; refused while the agent sits at a dialog. Returns its status.
+    pub async fn prompt(&self, target: &str, text: &str) -> Result<AgentStatus> {
+        match self {
+            Server::Herdr { client, .. } => {
+                check_agent_target(target)?;
+                let a = client
+                    .agent_prompt(AgentPromptParams {
+                        target: target.to_owned(),
+                        text: text.to_owned(),
+                        wait: None,
+                    })
+                    .await?;
+                Ok(a.agent_status)
+            }
+        }
+    }
+
+    /// The process in the agent's pane, for the dialog path.
+    pub async fn process(&self, target: &str) -> Result<super::dialogs::Process> {
+        match self {
+            Server::Herdr { client, .. } => {
+                let a = client.agent_get(target).await?;
+                Ok(super::dialogs::Process {
+                    kind: a.agent,
+                    terminal_id: a.terminal_id,
+                    agent_session: a.agent_session.map(|s| s.value),
+                    state_change_seq: a.state_change_seq,
+                    blocked: a.agent_status == AgentStatus::Blocked,
+                })
+            }
+        }
+    }
+
+    /// The pids of the processes in front in the agent's pane.
+    pub async fn pids(&self, facts: &Facts) -> Result<Vec<u32>> {
+        match self {
+            Server::Herdr { client, .. } => Ok(client.pane_foreground_pids(&facts.target).await?),
+        }
+    }
+}

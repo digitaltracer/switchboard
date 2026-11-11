@@ -1,6 +1,7 @@
 //! Runner: hub WebSocket client, Herdr operations and the hook endpoint.
 
 pub mod agents;
+pub mod backend;
 pub mod codex;
 pub mod dialogs;
 pub mod herdrs;

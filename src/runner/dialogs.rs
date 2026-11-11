@@ -16,12 +16,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use super::backend::{Read, Server};
 use super::logcache::{self, LogCache};
 use crate::agents::dialog::{Dialog, Recognised};
 use crate::agents::{claude, codex};
 use crate::auth::device::label_sha256;
-use crate::herdr::Client;
-use crate::herdr::types::{AgentStatus, ReadSource};
 use crate::proto::{DialogOptionView, DialogView, ErrorCode, ProtoError};
 use crate::redact::redact_str;
 
@@ -33,7 +32,7 @@ pub const CONFIRM_INTERVAL: Duration = Duration::from_millis(500);
 /// Answered occurrences kept on disk.
 const KEEP_ATTEMPTS: usize = 1000;
 
-/// What Herdr's `agent.get` says about the process in the pane.
+/// What the server says about the process in the pane, as Herdr's `agent.get` gives it.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Process {
     pub kind: Option<String>,
@@ -399,9 +398,9 @@ impl PaneLocks {
     }
 }
 
-/// A Herdr agent and its log, if it has one.
-pub struct HerdrPane {
-    pub herdr: Client,
+/// An agent on a server, and its log, if it has one.
+pub struct ServerPane {
+    pub server: Server,
     pub target: String,
     pub log: Option<PathBuf>,
     /// Where the pending call is remembered, under the pane's key.
@@ -409,25 +408,17 @@ pub struct HerdrPane {
     pub key: logcache::Key,
 }
 
-impl DialogIo for HerdrPane {
+impl DialogIo for ServerPane {
     async fn process(&self) -> Result<Process, String> {
-        let a = self
-            .herdr
-            .agent_get(&self.target)
+        self.server
+            .process(&self.target)
             .await
-            .map_err(|e| e.to_string())?;
-        Ok(Process {
-            kind: a.agent,
-            terminal_id: a.terminal_id,
-            agent_session: a.agent_session.map(|s| s.value),
-            state_change_seq: a.state_change_seq,
-            blocked: a.agent_status == AgentStatus::Blocked,
-        })
+            .map_err(|e| e.to_string())
     }
 
     async fn screen(&self) -> Result<String, String> {
-        self.herdr
-            .agent_read(&self.target, ReadSource::Visible, None)
+        self.server
+            .read(&self.target, Read::Visible)
             .await
             .map(|r| r.text)
             .map_err(|e| e.to_string())
@@ -442,11 +433,12 @@ impl DialogIo for HerdrPane {
     }
 
     async fn send(&self, keys: &[&'static str]) -> Result<(), String> {
-        let keys = keys.iter().map(|k| (*k).to_owned()).collect();
-        self.herdr
-            .agent_send_keys(&self.target, keys)
-            .await
-            .map_err(|e| e.to_string())
+        match &self.server {
+            Server::Herdr { client, .. } => client
+                .agent_send_keys(&self.target, keys.iter().map(|k| (*k).to_owned()).collect())
+                .await
+                .map_err(|e| e.to_string()),
+        }
     }
 }
 

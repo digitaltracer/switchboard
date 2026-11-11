@@ -7,11 +7,11 @@ use std::time::Duration;
 
 use tokio::time::Instant;
 
+use super::backend::{Read, Server};
 use super::hooks::HookState;
 use crate::agents::codex::screen::{Keys, Screen, classify, deny_keys, startup_keys};
 use crate::cli::Agent;
 use crate::herdr::Client;
-use crate::herdr::types::ReadSource;
 
 /// A Codex pane must stay blocked this long, with no hook activity, before the fallback reads it.
 pub const GRACE: Duration = Duration::from_secs(5);
@@ -25,26 +25,30 @@ pub trait CodexIo {
     fn send(&self, keys: &Keys) -> impl Future<Output = Result<(), String>> + Send;
 }
 
-/// A Herdr agent target known to be a Codex session.
-pub struct CodexPane<'a> {
-    herdr: &'a Client,
+/// An agent target known to be a Codex session.
+pub struct CodexPane {
+    server: Server,
     target: String,
 }
 
-impl<'a> CodexPane<'a> {
+impl CodexPane {
     /// `None` for any agent other than Codex.
-    pub fn new(herdr: &'a Client, agent: Agent, target: &str) -> Option<Self> {
+    pub fn new(herdr: &Client, agent: Agent, target: &str) -> Option<Self> {
+        Self::on(Server::herdr(None, herdr.clone()), agent, target)
+    }
+
+    pub fn on(server: Server, agent: Agent, target: &str) -> Option<Self> {
         (agent == Agent::Codex).then(|| Self {
-            herdr,
+            server,
             target: target.to_owned(),
         })
     }
 }
 
-impl CodexIo for CodexPane<'_> {
+impl CodexIo for CodexPane {
     async fn read_screen(&self) -> Result<String, String> {
-        self.herdr
-            .agent_read(&self.target, ReadSource::Visible, None)
+        self.server
+            .read(&self.target, Read::Visible)
             .await
             .map(|r| r.text)
             .map_err(|e| e.to_string())
@@ -52,10 +56,12 @@ impl CodexIo for CodexPane<'_> {
 
     async fn send(&self, keys: &Keys) -> Result<(), String> {
         let keys = keys.as_slice().iter().map(|k| (*k).to_owned()).collect();
-        self.herdr
-            .agent_send_keys(&self.target, keys)
-            .await
-            .map_err(|e| e.to_string())
+        match &self.server {
+            Server::Herdr { client, .. } => client
+                .agent_send_keys(&self.target, keys)
+                .await
+                .map_err(|e| e.to_string()),
+        }
     }
 }
 

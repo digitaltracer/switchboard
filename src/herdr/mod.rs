@@ -107,6 +107,17 @@ pub struct Client {
     next_id: AtomicU64,
 }
 
+/// Each request has a connection of its own, so a clone's ids may repeat the original's.
+impl Clone for Client {
+    fn clone(&self) -> Self {
+        Self {
+            socket: self.socket.clone(),
+            timeout: self.timeout,
+            next_id: AtomicU64::new(self.next_id.load(Ordering::Relaxed)),
+        }
+    }
+}
+
 impl Client {
     pub fn new(socket: impl Into<PathBuf>) -> Self {
         Self {
