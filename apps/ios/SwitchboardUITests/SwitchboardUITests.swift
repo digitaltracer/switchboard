@@ -169,6 +169,10 @@ final class SwitchboardUITests: XCTestCase {
                 let top = springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.001))
                 top.press(forDuration: 0.1, thenDragTo: springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.6)))
                 found = note.waitForExistence(timeout: 5)
+                // Later pushes stack on top of it, and only the newest is in the tree until a tap expands the stack.
+                let stack = springboard.descendants(matching: .any).matching(NSPredicate(
+                    format: "identifier == 'NotificationShortLookView' AND label CONTAINS 'Grouped'")).firstMatch
+                if !found && stack.exists { stack.tap(); found = note.waitForExistence(timeout: 5) }
                 if !found { XCUIDevice.shared.press(.home); app.activate() }
             }
             XCTAssertTrue(found, "the push reached the simulator")
