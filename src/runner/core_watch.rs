@@ -469,8 +469,15 @@ async fn settle_codex(client: &Client, mut facts: Vec<Facts>) -> Vec<Facts> {
 
 /// Follows the core: presence every `PRESENCE`, then one subscription at a time, calling
 /// `changed` after each change the mirror takes and `replaced` when another core answers.
-pub async fn follow(
+pub async fn follow(core: Arc<Core>, changed: impl FnMut() + Send, replaced: impl FnMut() + Send) {
+    follow_every(core, PRESENCE, hc::events::SILENCE, changed, replaced).await
+}
+
+/// `follow`, with presence every `presence` and a stream silent for `silence` taken as dead.
+pub(crate) async fn follow_every(
     core: Arc<Core>,
+    presence: Duration,
+    silence: Duration,
     mut changed: impl FnMut() + Send,
     mut replaced: impl FnMut() + Send,
 ) {
@@ -489,23 +496,23 @@ pub async fn follow(
                     core.down();
                     changed();
                 }
-                tokio::time::sleep(PRESENCE).await;
+                tokio::time::sleep(presence).await;
                 continue;
             }
         }
         let mut stream = match client.subscribe().await {
-            Ok(s) if Some(s.core_id().to_owned()) == core.core_id() => s,
+            Ok(s) if Some(s.core_id().to_owned()) == core.core_id() => s.with_silence(silence),
             Ok(_) => continue,
             Err(e) => {
                 tracing::warn!(error = %e, "herdr-core subscribe failed");
-                tokio::time::sleep(PRESENCE).await;
+                tokio::time::sleep(presence).await;
                 continue;
             }
         };
         if let Ok(doc) = client.doc_get(LAYOUT_DOC).await {
             core.set_layout(&doc.value);
         }
-        let mut presence = tokio::time::interval_at(Instant::now() + PRESENCE, PRESENCE);
+        let mut tick = tokio::time::interval_at(Instant::now() + presence, presence);
         loop {
             tokio::select! {
                 item = stream.next() => match item {
@@ -526,7 +533,7 @@ pub async fn follow(
                         Applied::Nothing => {}
                     },
                 },
-                _ = presence.tick() => match client.hello().await {
+                _ = tick.tick() => match client.hello().await {
                     Ok(h) if Some(&h.core.id) == core.core_id().as_ref() => {}
                     _ => break,
                 },

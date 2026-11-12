@@ -526,3 +526,37 @@ async fn a_prompt_goes_only_to_the_process_the_mirror_lists() {
     }
     assert!(!fake.methods().contains(&"terminal.send".to_owned()));
 }
+
+#[tokio::test]
+async fn a_silent_stream_is_followed_again_though_the_core_answers() {
+    let fake = FakeCore::start();
+    let core = Core::new(&fake.socket);
+    let silence = Duration::from_millis(600);
+    // Presence ticks well inside the silence window.
+    let task = tokio::spawn(follow_every(
+        core.clone(),
+        Duration::from_millis(50),
+        silence,
+        || {},
+        || {},
+    ));
+    until(|| core.is_synced()).await;
+    let subscribes = || {
+        fake.methods()
+            .iter()
+            .filter(|m| *m == "events.subscribe")
+            .count()
+    };
+    // Heartbeats keep it alive past the window.
+    for _ in 0..12 {
+        fake.heartbeat();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(subscribes(), 1);
+    let quiet = tokio::time::Instant::now();
+    until(|| subscribes() == 2).await;
+    assert_eq!(subscribes(), 2, "resubscribed after the silence");
+    assert!(quiet.elapsed() >= silence - Duration::from_millis(150));
+    assert!(fake.hellos() > 10, "the core kept answering");
+    task.abort();
+}

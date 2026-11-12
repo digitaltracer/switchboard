@@ -8,6 +8,9 @@ use std::time::Duration;
 use serde_json::Value;
 use tokio::io::BufReader;
 use tokio::net::UnixStream;
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
+use tokio::time::Instant;
 
 use super::types::{Foreground, Status, Terminal};
 use super::{HcError, Result, read_line};
@@ -16,6 +19,8 @@ use super::{HcError, Result, read_line};
 pub const SILENCE: Duration = Duration::from_secs(45);
 
 const METHOD: &str = "events.subscribe";
+/// Lines read ahead of `next`; a full buffer holds the reader back.
+const AHEAD: usize = 256;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Item {
@@ -61,11 +66,21 @@ pub enum Change {
     },
 }
 
+/// Lines are read by a task of its own, so a `next` dropped mid-line loses nothing.
 pub struct EventStream {
-    reader: BufReader<UnixStream>,
+    lines: mpsc::Receiver<Result<String>>,
+    reader: JoinHandle<()>,
     core_id: String,
     first: Option<Item>,
     silence: Duration,
+    /// When `next` last gave an item: silence counts from it, across dropped `next` calls.
+    last: Instant,
+}
+
+impl Drop for EventStream {
+    fn drop(&mut self) {
+        self.reader.abort();
+    }
 }
 
 impl EventStream {
@@ -78,16 +93,28 @@ impl EventStream {
             method: METHOD,
             detail: "subscribe reply has no seq or terminals".into(),
         })?;
+        let (tx, lines) = mpsc::channel(AHEAD);
+        let mut reader = reader;
+        let reader = tokio::spawn(async move {
+            loop {
+                let line = read_line(&mut reader, METHOD).await;
+                let end = line.is_err();
+                if tx.send(line).await.is_err() || end {
+                    return;
+                }
+            }
+        });
         Ok(Self {
+            lines,
             reader,
             core_id,
             first: Some(first),
             silence: SILENCE,
+            last: Instant::now(),
         })
     }
 
-    #[cfg(test)]
-    pub(crate) fn with_silence(mut self, silence: Duration) -> Self {
+    pub fn with_silence(mut self, silence: Duration) -> Self {
         self.silence = silence;
         self
     }
@@ -97,15 +124,18 @@ impl EventStream {
         &self.core_id
     }
 
+    /// Cancel-safe.
     pub async fn next(&mut self) -> Option<Result<Item>> {
         if let Some(first) = self.first.take() {
+            self.last = Instant::now();
             return Some(Ok(first));
         }
-        let line =
-            match tokio::time::timeout(self.silence, read_line(&mut self.reader, METHOD)).await {
-                Ok(Ok(line)) => line,
-                Ok(Err(_)) | Err(_) => return None,
-            };
+        let line = match tokio::time::timeout_at(self.last + self.silence, self.lines.recv()).await
+        {
+            Ok(Some(Ok(line))) => line,
+            _ => return None,
+        };
+        self.last = Instant::now();
         Some(parse(&line))
     }
 }
