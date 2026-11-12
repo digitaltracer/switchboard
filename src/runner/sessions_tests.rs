@@ -1927,3 +1927,60 @@ async fn a_core_task_exits_when_another_core_answers() {
         .unwrap();
     assert!(requests_of(&fake, "terminal.kill").is_empty());
 }
+
+#[tokio::test]
+async fn a_failed_core_start_stops_no_herdr_session() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let bin = dir.path().join("herdr");
+    let calls = dir.path().join("herdr-calls");
+    std::fs::write(
+        &bin,
+        format!("#!/bin/sh\necho \"$@\" >> '{}'\n", calls.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let starter = Starter::Herdr {
+        bin,
+        xdg: None,
+        log_dir: dir.path().to_owned(),
+    };
+    let herdrs = Herdrs::multi(
+        dir.path().join("herdr"),
+        dir.path().join("nowhere.sock"),
+        starter,
+    );
+    let (tx, _events) = mpsc::channel(64);
+    let hooks = HookHub::new(tx.clone(), Duration::from_secs(5));
+    let cfg = SessionsConfig {
+        state_dir: dir.path().join("state"),
+        claude_config: dir.path().join("claude.json"),
+        claude_mode: Default::default(),
+        claude_projects: dir.path().join("claude-projects"),
+        codex_sessions: PathBuf::from("/nonexistent/codex/sessions"),
+        exe: PathBuf::from("/opt/sb/switchboard"),
+        hook_addr: "127.0.0.1:9".parse().unwrap(),
+        codex_version_cmd: vec!["echo".into(), "codex-cli 0.163.0".into()],
+        liveness_timeout: Duration::from_secs(1),
+        startup_timeout: Duration::from_secs(2),
+    };
+    let sessions = Sessions::with_herdrs(herdrs, hooks, tx, cfg);
+    let fake = crate::hc::fake::FakeCore::start();
+    let core = core_watch::Core::new(&fake.socket);
+    core.up("core-a");
+    sessions.set_core(core);
+    sessions.set_core_starts(CoreStarts {
+        new_sessions: crate::config::NewSessions::Hc,
+        worktrees: dir.path().join("worktrees"),
+        home: dir.path().to_owned(),
+        bins: Some(PathBuf::from("/opt/agents")),
+    });
+    // Not a git repo: the worktree fails after the session is recorded on core.
+    let e = sessions
+        .start(core_req(Agent::Codex, &dir.path().join("no-repo")))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, ErrorCode::Internal, "{e:?}");
+    assert!(sessions.get("s1").is_none());
+    assert!(!calls.exists(), "herdr was run");
+}

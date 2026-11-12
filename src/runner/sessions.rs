@@ -1214,6 +1214,7 @@ impl Sessions {
             tracing::warn!(error = %close, "closing workspace of failed start");
         }
         if let Some(name) = &s.herdr_session
+            && !core_start::is_core(s)
             && let Err(stop) = self.herdrs.stop(name).await
         {
             tracing::warn!(error = %stop, "stopping the Herdr session of a failed start");
