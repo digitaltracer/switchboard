@@ -184,7 +184,7 @@ impl Sessions {
             .map_err(|e| err(ErrorCode::Internal, format!("saving session: {e}")))?;
         if let Err(e) = self
             .server_for(&session)
-            .prompt(&session.agent_name, &prompt)
+            .prompt(Self::target_for(&session), &prompt)
             .await
         {
             let e = backend_err(e);

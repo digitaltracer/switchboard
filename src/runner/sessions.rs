@@ -224,6 +224,14 @@ impl Sessions {
         }
     }
 
+    /// What a task's own prompts and reads go to: its terminal's address on core, else its name.
+    pub(crate) fn target_for(s: &RunnerSession) -> &str {
+        match (core_start::is_core(s), &s.pane_id) {
+            (true, Some(address)) => address,
+            _ => &s.agent_name,
+        }
+    }
+
     /// Every server that answers: the running Herdr sessions, then the core when it's up.
     async fn servers(&self) -> Vec<Server> {
         let mut out: Vec<Server> = self
@@ -1231,7 +1239,7 @@ impl Sessions {
         };
         let status = self
             .server_for(&s)
-            .prompt(&s.agent_name, text)
+            .prompt(Self::target_for(&s), text)
             .await
             .map_err(backend_err)?;
         self.audit(
@@ -1251,7 +1259,7 @@ impl Sessions {
         };
         let read = self
             .server_for(&s)
-            .read(&s.agent_name, Read::Recent(lines))
+            .read(Self::target_for(&s), Read::Recent(lines))
             .await
             .map_err(backend_err)?;
         Ok(

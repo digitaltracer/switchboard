@@ -449,3 +449,52 @@ fn dialogs_read_from_core_terminals_are_recognised() {
         );
     }
 }
+
+#[tokio::test]
+async fn agents_in_tabs_of_the_same_name_get_names_of_their_own() {
+    use crate::runner::backend::Server;
+    let fake = FakeCore::start();
+    fake.set_doc(json!({ "spaces": [
+        { "id": "sp1", "name": "a", "tabs": [ { "id": "tb1", "name": "orch" } ] },
+        { "id": "sp2", "name": "b", "tabs": [ { "id": "tb2", "name": "orch" },
+                                              { "id": "tb3", "name": "orch-t1" } ] },
+    ] }));
+    let tab = |tab: &str| json!({ "argv": ["claude"], "labels": { "herdr.tab": tab } });
+    let (t1, t2) = (fake.add(tab("tb1")), fake.add(tab("tb2")));
+    let core = Core::new(&fake.socket);
+    core.up("core-a");
+    let names: Vec<String> = core
+        .agents()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|f| f.local_name())
+        .collect();
+    assert_eq!(names, [format!("orch-{t1}"), format!("orch-{t2}")]);
+
+    let server = Server::Core(core.clone());
+    server.prompt(&format!("orch-{t2}"), "hi").await.unwrap();
+    server.prompt(&format!("orch-{t1}"), "hi").await.unwrap();
+    let sent: Vec<Value> = fake
+        .requests()
+        .into_iter()
+        .filter(|q| q["method"] == "terminal.send")
+        .map(|q| q["params"]["terminal"].clone())
+        .collect();
+    assert_eq!(sent, [json!(t2), json!(t1)]);
+
+    // A tab named like another's listing makes that name ambiguous: refused, nothing sent.
+    fake.add(tab("tb3"));
+    let e = server
+        .prompt(&format!("orch-{t1}"), "hi")
+        .await
+        .unwrap_err();
+    assert!(e.is_not_found(), "{e}");
+    assert_eq!(
+        fake.methods()
+            .iter()
+            .filter(|m| *m == "terminal.send")
+            .count(),
+        2
+    );
+}

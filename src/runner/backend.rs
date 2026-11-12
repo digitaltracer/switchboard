@@ -353,15 +353,20 @@ impl Server {
     }
 }
 
-/// A core agent by address, then by name. Only a listed agent is ever targeted, never a shell.
+/// A core agent by address, then by a name only it has. Only a listed agent is ever targeted,
+/// never a shell.
 async fn core_agent(core: &Core, target: &str) -> Result<Facts> {
     let all = core.agents().await?;
-    let pos = all
-        .iter()
-        .position(|f| f.target == target)
-        .or_else(|| all.iter().position(|f| f.name.as_deref() == Some(target)))
-        .ok_or_else(|| not_found(target))?;
-    Ok(all.into_iter().nth(pos).expect("found above"))
+    if let Some(f) = all.iter().find(|f| f.target == target) {
+        return Ok(f.clone());
+    }
+    let mut named = all
+        .into_iter()
+        .filter(|f| f.name.as_deref() == Some(target));
+    match (named.next(), named.next()) {
+        (Some(f), None) => Ok(f),
+        _ => Err(not_found(target)),
+    }
 }
 
 async fn core_address(core: &Core, target: &str) -> Result<String> {

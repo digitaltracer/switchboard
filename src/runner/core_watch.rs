@@ -383,7 +383,7 @@ fn tab_name(t: &Terminal, spaces: &[SpaceView]) -> Option<String> {
 }
 
 /// The core's agents: live local terminals running Claude, Codex or another reporting program,
-/// with no shell back in front.
+/// with no shell back in front. A name shared by several is listed as `<name>-<address>`.
 pub fn listing<'a>(
     core_id: &str,
     terminals: impl Iterator<Item = &'a Terminal>,
@@ -391,7 +391,7 @@ pub fn listing<'a>(
     apps: &HashMap<String, String>,
     all: &BTreeMap<String, Terminal>,
 ) -> Vec<Facts> {
-    terminals
+    let mut facts: Vec<Facts> = terminals
         .filter(|t| t.is_live() && t.is_local() && t.pid.is_some())
         .filter(|t| !t.foreground.as_ref().is_some_and(|f| is_shell(&f.name)))
         .filter_map(|t| {
@@ -435,7 +435,19 @@ pub fn listing<'a>(
                 turn: Some(t.turn),
             })
         })
-        .collect()
+        .collect();
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for f in &facts {
+        *counts.entry(f.local_name()).or_default() += 1;
+    }
+    for f in &mut facts {
+        if let Some(n) = f.name.as_mut()
+            && counts.get(n.as_str()) > Some(&1)
+        {
+            *n = format!("{n}-{}", f.target);
+        }
+    }
+    facts
 }
 
 /// A new Codex says `working` at its prompt until its first turn; its screen says whether it's
