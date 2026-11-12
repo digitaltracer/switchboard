@@ -498,3 +498,31 @@ async fn agents_in_tabs_of_the_same_name_get_names_of_their_own() {
         2
     );
 }
+
+#[tokio::test]
+async fn a_prompt_goes_only_to_the_process_the_mirror_lists() {
+    use crate::runner::backend::Server;
+    let fake = FakeCore::start();
+    let a = fake.add(json!({ "argv": ["claude"], "name": "a" }));
+    let b = fake.add(json!({ "argv": ["claude"], "name": "b" }));
+    let core = Core::new(&fake.socket);
+    core.up("core-a");
+    core.install(0, fake.client().list().await.unwrap());
+    // Without events: a shell back in front of one, another process in the other.
+    fake.patch(
+        &a,
+        json!({ "foreground": { "pid": 7, "name": "zsh", "argv": ["zsh"], "cwd": "/" } }),
+    );
+    fake.patch(&b, json!({ "pid": 4242 }));
+    assert_eq!(
+        core.facts().unwrap().len(),
+        2,
+        "the mirror still lists both"
+    );
+    let server = Server::Core(core);
+    for name in ["a", "b"] {
+        let e = server.prompt(name, "hi").await.unwrap_err();
+        assert!(e.is_not_found(), "{name}: {e}");
+    }
+    assert!(!fake.methods().contains(&"terminal.send".to_owned()));
+}

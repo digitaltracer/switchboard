@@ -289,7 +289,16 @@ impl Server {
             }
             // Never forced: the core refuses a blocked program.
             Server::Core(core) => {
-                let address = core_address(core, target).await?;
+                let listed = core_agent(core, target).await?;
+                let address = listed.target;
+                // The mirror may lag: the same process must still be an agent there now.
+                let now = core.client().get(&address).await?;
+                if core
+                    .fresh(&now)
+                    .is_none_or(|f| f.identity != listed.identity)
+                {
+                    return Err(not_found(target));
+                }
                 let sent = core.client().send(&address, text).await?;
                 Ok(core_watch::word(sent.status.as_deref()))
             }
