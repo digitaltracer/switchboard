@@ -288,20 +288,21 @@ impl Sessions {
     }
 
     /// Ends a core session's terminal: only one carrying its label, on the core it started on.
-    pub(super) async fn end_core_terminal(&self, s: &RunnerSession) {
+    /// False unless every such terminal was ended.
+    pub(super) async fn end_core_terminal(&self, s: &RunnerSession) -> bool {
         let Some(core) = self.core() else {
-            return;
+            return false;
         };
         let client = core.client();
         match client.hello().await {
             Ok(h) if Some(&h.core.id) == s.core_id.as_ref() => {}
             Ok(_) => {
                 tracing::warn!(session_id = %s.session_id, "a different herdr-core answers; its terminals are left alone");
-                return;
+                return false;
             }
             Err(e) => {
                 tracing::warn!(session_id = %s.session_id, error = %e, "herdr-core isn't answering; the terminal is left");
-                return;
+                return false;
             }
         }
         let label = BTreeMap::from([(SESSION_LABEL.to_owned(), s.session_id.clone())]);
@@ -309,30 +310,37 @@ impl Sessions {
             Ok(ts) => ts,
             Err(e) => {
                 tracing::warn!(session_id = %s.session_id, error = %e, "listing the session's terminals");
-                return;
+                return false;
             }
         };
+        let mut ended = true;
         for t in terminals.iter().filter(|t| t.is_local()) {
             if t.is_live()
                 && let Err(e) = client.kill(&t.address).await
             {
                 tracing::warn!(address = %t.address, error = %e, "ending the session's terminal");
+                ended = false;
                 continue;
             }
             if let Err(e) = client.rm(&t.address).await {
                 tracing::warn!(address = %t.address, error = %e, "removing the session's terminal");
             }
         }
+        ended
     }
 
-    /// Stops a core session: its terminal ends, and its worktree goes only if clean and merged.
+    /// Stops a core session: its terminal ends, and its worktree goes only if clean and merged
+    /// and the terminal was ended.
     pub(super) async fn stop_core(
         &self,
         s: &RunnerSession,
         remove_if_clean: bool,
     ) -> (bool, Option<String>) {
-        self.end_core_terminal(s).await;
+        let ended = self.end_core_terminal(s).await;
         match (&s.worktree_path, remove_if_clean) {
+            (Some(_), true) if !ended => {
+                (false, Some("the agent's terminal couldn't be ended".into()))
+            }
             (Some(path), true) => {
                 remove_stopped_worktree(&s.repo_path, Path::new(path), &s.branch).await
             }

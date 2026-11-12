@@ -2047,3 +2047,29 @@ async fn an_owned_core_claude_asked_for_by_address_never_gets_dialog_keys() {
     assert_eq!(e.code, ErrorCode::DialogChanged);
     assert!(!fake.methods().contains(&"terminal.keys".to_owned()));
 }
+
+#[tokio::test]
+async fn a_core_stop_whose_terminal_wont_end_keeps_the_worktree() {
+    let (r, fake, repo) = core_start_rig(crate::config::NewSessions::Hc);
+    fake.queue_screens("t1", vec![fixture("folder-access"), fixture("ready")]);
+    report_idle(&fake, "codex");
+    let started = r
+        .sessions
+        .start(core_req(Agent::Codex, &repo))
+        .await
+        .unwrap();
+    let wt = PathBuf::from(started["worktree_path"].as_str().unwrap());
+    fake.script("terminal.kill", crate::hc::fake::Script::Error("internal"));
+    let v = r
+        .sessions
+        .handle(Op::Stop {
+            session_id: "s1".into(),
+            remove_worktree_if_clean: true,
+        })
+        .await
+        .unwrap();
+    assert_eq!(v["worktree_removed"], false, "{v}");
+    assert_eq!(v["kept_because"], "the agent's terminal couldn't be ended");
+    assert!(wt.exists(), "clean and merged, but kept");
+    assert!(r.sessions.get("s1").is_none(), "the stop completes");
+}
