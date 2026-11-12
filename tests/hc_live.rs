@@ -27,6 +27,9 @@ use tokio::time::Instant;
 
 const TURN: Duration = Duration::from_secs(180);
 
+/// Held for the whole of every test that edits ~/.claude.json, so they run one at a time.
+static CLAUDE_JSON: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 fn enabled(agent: &str) -> bool {
     std::env::var("SWITCHBOARD_LIVE_HC").is_ok_and(|v| v == "1")
         && std::env::var("SWITCHBOARD_LIVE_AGENTS")
@@ -258,6 +261,7 @@ async fn a_claude_session_starts_runs_and_stops_on_core() {
         eprintln!("skipped: SWITCHBOARD_LIVE_HC=1 with claude in SWITCHBOARD_LIVE_AGENTS");
         return;
     }
+    let _claude_json = CLAUDE_JSON.lock().await;
     let claude_json = home().join(".claude.json");
     let mut l = live(claude_json.clone()).await;
     let (_repo_dir, repo) = scratch_repo();
@@ -338,6 +342,7 @@ async fn an_outside_claude_on_core_is_prompted_answered_denied_and_seen_to_end()
         eprintln!("skipped: SWITCHBOARD_LIVE_HC=1 with claude in SWITCHBOARD_LIVE_AGENTS");
         return;
     }
+    let _claude_json = CLAUDE_JSON.lock().await;
     let claude_json = home().join(".claude.json");
     let l = live(PathBuf::from("/nonexistent/claude.json")).await;
     let (_repo_dir, repo) = scratch_repo();
