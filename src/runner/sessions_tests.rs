@@ -1985,12 +1985,10 @@ async fn a_failed_core_start_stops_no_herdr_session() {
     assert!(!calls.exists(), "herdr was run");
 }
 
-#[tokio::test]
-async fn an_owned_core_claude_asked_for_by_address_never_gets_dialog_keys() {
-    let dir = tempfile::tempdir().unwrap();
-    let (r, fake) = core_rig(dir);
+/// A Claude on the fake core, blocked at a permission dialog.
+fn blocked_core_claude(fake: &crate::hc::fake::FakeCore, name: &str) -> String {
     let t = fake.add(
-        json!({ "argv": ["/x/claude"], "name": "sb-s1", "reported": true,
+        json!({ "argv": ["/x/claude"], "name": name, "reported": true,
         "status": { "state": "blocked", "app": "claude-code", "kind": "permission" } }),
     );
     fake.set_screen(
@@ -2001,6 +1999,11 @@ async fn an_owned_core_claude_asked_for_by_address_never_gets_dialog_keys() {
         ))
         .unwrap(),
     );
+    t
+}
+
+/// Session `s1`, a Claude Switchboard started at `pane` on core `core_id`.
+fn save_core_claude_session(r: &Rig, pane: &str, core_id: &str, identity: &str) {
     std::fs::create_dir_all(r.sessions.dir("s1")).unwrap();
     r.sessions
         .save(&RunnerSession {
@@ -2012,16 +2015,26 @@ async fn an_owned_core_claude_asked_for_by_address_never_gets_dialog_keys() {
             deny_patterns: vec![],
             agent_name: "sb-s1".into(),
             workspace_id: Some("sp1".into()),
-            pane_id: Some(t.clone()),
+            pane_id: Some(pane.into()),
             worktree_path: None,
             codex_version: None,
             start_commit: None,
             herdr_session: Some("hc".into()),
             launched: true,
-            core_id: Some("core-a".into()),
-            terminal_identity: None,
+            core_id: Some(core_id.into()),
+            terminal_identity: Some(identity.into()),
         })
         .unwrap();
+}
+
+#[tokio::test]
+async fn an_owned_core_claude_asked_for_by_address_never_gets_dialog_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let (r, fake) = core_rig(dir);
+    let t = blocked_core_claude(&fake, "sb-s1");
+    let rec = fake.terminal(&t).unwrap();
+    let identity = format!("core-a:{t}:{}:{}", rec["pid"], rec["created_ms"]);
+    save_core_claude_session(&r, &t, "core-a", &identity);
     let agent = format!("hc/{t}");
     let v = r
         .sessions
@@ -2072,4 +2085,25 @@ async fn a_core_stop_whose_terminal_wont_end_keeps_the_worktree() {
     assert_eq!(v["kept_because"], "the agent's terminal couldn't be ended");
     assert!(wt.exists(), "clean and merged, but kept");
     assert!(r.sessions.get("s1").is_none(), "the stop completes");
+}
+
+#[tokio::test]
+async fn a_session_from_an_earlier_core_doesnt_own_the_new_cores_terminal_at_its_address() {
+    let dir = tempfile::tempdir().unwrap();
+    let (r, fake) = core_rig(dir);
+    save_core_claude_session(&r, "t1", "core-a", "core-a:t1:1001:1000001");
+    // A replacement core numbers its terminals from t1 again.
+    fake.set_core_id("core-b");
+    r.sessions.core().unwrap().up("core-b");
+    let t = blocked_core_claude(&fake, "other");
+    assert_eq!(t, "t1");
+    let v = r
+        .sessions
+        .handle(Op::Dialog {
+            agent: "hc/t1".into(),
+        })
+        .await
+        .unwrap();
+    let d: crate::proto::DialogView = serde_json::from_value(v["dialog"].clone()).unwrap();
+    assert!(d.answerable, "not the stale session's: {d:?}");
 }

@@ -801,11 +801,15 @@ impl Sessions {
         let info = srv.agent(name).await.map_err(backend_err)?;
         let server = srv.name().map(str::to_owned);
         let pane_id = info.target.clone();
-        // The pane decides whose it is, however it was asked for.
+        // The pane decides whose it is, however it was asked for; on core, only the same process.
         let owned = self
             .all()
             .into_iter()
-            .find(|s| s.herdr_session == server && s.pane_id.as_ref() == Some(&pane_id))
+            .find(|s| {
+                s.herdr_session == server
+                    && s.pane_id.as_ref() == Some(&pane_id)
+                    && (!core_start::is_core(s) || s.terminal_identity == info.identity)
+            })
             .or(owned);
         // The agent just fetched is what the log is checked against; no second server call.
         let log = self
