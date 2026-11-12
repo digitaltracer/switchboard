@@ -1984,3 +1984,66 @@ async fn a_failed_core_start_stops_no_herdr_session() {
     assert!(sessions.get("s1").is_none());
     assert!(!calls.exists(), "herdr was run");
 }
+
+#[tokio::test]
+async fn an_owned_core_claude_asked_for_by_address_never_gets_dialog_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let (r, fake) = core_rig(dir);
+    let t = fake.add(
+        json!({ "argv": ["/x/claude"], "name": "sb-s1", "reported": true,
+        "status": { "state": "blocked", "app": "claude-code", "kind": "permission" } }),
+    );
+    fake.set_screen(
+        &t,
+        &std::fs::read_to_string(format!(
+            "{}/tests/fixtures/dialogs/core/claude-2.1.322/permission-bash.txt",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap(),
+    );
+    std::fs::create_dir_all(r.sessions.dir("s1")).unwrap();
+    r.sessions
+        .save(&RunnerSession {
+            session_id: "s1".into(),
+            agent: Agent::Claude,
+            project_id: "p".into(),
+            repo_path: "/srv/repo".into(),
+            branch: "sb/s1".into(),
+            deny_patterns: vec![],
+            agent_name: "sb-s1".into(),
+            workspace_id: Some("sp1".into()),
+            pane_id: Some(t.clone()),
+            worktree_path: None,
+            codex_version: None,
+            start_commit: None,
+            herdr_session: Some("hc".into()),
+            launched: true,
+            core_id: Some("core-a".into()),
+            terminal_identity: None,
+        })
+        .unwrap();
+    let agent = format!("hc/{t}");
+    let v = r
+        .sessions
+        .handle(Op::Dialog {
+            agent: agent.clone(),
+        })
+        .await
+        .unwrap();
+    let d: crate::proto::DialogView = serde_json::from_value(v["dialog"].clone()).unwrap();
+    assert_eq!((d.answerable, d.reason.as_deref()), (false, Some("hooked")));
+    let yes = &d.options[0];
+    let e = r
+        .sessions
+        .handle(Op::Answer {
+            agent,
+            occurrence: d.occurrence.clone(),
+            option: yes.id.clone(),
+            label_sha256: yes.label_sha256.clone(),
+            deny_only: false,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, ErrorCode::DialogChanged);
+    assert!(!fake.methods().contains(&"terminal.keys".to_owned()));
+}

@@ -801,6 +801,12 @@ impl Sessions {
         let info = srv.agent(name).await.map_err(backend_err)?;
         let server = srv.name().map(str::to_owned);
         let pane_id = info.target.clone();
+        // The pane decides whose it is, however it was asked for.
+        let owned = self
+            .all()
+            .into_iter()
+            .find(|s| s.herdr_session == server && s.pane_id.as_ref() == Some(&pane_id))
+            .or(owned);
         // The agent just fetched is what the log is checked against; no second server call.
         let log = self
             .log_for(&srv, owned.clone(), info)
