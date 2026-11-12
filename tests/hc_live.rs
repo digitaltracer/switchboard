@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use futures_util::FutureExt;
@@ -62,7 +63,9 @@ struct Throwaway {
 
 impl Throwaway {
     async fn start() -> Self {
-        let session = format!("sbt-{:04x}", std::process::id() & 0xffff);
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let session = format!("sbt-{:04x}-{n}", std::process::id() & 0xffff);
         let socket = switchboard::hc::find_socket(
             |k| (k == "HC_SESSION").then(|| session.clone()),
             &home(),
