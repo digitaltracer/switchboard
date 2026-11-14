@@ -23,6 +23,13 @@ pub const TICK: Duration = Duration::from_secs(2);
 /// How long a Herdr server may refuse connections before its tasks count as exited. Its panes,
 /// and the agents in them, go with it.
 pub const SERVER_GONE_AFTER: Duration = Duration::from_secs(30);
+/// How often a server whose tasks have already exited is tried again, quietly.
+pub const GONE_RETRY: Duration = Duration::from_secs(60);
+
+/// True once a server has refused connections long enough that its tasks count as exited.
+fn gone_for_good(server_gone: bool, gone_since: Option<Instant>) -> bool {
+    server_gone && gone_since.is_some_and(|since| since.elapsed() >= SERVER_GONE_AFTER)
+}
 
 /// Follows every Herdr server that hosts a task, one watcher each, as tasks come and go.
 pub async fn watch(sessions: Arc<Sessions>) {
@@ -72,7 +79,12 @@ async fn watch_server(sessions: Arc<Sessions>, server: Option<String>) {
                 stream
             }
             Err(e) => {
-                tracing::warn!(error = %e, herdr_session = ?server, "herdr sync failed");
+                let gone = gone_for_good(e.server_gone(), gone_since);
+                if gone {
+                    tracing::debug!(error = %e, herdr_session = ?server, "herdr sync failed");
+                } else {
+                    tracing::warn!(error = %e, herdr_session = ?server, "herdr sync failed");
+                }
                 if e.server_gone() {
                     let since = *gone_since.get_or_insert_with(Instant::now);
                     if since.elapsed() >= SERVER_GONE_AFTER {
@@ -81,7 +93,12 @@ async fn watch_server(sessions: Arc<Sessions>, server: Option<String>) {
                 } else {
                     gone_since = None;
                 }
-                tokio::time::sleep(backoff.next_delay()).await;
+                let delay = if gone {
+                    GONE_RETRY
+                } else {
+                    backoff.next_delay()
+                };
+                tokio::time::sleep(delay).await;
                 continue;
             }
         };
@@ -305,5 +322,23 @@ impl Tracker {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn a_server_counts_as_gone_for_good_only_after_refusing_long_enough() {
+        let since = Instant::now();
+        assert!(!gone_for_good(true, None));
+        assert!(!gone_for_good(true, Some(since)));
+        tokio::time::advance(SERVER_GONE_AFTER).await;
+        assert!(gone_for_good(true, Some(since)));
+        assert!(
+            !gone_for_good(false, Some(since)),
+            "a server that answers isn't gone"
+        );
     }
 }
