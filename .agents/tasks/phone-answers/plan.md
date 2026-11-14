@@ -336,3 +336,13 @@ The owner dropped the exact version pin. Claude Code and Codex update themselves
 - The runner no longer runs `claude --version`. The `unpinned` reason is gone.
 - The captured screens stay as regression tests. Capture new ones when a layout changes.
 - `GET /app/v1/agents/dialog` gained `waiting` (additive). With no `dialog`, it means the agent waits on something the phone can't show as options.
+
+## Changed (2026-11-14): standing grants are offered
+
+At the owner's request, every row of a recognised permission dialog can be chosen from the phone,
+including the standing grants that were shown but not offered: Claude's "Yes, and always allow …"
+and "Yes, and switch to … mode", and Codex's "Yes, and don't ask again …". They are approvals like
+any other, so they need the approve right and the device signature. Free-text rows ("Type
+something.", "Chat about this", the plan's "Tell Claude what to change") and multi-select or
+multi-question dialogs stay read-only, as `AGENTS.md` requires. The hook path for sessions
+Switchboard starts is unchanged: it still offers allow or deny only.
