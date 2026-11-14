@@ -6,7 +6,7 @@ struct OptionItem: Identifiable, Hashable {
     let id: String
     let label: String
     var detail: String?
-    /// Shown for context only when false: free text, a chat, or a standing permission.
+    /// Shown for context only when false: free text or a chat.
     var offered = true
     var isDeny = false
 }
@@ -48,8 +48,8 @@ struct OptionList: View {
     }
 }
 
-/// The dialog on an agent's screen, answered from the phone when Switchboard recognises it. Any
-/// option but the deny asks for Face ID. It reads the screen itself while shown, so a dialog that
+/// The dialog on an agent's screen, answered from the phone when Switchboard recognises it. A tap
+/// picks an option and Confirm sends it; any option but the deny asks for Face ID. It reads the screen itself while shown, so a dialog that
 /// appears after the page opened still shows, and says so when the agent waits on something else.
 struct DialogCard: View {
     @Environment(AppModel.self) private var model
@@ -61,6 +61,8 @@ struct DialogCard: View {
     @State private var waitingElsewhere = false
     @State private var busy = false
     @State private var result: String?
+    /// The option picked on the phone, sent only on Confirm.
+    @State private var picked: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -76,12 +78,26 @@ struct DialogCard: View {
                         options: dialog.options.map {
                             OptionItem(id: $0.id, label: $0.label, offered: $0.offered && dialog.answerable, isDeny: $0.isDeny)
                         },
-                        selected: Set([dialog.selected].compactMap { $0 }),
+                        selected: Set([picked].compactMap { $0 }),
                         disabled: busy
-                    ) { o in Task { await answer(o.id) } }
-                    Text(dialog.answerable ? "Tap an option to answer. The tick is what its screen has selected now." : Self.why(dialog.reason))
+                    ) { o in picked = o.id }
+                    Text(dialog.answerable ? "Pick an option, then confirm." : Self.why(dialog.reason))
                         .font(.footnote).foregroundStyle(.secondary)
                     if let result { Text(result).font(.footnote).foregroundStyle(.secondary) }
+                    if dialog.answerable {
+                        let deny = dialog.options.first { $0.id == picked }?.isDeny ?? false
+                        Button { if let picked { Task { await answer(picked) } } } label: {
+                            Label("Confirm", systemImage: deny ? "checkmark" : "faceid")
+                                .frame(maxWidth: .infinity, minHeight: 50)
+                                .background(picked == nil ? Color(.tertiarySystemFill) : Color.accentColor,
+                                            in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                                .foregroundStyle(picked == nil ? Color.secondary : Color.white)
+                        }
+                        .font(.headline)
+                        .buttonStyle(.plain)
+                        .disabled(picked == nil || busy)
+                        .accessibilityIdentifier("dialog-confirm")
+                    }
                 }
                 .padding(16)
                 .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
@@ -127,7 +143,10 @@ struct DialogCard: View {
         guard let hub = model.hub, !busy else { return }
         // A failed read keeps what is shown.
         guard let d = try? await hub.dialog(machine: machine, agent: agent) else { return }
-        if d.dialog?.occurrenceId != dialog?.occurrenceId, dialog != nil, d.dialog != nil { result = nil }
+        if d.dialog?.occurrenceId != dialog?.occurrenceId {
+            if dialog != nil, d.dialog != nil { result = nil }
+            picked = nil
+        }
         dialog = d.dialog
         waitingElsewhere = d.dialog == nil && d.waiting == true
     }
@@ -143,6 +162,7 @@ struct DialogCard: View {
             result = "Answered: \(option.label)."
             UINotificationFeedbackGenerator().notificationOccurred(.success)
             self.dialog = nil
+            picked = nil
         } catch let e as HubError where e.code == "dialog_changed" {
             result = "The question changed; here it is again."
         } catch let e as HubError where e.outcomeUnknown {

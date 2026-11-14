@@ -148,9 +148,13 @@ final class SwitchboardUITests: XCTestCase {
         app.staticTexts["Review the import"].tap()
         let no = app.buttons["option-No, and tell Codex what to do differently (esc)"]
         XCTAssertTrue(no.waitForExistence(timeout: 15), app.debugDescription)
-        XCTAssertFalse(app.buttons["option-Yes, and don't ask again (p)"].isEnabled, "a standing approval isn't offered")
+        XCTAssertTrue(app.buttons["option-Yes, and don't ask again (p)"].isEnabled, "a standing approval is offered")
+        let confirm = app.buttons["dialog-confirm"]
+        XCTAssertFalse(confirm.isEnabled, "nothing is sent before an option is picked")
         snapshot(app, "agent-permission")
         no.tap()
+        XCTAssertTrue(no.exists, "picking an option sends nothing yet")
+        confirm.tap()
         XCTAssertTrue(no.waitForNonExistence(timeout: 20), "the answered dialog is gone")
         app.navigationBars.buttons.firstMatch.tap()
         app.navigationBars.buttons.firstMatch.tap()
