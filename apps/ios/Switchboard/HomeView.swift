@@ -143,6 +143,11 @@ struct HomeView: View {
                 return
             }
             if model.openAttentionId == id { model.openAttentionId = nil }
+            // Its name may belong to another agent by now; that one isn't opened in its place.
+            if a.sessionId == nil, a.sameAgent == false {
+                model.banner = "The agent that asked has ended, so there's nothing to open."
+                return
+            }
             switch a.state {
             case "open": break
             case "answered": model.banner = "That question was already answered."
