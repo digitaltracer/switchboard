@@ -203,7 +203,7 @@ fun SessionScreen(model: AppModel, voice: Voice, listen: Listen, sessionId: Stri
             item {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     SummaryCard(convo) { model.path.add(Route.Conversation(ConversationSource.Session(s.id), s.label)) }
-                    ConversationLinks(model, ConversationSource.Session(s.id), s.label, hasConversation = convo.unavailable == null)
+                    ConversationLinks(model, ConversationSource.Session(s.id), s.label, hasConversation = convo.unavailable == null && !convo.ended)
                 }
             }
             changes?.takeIf { it.files.isNotEmpty() }?.let { item { ChangesGrid(it) } }

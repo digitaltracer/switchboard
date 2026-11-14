@@ -139,6 +139,9 @@ class ConversationModel(val source: ConversationSource, private val drawsTermina
     /** Why there's no conversation, e.g. no log yet or an older hub; the terminal stands in. */
     var unavailable by mutableStateOf<String?>(null)
         private set
+    /** The hub says the session has ended: nothing more to follow, and its screen isn't read. */
+    var ended by mutableStateOf(false)
+        private set
     var terminal by mutableStateOf("")
         private set
     /** The same screen with its colours, when the hub sends them. */
@@ -168,14 +171,14 @@ class ConversationModel(val source: ConversationSource, private val drawsTermina
     suspend fun follow(model: AppModel) {
         coroutineScope {
             launch {
-                Follow.repeating(going = { model.foreground }) {
+                Follow.repeating(going = { model.foreground && !ended }) {
                     val ok = model.hub?.let { refresh(it, wait = true) } ?: false
                     delay(backoff.extraMs(unavailable != null))
                     ok
                 }
             }
             launch {
-                Follow.screens(screenBell, { Follow.readsScreen(drawsTerminal, wantsTerminal, unavailable != null) }, { model.foreground }) {
+                Follow.screens(screenBell, { Follow.readsScreen(drawsTerminal, wantsTerminal, unavailable != null) }, { model.foreground && !ended }) {
                     model.hub?.let { loadTerminal(it) } ?: false
                 }
             }
@@ -205,6 +208,7 @@ class ConversationModel(val source: ConversationSource, private val drawsTermina
             throw e
         } catch (e: HubError) {
             when (e.code) {
+                "session_not_running" -> ended = true
                 // A hub older than this app has no conversations to give.
                 "http_404" -> unavailable = "the hub needs updating"
                 "bad_request", "not_found" -> unavailable = e.message
@@ -249,6 +253,10 @@ class ConversationModel(val source: ConversationSource, private val drawsTermina
             throw e
         } catch (e: HubError) {
             if (e.code == "busy") return true
+            if (e.code == "session_not_running") {
+                ended = true
+                return false
+            }
             terminalError = e.message
         } catch (e: Exception) {
             terminalError = e.message
@@ -287,6 +295,13 @@ fun ConversationScreen(model: AppModel, voice: Voice, listen: Listen, source: Co
     Page(model.backLabel, model::pop, bottomBar = { MessageBar(target != null, { voice.type(target) }) { listen(target, false) } }) {
         Column(Modifier.fillMaxSize()) {
             Text(title, Modifier.fillMaxWidth().padding(horizontal = 16.dp), style = Type.headline, color = palette.label, maxLines = 1, textAlign = TextAlign.Center)
+            if (convo.ended) {
+                Text(
+                    "This session has ended, so there's nothing more to show.",
+                    Modifier.padding(horizontal = 16.dp, vertical = 10.dp), style = Type.footnote, color = palette.secondary,
+                )
+                return@Column
+            }
             val why = convo.unavailable
             if (why != null) {
                 // Nothing to switch between: the terminal is all there is.
@@ -502,6 +517,7 @@ fun SummaryCard(convo: ConversationModel, open: () -> Unit) {
         val why = convo.unavailable
         val reply = latest.reply?.text
         when {
+            convo.ended -> Text("This session has ended.", style = Type.footnote, color = palette.secondary)
             why != null -> Text("No conversation to show ($why).", style = Type.footnote, color = palette.secondary)
             !convo.conversation.isLoaded -> ConversationSkeleton(rows = 1)
             reply != null -> Clamped(286.dp) { MarkdownText(reply) }
