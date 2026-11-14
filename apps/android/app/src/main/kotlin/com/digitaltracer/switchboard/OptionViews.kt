@@ -9,7 +9,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.HelpOutline
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.outlined.Circle
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -23,6 +25,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.digitaltracer.switchboard.api.models.Dialog
@@ -37,7 +40,7 @@ data class OptionItem(
     val id: String,
     val label: String,
     val detail: String? = null,
-    /** Shown for context only when false: free text, a chat, or a standing permission. */
+    /** Shown for context only when false: free text or a chat. */
     val offered: Boolean = true,
 )
 
@@ -83,12 +86,17 @@ fun DialogCard(model: AppModel, machine: String, agent: String, label: String) {
     var waitingElsewhere by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var result by remember { mutableStateOf<String?>(null) }
+    // The option picked on the phone, sent only on Confirm.
+    var picked by remember { mutableStateOf<String?>(null) }
     suspend fun load() {
         val hub = model.hub ?: return
         if (busy) return
         // A failed read keeps what is shown.
         val d = runCatching { hub.dialog(machine, agent) }.getOrNull() ?: return
-        if (dialog != null && d.dialog != null && d.dialog?.occurrenceId != dialog?.occurrenceId) result = null
+        if (d.dialog?.occurrenceId != dialog?.occurrenceId) {
+            if (dialog != null && d.dialog != null) result = null
+            picked = null
+        }
         dialog = d.dialog
         waitingElsewhere = d.dialog == null && d.waiting == true
     }
@@ -130,16 +138,29 @@ fun DialogCard(model: AppModel, machine: String, agent: String, label: String) {
         OptionList(
             d.prompt,
             d.options.map { OptionItem(it.id, it.label, offered = it.offered && d.answerable) },
-            setOfNotNull(d.selected),
+            setOfNotNull(picked),
             !busy,
-        ) { o ->
-            val option = d.options.first { it.id == o.id }
+        ) { o -> picked = o.id }
+        Text(
+            if (d.answerable) "Pick an option, then confirm." else why(d.reason),
+            style = Type.footnote, color = palette.secondary,
+        )
+        result?.let { Text(it, style = Type.footnote, color = palette.secondary) }
+        if (!d.answerable) return@Column
+        val chosen = d.options.firstOrNull { it.id == picked }
+        BigButton(
+            "Confirm", if (chosen?.isDeny == true) Icons.Filled.Check else Icons.Filled.Fingerprint,
+            if (chosen == null) palette.fill else palette.accent, if (chosen == null) palette.secondary else Color.White,
+            chosen != null && !busy, Modifier.fillMaxWidth().testTag("dialog-confirm"),
+        ) {
+            val option = chosen ?: return@BigButton
             scope.launch {
                 val hub = model.hub ?: return@launch
                 busy = true
                 result = try {
                     hub.answer(machine, agent, d, option, "Answer $label: ${option.label}", UUID.randomUUID().toString())
                     dialog = null
+                    picked = null
                     "Answered: ${option.label}."
                 } catch (e: CancellationException) {
                     throw e
@@ -154,11 +175,6 @@ fun DialogCard(model: AppModel, machine: String, agent: String, label: String) {
                 load()
             }
         }
-        Text(
-            if (d.answerable) "Tap an option to answer. The tick is what its screen has selected now." else why(d.reason),
-            style = Type.footnote, color = palette.secondary,
-        )
-        result?.let { Text(it, style = Type.footnote, color = palette.secondary) }
     }
 }
 

@@ -282,7 +282,7 @@ fun ApprovalCard(model: AppModel, approval: Approval, session: Session, open: ((
 }
 
 @Composable
-private fun BigButton(
+internal fun BigButton(
     text: String, icon: ImageVector?, background: Color, foreground: Color, enabled: Boolean, modifier: Modifier, onClick: () -> Unit,
 ) {
     Row(
