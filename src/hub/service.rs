@@ -685,6 +685,19 @@ impl SessionService {
             .ok_or_else(|| HubError::UnknownSession(id.to_owned()))
     }
 
+    /// A session whose agent may still be there to read; an ended one is refused without
+    /// asking its runner, so phones stop polling it.
+    async fn live_session(&self, id: &str) -> Result<SessionRecord, HubError> {
+        let s = self.session(id).await?;
+        match s.lifecycle {
+            Lifecycle::Starting | Lifecycle::Running | Lifecycle::Stopping => Ok(s),
+            lifecycle => Err(HubError::NotRunning {
+                id: s.id,
+                lifecycle,
+            }),
+        }
+    }
+
     /// A session that belongs to `machine`; events never touch another machine's sessions.
     async fn owned_by(&self, machine: &str, id: &str) -> Result<Option<SessionRecord>, HubError> {
         Ok(self
@@ -1159,7 +1172,7 @@ impl SessionService {
     /// The last `lines` of the agent's terminal, ANSI stripped by Herdr. Untrusted text. Reading
     /// past the screen scrolls a full-screen agent, so this is only for reads a person asks for.
     pub async fn read_history(&self, session_id: &str, lines: u32) -> Result<ReadResult, HubError> {
-        let s = self.session(session_id).await?;
+        let s = self.live_session(session_id).await?;
         let op = Op::Read {
             session_id: session_id.to_owned(),
             lines: lines.min(MAX_READ_LINES),
@@ -1210,7 +1223,7 @@ impl SessionService {
         before: Option<u64>,
         wait_ms: Option<u64>,
     ) -> Result<TranscriptPage, HubError> {
-        let s = self.session(session_id).await?;
+        let s = self.live_session(session_id).await?;
         let agent = s
             .agent_name
             .ok_or_else(|| HubError::BadRequest("this session has no agent name".into()))?;
@@ -1220,7 +1233,7 @@ impl SessionService {
 
     /// The skills and commands the session's agent can run.
     pub async fn session_skills(&self, session_id: &str) -> Result<Vec<SkillInfo>, HubError> {
-        let s = self.session(session_id).await?;
+        let s = self.live_session(session_id).await?;
         let agent = s
             .agent_name
             .ok_or_else(|| HubError::BadRequest("this session has no agent name".into()))?;
@@ -1295,7 +1308,7 @@ impl SessionService {
         session_id: &str,
         colours: bool,
     ) -> Result<ReadResult, HubError> {
-        let s = self.session(session_id).await?;
+        let s = self.live_session(session_id).await?;
         let agent = s
             .agent_name
             .ok_or_else(|| HubError::BadRequest("this session has no agent name".into()))?;

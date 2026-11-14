@@ -1778,6 +1778,45 @@ async fn the_screen_read_forwards_to_the_runners_visible_read_and_is_masked() {
 }
 
 #[tokio::test]
+async fn an_ended_sessions_agent_is_not_read_but_its_changes_are() {
+    let r = rig().await;
+    let mut vps = connect(&r.svc, "vps", vec![]).await;
+    let sid = running(&r, &mut vps).await;
+    vps.event(Event::SessionExited {
+        session_id: sid.clone(),
+    })
+    .await;
+    assert_eq!(
+        r.svc.read_screen(&sid, false).await.unwrap_err().code(),
+        "session_not_running"
+    );
+    assert_eq!(
+        r.svc.read_history(&sid, 50).await.unwrap_err().code(),
+        "session_not_running"
+    );
+    assert_eq!(
+        r.svc
+            .transcript(&sid, Some(3), None, Some(10_000))
+            .await
+            .unwrap_err()
+            .code(),
+        "session_not_running"
+    );
+    assert_eq!(
+        r.svc.session_skills(&sid).await.unwrap_err().code(),
+        "session_not_running"
+    );
+    vps.no_req().await;
+    let (svc, s2) = (r.svc.clone(), sid.clone());
+    let task = tokio::spawn(async move { svc.changes(&s2).await });
+    let req = vps.req().await;
+    assert!(matches!(req.op, Op::Changes { .. }));
+    vps.ok(req.id, json!({"files": [], "truncated": false}))
+        .await;
+    assert!(task.await.unwrap().unwrap().files.is_empty());
+}
+
+#[tokio::test]
 async fn a_screens_colours_come_through_only_when_masking_left_it_alone() {
     let r = rig().await;
     let mut vps = connect(&r.svc, "vps", vec![]).await;

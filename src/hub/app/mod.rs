@@ -430,6 +430,7 @@ pub async fn get_session(
 #[utoipa::path(get, path = "/app/v1/sessions/{id}/output", tag = "sessions",
     security(("device_token" = [])), params(("id" = String, Path), OutputQuery),
     responses((status = 200, description = "OK", body = Output), (status = 404, description = "Not found", body = ApiError),
+              (status = 409, description = "The session has ended (`session_not_running`); its agent is no longer read", body = ApiError),
               (status = 503, description = "Machine offline or reconciling", body = ApiError)))]
 pub async fn get_output(
     State(st): State<AppState>,
@@ -467,7 +468,8 @@ pub async fn get_changes(
 #[utoipa::path(get, path = "/app/v1/sessions/{id}/transcript", tag = "sessions",
     security(("device_token" = [])), params(("id" = String, Path), TranscriptQuery),
     responses((status = 200, description = "OK", body = Transcript), (status = 400, description = "Not a Claude agent", body = ApiError),
-              (status = 404, description = "Not found", body = ApiError), (status = 503, description = "Machine offline", body = ApiError)))]
+              (status = 404, description = "Not found", body = ApiError), (status = 409, description = "The session has ended (`session_not_running`); its agent is no longer read", body = ApiError),
+              (status = 503, description = "Machine offline", body = ApiError)))]
 /// The session's conversation from its agent's own log, a page at a time. Read-only.
 pub async fn get_transcript(
     State(st): State<AppState>,
@@ -486,6 +488,7 @@ pub async fn get_transcript(
 #[utoipa::path(get, path = "/app/v1/sessions/{id}/skills", tag = "sessions",
     security(("device_token" = [])), params(("id" = String, Path)),
     responses((status = 200, description = "OK", body = Skills), (status = 404, description = "Not found", body = ApiError),
+              (status = 409, description = "The session has ended (`session_not_running`); its agent is no longer read", body = ApiError),
               (status = 503, description = "Machine offline", body = ApiError)))]
 /// The skills and commands the session's agent can run, for a `/` picker. Names and one-line
 /// descriptions only, masked.
