@@ -47,7 +47,7 @@ fn dialog(agent: &str, answered: bool) -> Value {
             "kind": "permission", "occurrence": "occ-p",
             "prompt": "Would you like to run the following command?\n$ cargo test --workspace",
             "options": [option("p1", "Yes, proceed (y)", false, true),
-                        option("p2", "Yes, and don't ask again (p)", false, false),
+                        option("p2", "Yes, and don't ask again (p)", false, true),
                         option("p3", "No, and tell Codex what to do differently (esc)", true, true)],
             "selected": "p1", "answerable": true,
         }),
