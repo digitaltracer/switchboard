@@ -128,8 +128,8 @@ fn folder_access(lines: &[&str]) -> Screen {
 
 const MARKER: char = '›';
 
-/// A permission dialog as options, for an answer by keys. Row 2 grants a standing approval, so
-/// it is shown but not offered. Anything else is only parsed read-only.
+/// A permission dialog as options, for an answer by keys; row 2's standing approval included.
+/// Anything else is only parsed read-only.
 pub fn recognise(text: &str) -> Recognised {
     exact(text).unwrap_or_else(|| dialog::generic(text, MARKER))
 }
@@ -159,7 +159,7 @@ fn exact(text: &str) -> Option<Recognised> {
             number,
             label: label.to_owned(),
             is_deny: number == 3,
-            excluded: number == 2,
+            excluded: false,
         })
         .collect();
     Some(Recognised::Dialog(Dialog {
@@ -313,9 +313,10 @@ mod tests {
         assert!(d.actionable);
         assert_eq!(d.selected, 0);
         let offered: Vec<_> = d.options.iter().filter(|o| !o.excluded).collect();
-        assert_eq!(offered.len(), 2);
+        assert_eq!(offered.len(), 3);
         assert_eq!(offered[0].label, "Yes, proceed (y)");
-        assert!(offered[1].is_deny);
+        assert!(offered[1].label.starts_with("Yes, and don't ask again"));
+        assert!(offered[2].is_deny);
         assert!(d.prompt.starts_with(COMMAND_TITLE));
         assert!(d.prompt.contains("$ touch made-by-codex.txt"));
         assert_eq!(

@@ -184,7 +184,7 @@ async fn arrows_then_one_enter_after_the_selection_is_verified() {
     assert!(v.answerable, "{v:?}");
     assert_eq!(
         v.options.iter().map(|o| o.offered).collect::<Vec<_>>(),
-        [true, false, true]
+        [true, true, true]
     );
     let answered = Answered::default();
     answer(&io, &never, &answered, &request(&v, 2))
@@ -318,10 +318,6 @@ async fn refused_panes_and_options_get_no_keys() {
             ErrorCode::DialogChanged,
         ),
         (
-            answer(&io, &never, &answered, &request(&v, 1)).await,
-            ErrorCode::BadRequest,
-        ),
-        (
             answer(
                 &io,
                 &never,
@@ -358,6 +354,27 @@ async fn refused_panes_and_options_get_no_keys() {
         ..request(&v, 2)
     };
     answer(&io, &never, &answered, &req).await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_free_text_row_is_shown_but_never_chosen() {
+    let io = Fake::new(
+        "claude",
+        fixture("claude-2.1.312", "question-single"),
+        '❯',
+        5,
+        String::new(),
+    );
+    let (_, v) = seen(&io).await;
+    assert_eq!(
+        v.options.iter().map(|o| o.offered).collect::<Vec<_>>(),
+        [true, true, true, false, false]
+    );
+    let e = answer(&io, &never, &Answered::default(), &request(&v, 3))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, ErrorCode::BadRequest);
+    assert!(io.sent().is_empty());
 }
 
 #[tokio::test(start_paused = true)]

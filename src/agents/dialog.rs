@@ -20,7 +20,7 @@ pub struct DialogOption {
     pub number: u32,
     pub label: String,
     pub is_deny: bool,
-    /// Never chosen by keys: free text, a chat, or a standing permission.
+    /// Never chosen by keys: free text or a chat.
     pub excluded: bool,
 }
 

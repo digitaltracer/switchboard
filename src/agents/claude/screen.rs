@@ -111,7 +111,7 @@ fn permission(lines: &[&str], footer: usize) -> Option<Dialog> {
             number,
             label: label.to_owned(),
             is_deny: label == "No",
-            excluded: label != "Yes" && label != "No",
+            excluded: false,
         })
         .collect();
     Some(Dialog {
@@ -215,16 +215,18 @@ mod tests {
     }
 
     #[test]
-    fn permissions_offer_yes_and_no_only() {
+    fn permissions_offer_every_row_including_standing_grants() {
         let d = dialog(&fixture("permission-bash"));
         assert_eq!(d.kind, DialogKind::Permission);
-        assert_eq!(offered(&d), ["Yes", "No"]);
+        assert_eq!(offered(&d).len(), d.options.len());
+        assert_eq!(offered(&d).first(), Some(&"Yes"));
+        assert_eq!(offered(&d).last(), Some(&"No"));
         assert!(d.options.last().unwrap().is_deny);
         assert!(d.prompt.starts_with("Bash command\n"));
         assert!(d.prompt.contains("touch made-by-bash.txt"));
         assert!(d.prompt.ends_with("Do you want to proceed?"));
         let e = dialog(&fixture("permission-edit"));
-        assert_eq!(offered(&e), ["Yes", "No"]);
+        assert_eq!(offered(&e).len(), 3);
         assert_eq!(e.options.len(), 3);
         assert!(e.prompt.starts_with("Edit file\nnotes.txt"));
     }
