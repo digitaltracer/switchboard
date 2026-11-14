@@ -19,6 +19,8 @@ final class ConversationModel {
     private(set) var conversation = Conversation()
     /// Why there's no conversation, e.g. no log yet or an older hub; the terminal stands in.
     private(set) var unavailable: String?
+    /// The hub says the session has ended: nothing more to follow, and its screen isn't read.
+    private(set) var ended = false
     private(set) var terminal = ""
     /// The same screen with its colours, when the hub sends them.
     private(set) var terminalAnsi: String?
@@ -47,7 +49,7 @@ final class ConversationModel {
     }
 
     private func followConversation(_ model: AppModel) async {
-        await Follow.repeating(going: { model.active }) {
+        await Follow.repeating(going: { model.active && !ended }) {
             let ok = await refresh(model.hub, wait: true)
             let extra = backoff.extra(unavailable: unavailable != nil)
             if extra > .zero { try? await Task.sleep(for: extra) }
@@ -57,7 +59,7 @@ final class ConversationModel {
 
     private func followScreen(_ model: AppModel) async {
         await Follow.screens(bell: screenBell, shown: { Follow.readsScreen(draws: drawsTerminal, wanted: wantsTerminal, unavailable: unavailable != nil) },
-                             going: { model.active }) {
+                             going: { model.active && !ended }) {
             await loadTerminal(model.hub)
         }
     }
@@ -85,6 +87,8 @@ final class ConversationModel {
             unavailable = nil
             error = nil
             return true
+        } catch let e as HubError where e.code == "session_not_running" {
+            ended = true
         } catch let e as HubError where e.code == "http_404" {
             // A hub older than this app has no conversations to give.
             unavailable = "the hub needs updating"
@@ -121,6 +125,9 @@ final class ConversationModel {
             return true
         } catch let e as HubError where e.code == "busy" {
             return true
+        } catch let e as HubError where e.code == "session_not_running" {
+            ended = true
+            return false
         } catch {
             if !Task.isCancelled { terminalError = error.localizedDescription }
             return false
@@ -168,7 +175,15 @@ struct ConversationScreen: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if let why = convo.unavailable {
+            if convo.ended {
+                Label("This session has ended, so there's nothing more to show.", systemImage: "stop.circle")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Spacer()
+            } else if let why = convo.unavailable {
                 // Nothing to switch between: the terminal is all there is.
                 Label("No conversation to show (\(why)), so here's the agent's screen.", systemImage: "info.circle")
                     .font(.footnote)
@@ -415,7 +430,11 @@ struct SummaryCard: View {
                 Spacer()
                 if let at = latest.at.flatMap(Turns.time) { Text(at).font(.caption).foregroundStyle(.secondary) }
             }
-            if let why = convo.unavailable {
+            if convo.ended {
+                Label("This session has ended.", systemImage: "stop.circle")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            } else if let why = convo.unavailable {
                 Label("No conversation to show (\(why)).", systemImage: "info.circle")
                     .font(.footnote)
                     .foregroundStyle(.secondary)

@@ -86,7 +86,7 @@ struct SessionDetailView: View {
             DialogCard(machine: s.machineId, agent: name, label: s.label)
         }
         SummaryCard(convo: convo, conversation: ConversationRef(source: .session(s.id), title: s.label))
-        ConversationLinks(source: .session(s.id), title: s.label, hasConversation: convo.unavailable == nil)
+        ConversationLinks(source: .session(s.id), title: s.label, hasConversation: convo.unavailable == nil && !convo.ended)
         if let changes, !changes.files.isEmpty {
             ChangesGrid(changes: changes).id("changes")
         }
