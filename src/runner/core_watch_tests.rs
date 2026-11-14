@@ -113,6 +113,42 @@ fn names_come_from_the_terminal_then_its_tab_then_its_address() {
 }
 
 #[test]
+fn an_unnamed_space_is_called_after_where_its_first_terminal_is_not_its_stale_folder() {
+    // As seen on the owner's machine: the space shows as "switchboard" in the app, but its saved
+    // folder is another project's.
+    let doc = json!({ "spaces": [
+        { "id": "sp1", "name": "", "folder": "/Users/o/work/manual-integrations",
+          "tabs": [
+            { "id": "tb1", "name": "", "root": { "content": { "terminal": "t9" } } },
+            { "id": "tb2", "name": "options-test", "root": { "content": { "terminal": "t2" } } },
+          ] },
+    ] });
+    let ts = [
+        term(
+            json!({ "address": "t9", "argv": ["claude"], "cwd": "/Users/o/personal/switchboard",
+                     "foreground": { "pid": 9, "name": "2.1.325", "argv": ["claude"],
+                                     "cwd": "/Users/o/personal/switchboard" },
+                     "labels": { "herdr.space": "sp1", "herdr.tab": "tb1" } }),
+        ),
+        term(
+            json!({ "address": "t2", "argv": ["claude"], "cwd": "/Users/o/elsewhere",
+                     "labels": { "herdr.space": "sp1", "herdr.tab": "tb2" } }),
+        ),
+    ];
+    let spaces: Vec<(String, String)> = list(&ts, &doc)
+        .into_iter()
+        .map(|f| (f.target, f.space.unwrap()))
+        .collect();
+    assert_eq!(
+        spaces,
+        [
+            ("t9".into(), "switchboard".into()),
+            ("t2".into(), "switchboard".into())
+        ]
+    );
+}
+
+#[test]
 fn identity_is_core_address_pid_and_start() {
     let f = &list(&[term(claude("blocked"))], &Value::Null)[0];
     assert_eq!(f.identity.as_deref(), Some("core-a:t1:100:5"));

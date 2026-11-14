@@ -346,14 +346,32 @@ pub fn state_seq(t: &Terminal) -> u64 {
     (t.turn << 42) | (t.status_ms.unwrap_or_default() & ((1 << 42) - 1))
 }
 
-fn space_name(spaces: &[SpaceView], id: &str) -> Option<String> {
+/// A space's name, else what the Herdr app calls an unnamed one: where its first terminal is. The
+/// space's saved folder only when none of its terminals is known; it goes stale.
+fn space_name(spaces: &[SpaceView], id: &str, all: &BTreeMap<String, Terminal>) -> Option<String> {
     let s = spaces.iter().find(|s| s.id == id)?;
-    s.name.clone().or_else(|| {
-        s.folder
-            .as_deref()
-            .and_then(|f| Path::new(f).file_name())
+    let base = |p: &str| {
+        Path::new(p)
+            .file_name()
             .map(|n| n.to_string_lossy().into_owned())
-    })
+    };
+    s.name
+        .clone()
+        .or_else(|| {
+            let first = s
+                .tabs
+                .iter()
+                .flat_map(|tab| &tab.terminals)
+                .find_map(|address| all.get(address))?;
+            let cwd = first
+                .foreground
+                .as_ref()
+                .map(|f| f.cwd.as_str())
+                .filter(|c| !c.is_empty())
+                .unwrap_or(&first.cwd);
+            base(cwd)
+        })
+        .or_else(|| s.folder.as_deref().and_then(base))
 }
 
 /// The space a terminal shows in: its own, else its parent's, else none.
@@ -366,7 +384,7 @@ fn space_of(
     for _ in 0..8 {
         let here = cur?;
         if let Some(id) = here.labels.get("herdr.space") {
-            return space_name(spaces, id);
+            return space_name(spaces, id, all);
         }
         cur = here.parent.as_deref().and_then(|p| all.get(p));
     }
