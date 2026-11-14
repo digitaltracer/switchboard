@@ -1248,4 +1248,9 @@ pub struct Attention {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(nullable = false)]
     pub dialog: Option<Dialog>,
+    /// Whether the agent now under `agent` is the one that asked. False once it ended or another
+    /// agent took the name, so a client shouldn't open it; left out when the hub can't tell.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    pub same_agent: Option<bool>,
 }

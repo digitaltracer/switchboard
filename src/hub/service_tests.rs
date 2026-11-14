@@ -2600,3 +2600,52 @@ async fn a_waiting_agent_is_pushed_once_unless_a_hook_approval_already_was() {
     let a = r.svc.store().get_attention(&id).await.unwrap().unwrap();
     assert_eq!(a.resolution.as_deref(), Some("gone"));
 }
+
+#[tokio::test]
+async fn an_old_waiting_push_says_whether_its_agent_is_still_the_one_that_asked() {
+    let r = rig().await;
+    let mut vps = connect(&r.svc, "vps", vec![]).await;
+    vps.event(waiting_event("w/cx", "o1", None)).await;
+    let id = outbox(&r)
+        .await
+        .into_iter()
+        .find(|(k, _)| *k == crate::store::OutboxKind::Waiting)
+        .map(|(_, key)| key.trim_start_matches("waiting:").to_owned())
+        .unwrap();
+    vps.event(Event::NamedAgentStatus {
+        agent_name: "w/cx".into(),
+        agent_status: "working".into(),
+    })
+    .await;
+    // The runner's answer about whoever holds the name now, and what that says.
+    let cases = [
+        (
+            Outcome::Ok(json!({"dialog": null, "occurrence": "o9", "terminal_id": "term_1"})),
+            Some(true),
+        ),
+        (
+            Outcome::Ok(json!({"dialog": null, "occurrence": "o9", "terminal_id": "term_2"})),
+            Some(false),
+        ),
+        (
+            Outcome::Err(ProtoError::new(ErrorCode::NotFound, "no agent")),
+            Some(false),
+        ),
+        (
+            Outcome::Ok(json!({"dialog": null, "occurrence": "o9"})),
+            None,
+        ),
+    ];
+    for (i, (reply, want)) in cases.into_iter().enumerate() {
+        let (svc, id2) = (r.svc.clone(), id.clone());
+        let task = tokio::spawn(async move { svc.attention(&id2).await });
+        let req = vps.req().await;
+        assert!(
+            matches!(req.op, Op::Dialog { ref agent } if agent == "w/cx"),
+            "case {i}"
+        );
+        vps.reply(req.id, reply).await;
+        let a = task.await.unwrap().unwrap();
+        assert_eq!((a.state.as_str(), a.same_agent), ("gone", want), "case {i}");
+    }
+}

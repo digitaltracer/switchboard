@@ -2301,6 +2301,10 @@
           "dialog": {
             "$ref": "#/components/schemas/Dialog",
             "description": "While open, the dialog it waits at, if one is recognised."
+          },
+          "same_agent": {
+            "type": "boolean",
+            "description": "Whether the agent now under `agent` is the one that asked. False once it ended or another\nagent took the name, so a client shouldn't open it; left out when the hub can't tell."
           }
         }
       },

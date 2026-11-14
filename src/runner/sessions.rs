@@ -854,7 +854,8 @@ impl Sessions {
         let refuse = || self.key_refusal(p.owned.as_ref());
         let view = dialogs::view(&seen, &refuse, &self.answered);
         Ok(
-            json!({ "dialog": view, "occurrence": seen.occurrence, "blocked": seen.process.blocked }),
+            json!({ "dialog": view, "occurrence": seen.occurrence, "blocked": seen.process.blocked,
+                    "terminal_id": seen.process.terminal_id }),
         )
     }
 

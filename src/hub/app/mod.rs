@@ -1252,6 +1252,7 @@ pub async fn get_attention(
         agent: a.record.agent,
         session_id: a.record.session_id,
         dialog: a.dialog.map(Into::into),
+        same_agent: a.same_agent,
     }))
 }
 

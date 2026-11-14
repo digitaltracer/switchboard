@@ -268,6 +268,9 @@ pub struct AgentDialog {
     /// Herdr says the agent is waiting on its owner; false from runners older than this field.
     #[serde(default)]
     pub blocked: bool,
+    /// The process behind the name now, as a `waiting` event names it; none from older runners.
+    #[serde(default)]
+    pub terminal_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -277,6 +280,9 @@ pub struct AttentionView {
     pub record: AttentionRecord,
     /// The dialog, while open.
     pub dialog: Option<DialogView>,
+    /// Whether the agent now under its name is the one that asked: false once it ended or another
+    /// took the name, none when that can't be told (machine offline, an older runner).
+    pub same_agent: Option<bool>,
 }
 
 /// One option of the dialog on an agent's screen, as the runner listed it.
@@ -1458,32 +1464,42 @@ impl SessionService {
             .get_attention(id)
             .await?
             .ok_or_else(|| HubError::UnknownAttention(id.to_owned()))?;
-        let settle = |state: &'static str, a: AttentionRecord| AttentionView {
-            state: state.to_owned(),
+        let settle = |state: String, a: AttentionRecord, same_agent| AttentionView {
+            state,
             record: a,
             dialog: None,
+            same_agent,
         };
         if let Some(r) = a.resolution.clone() {
-            return Ok(AttentionView {
-                state: r,
-                record: a,
-                dialog: None,
-            });
+            let same = self.same_agent(&a).await;
+            return Ok(settle(r, a, same));
         }
         if self.now() >= a.expires_at {
             self.resolve_one(&a, "expired").await?;
-            return Ok(settle("expired", a));
+            let same = self.same_agent(&a).await;
+            return Ok(settle("expired".into(), a, same));
         }
         let current = self.agent_dialog(&a.machine_id, &a.agent).await?;
         if current.occurrence != a.occurrence {
             self.resolve_one(&a, "gone").await?;
-            return Ok(settle("gone", a));
+            let same = current.terminal_id.map(|t| t == a.terminal_id);
+            return Ok(settle("gone".into(), a, same));
         }
         Ok(AttentionView {
             state: "open".into(),
             record: a,
             dialog: current.dialog,
+            same_agent: Some(true),
         })
+    }
+
+    /// Whether the agent now under a waiting push's name is the process that asked.
+    async fn same_agent(&self, a: &AttentionRecord) -> Option<bool> {
+        match self.agent_dialog(&a.machine_id, &a.agent).await {
+            Ok(d) => d.terminal_id.map(|t| t == a.terminal_id),
+            Err(HubError::Runner(e)) if e.code == ErrorCode::NotFound => Some(false),
+            Err(_) => None,
+        }
     }
 
     async fn resolve_one(&self, a: &AttentionRecord, resolution: &str) -> Result<(), HubError> {
