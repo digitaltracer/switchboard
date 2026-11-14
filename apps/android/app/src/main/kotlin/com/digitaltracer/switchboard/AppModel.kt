@@ -305,6 +305,10 @@ class AppModel(context: Context, val keys: DeviceKeys) {
                     if (a == null) {
                         banner = "Couldn't reach the hub to open that notification. Try again in a moment."
                         t.sessionId?.let { Route.SessionPage(it) } ?: return@launch
+                    } else if (a.sessionId == null && a.sameAgent == false) {
+                        // Its name may belong to another agent by now; that one isn't opened in its place.
+                        banner = "The agent that asked has ended, so there's nothing to open."
+                        return@launch
                     } else {
                         when (a.state) {
                             "open" -> {}
