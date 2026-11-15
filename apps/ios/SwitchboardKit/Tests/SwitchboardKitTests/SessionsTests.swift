@@ -14,15 +14,45 @@ private func task(_ id: String, herdr: String, lifecycle: String = "running", up
     """)
 }
 
-private func agent(_ name: String, status: String = "idle", title: String? = nil) throws -> Schemas.AgentView {
+private func agent(_ name: String, status: String = "idle", title: String? = nil, space: String? = nil) throws -> Schemas.AgentView {
     let session = name.split(separator: "/").first!
     let t = title.map { #","title":"\#($0)""# } ?? ""
-    return try decode(#"{"machine_id":"mac","name":"\#(name)","herdr_session":"\#(session)","agent_status":"\#(status)"\#(t)}"#)
+    let s = space.map { #","space":"\#($0)""# } ?? ""
+    return try decode(#"{"machine_id":"mac","name":"\#(name)","herdr_session":"\#(session)","agent_status":"\#(status)"\#(t)\#(s)}"#)
 }
 
-private func ended(_ name: String, at: Int64) throws -> Schemas.EndedAgent {
+private func ended(_ name: String, at: Int64, space: String? = nil) throws -> Schemas.EndedAgent {
     let session = name.split(separator: "/").first!
-    return try decode(#"{"machine_id":"mac","name":"\#(name)","herdr_session":"\#(session)","started_at":0,"ended_at":\#(at)}"#)
+    let s = space.map { #","space":"\#($0)""# } ?? ""
+    return try decode(#"{"machine_id":"mac","name":"\#(name)","herdr_session":"\#(session)","started_at":0,"ended_at":\#(at)\#(s)}"#)
+}
+
+@Test func theHerdrAppIsOneSessionWithItsSpacesKeptApart() throws {
+    let groups = HerdrSession.group(
+        sessions: [],
+        agents: [
+            try agent("hc/orchestrator", status: "working", space: "switchboard"),
+            try agent("hc/orchestrator-t9", space: "udp-backend"),
+            try agent("hc/reviewer", space: "udp-backend"),
+            try agent("hc/scratch", space: "core"),
+            try agent("crm/orchestrator", space: "Imports"),
+            try agent("crm/w1:p2", title: "Fix the import", space: "1"),
+        ],
+        ended: [try ended("hc/old", at: 300, space: "switchboard"), try ended("hc/older", at: 200)],
+        since: nil
+    )
+    #expect(groups.map(\.title) == ["crm", "Herdr App"])
+    let app = groups[1]
+    #expect(app.isHerdrApp && app.key.name == "hc")
+    #expect(app.spaces.map(\.name) == ["switchboard", "udp-backend", nil])
+    #expect(app.spaces[0].agents.map(\.nameInSpace) == ["orchestrator", "old"])
+    #expect(app.spaces[1].live.map(\.nameInSpace) == ["orchestrator-t9", "reviewer"])
+    // Outside every space, and one that ended before spaces were recorded.
+    #expect(app.spaces[2].agents.map(\.nameInSpace) == ["scratch", "older"])
+    #expect(app.live[0].shortName == "switchboard › orchestrator", "elsewhere it still says where")
+    // A Herdr session is split the same way; its numbered default workspace is no name.
+    #expect(groups[0].spaces.map(\.name) == ["Imports", nil])
+    #expect(groups[0].spaces[1].live.map(\.nameInSpace) == ["Fix the import"])
 }
 
 @Test func agentsGroupBySessionWithEndedOnesLast() throws {

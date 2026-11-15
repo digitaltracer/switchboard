@@ -61,12 +61,51 @@ public struct HerdrSession: Identifiable, Hashable, Sendable {
             g.ended.sort { $0.endedAt > $1.endedAt }
             return g
         }
-        let running = all.filter { !$0.isEnded }.sorted { ($0.key.name, $0.key.machine) < ($1.key.name, $1.key.machine) }
+        let running = all.filter { !$0.isEnded }.sorted { ($0.title.lowercased(), $0.key.machine) < ($1.title.lowercased(), $1.key.machine) }
         let done = all.filter(\.isEnded).sorted { $0.endedAt > $1.endedAt }
         return running + done
     }
 
     static let liveLifecycles: Set<String> = ["starting", "running", "stopping"]
+
+    /// The name the hub gives the Herdr app's one session. The app has spaces, not sessions.
+    public static let herdrApp = "hc"
+
+    public var isHerdrApp: Bool { key.name == Self.herdrApp }
+
+    /// What to call it on screen.
+    public var title: String { Self.title(key.name) }
+
+    public static func title(_ name: String) -> String { name == herdrApp ? "Herdr App" : name }
+
+    /// One space of a session, with the agents in it. `name` is nil for agents in no named space.
+    public struct Space: Identifiable, Hashable, Sendable {
+        public let name: String?
+        public internal(set) var live: [Agent] = []
+        public internal(set) var ended: [Agent] = []
+        public var id: String { name ?? "" }
+        public var agents: [Agent] { live + ended }
+    }
+
+    /// Its agents by space: each named space in name order, then those in none. Within a space,
+    /// running ones come before those that ended.
+    public var spaces: [Space] {
+        var named: [String: Space] = [:]
+        var rest = Space(name: nil)
+        func add(_ a: Agent, live: Bool) {
+            if let name = a.space {
+                if live { named[name, default: Space(name: name)].live.append(a) } else { named[name, default: Space(name: name)].ended.append(a) }
+            } else if live {
+                rest.live.append(a)
+            } else {
+                rest.ended.append(a)
+            }
+        }
+        for a in live { add(a, live: true) }
+        for a in ended { add(a, live: false) }
+        let sorted = named.values.sorted { $0.id.localizedCaseInsensitiveCompare($1.id) == .orderedAscending }
+        return rest.agents.isEmpty ? sorted : sorted + [rest]
+    }
 
     /// Where today began on this phone, in the hub's milliseconds.
     public static func startOfToday(_ now: Date = Date()) -> Int64 {
@@ -91,6 +130,25 @@ extension HerdrSession.Agent {
         case .live(let a): a.displayName
         case .ended(let e): Self.short(e.name, kind: e.kind)
         }
+    }
+
+    /// The named space it runs in. A bare number, Herdr's default label, is no name, and nor is
+    /// what the hub says for a Herdr app terminal outside every space.
+    public var space: String? {
+        let (raw, session): (String?, String?) = switch self {
+        case .task(let s): (nil, s.herdrSession)
+        case .live(let a): (a.space, a.herdrSession)
+        case .ended(let e): (e.space, e.herdrSession)
+        }
+        let space = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if space.isEmpty || space.allSatisfy({ $0.isASCII && $0.isNumber }) { return nil }
+        return session == HerdrSession.herdrApp && space == "core" ? nil : space
+    }
+
+    /// Its name under its space's heading, which a live agent's `shortName` would repeat.
+    public var nameInSpace: String {
+        if case .live(let a) = self { return a.agentLabel }
+        return shortName
     }
 
     /// What its terminal says it's working on.

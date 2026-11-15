@@ -29,7 +29,7 @@ struct HomeView: View {
     /// Agents working or waiting for you, in any session.
     private var busy: [Tile] {
         groups.flatMap { g in
-            g.live.filter { $0.needsYou || $0.agentStatus == "working" }.map { Tile(agent: $0, session: g.key.name) }
+            g.live.filter { $0.needsYou || $0.agentStatus == "working" }.map { Tile(agent: $0, session: g.title) }
         }
     }
 

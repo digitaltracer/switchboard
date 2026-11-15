@@ -79,7 +79,7 @@ struct SessionRow: View {
         let status = session.status
         NavigationLink(value: session.key) {
             ListRow(symbol: session.isEnded ? "moon.zzz" : "rectangle.stack", tint: session.isEnded ? .secondary : status.color,
-                    title: session.key.name,
+                    title: session.title,
                     subtitle: showMachine ? "\(session.summary) · \(session.key.machine)" : session.summary,
                     trailing: "", first: first)
         }
@@ -88,7 +88,8 @@ struct SessionRow: View {
     }
 }
 
-/// A Herdr session's agents: running ones first, then those that ended today.
+/// A Herdr session's agents under the space each runs in: running ones first, then those that
+/// ended today. The Herdr app is one session, with a heading for each of its spaces.
 struct HerdrSessionView: View {
     @Environment(AppModel.self) private var model
     let key: HerdrSession.Key
@@ -100,18 +101,25 @@ struct HerdrSessionView: View {
 
     var body: some View {
         let session = session
+        let spaces = session.spaces
         List {
+            ForEach(spaces) { space in
+                Section {
+                    ForEach(space.live, id: \.self) { row($0) }
+                    ForEach(space.ended, id: \.self) { row($0).listRowBackground(Color.endedRow) }
+                } header: {
+                    Text(space.name ?? (spaces.count == 1 ? "Agents" : "No space"))
+                }
+            }
             Section {
-                ForEach(session.live, id: \.self) { row($0) }
-                ForEach(session.ended, id: \.self) { row($0).listRowBackground(Color.endedRow) }
                 if session.agents.isEmpty { Text("No agents in this session.").foregroundStyle(.secondary) }
-            } header: {
-                Text("Agents")
             } footer: {
-                Text("On \(key.machine). `herdr session attach \(key.name)` opens it there.")
+                Text(session.isHerdrApp
+                     ? "On \(key.machine), in the Herdr app. Each heading is one of its spaces."
+                     : "On \(key.machine). `herdr session attach \(key.name)` opens it there.")
             }
         }
-        .navigationTitle(key.name)
+        .navigationTitle(session.title)
         .task(id: model.followKey) {
             while model.followKey != nil, !Task.isCancelled {
                 await model.refreshAgents()
@@ -138,7 +146,7 @@ private struct AgentLabel: View {
                 .foregroundStyle(status.color)
                 .frame(width: 26)
             VStack(alignment: .leading, spacing: 2) {
-                Text(agent.shortName).font(.headline).lineLimit(1)
+                Text(agent.nameInSpace).font(.headline).lineLimit(1)
                     .foregroundStyle(agent.isEnded ? .secondary : .primary)
                 Text(agent.subtitle).font(.subheadline).foregroundStyle(agent.isEnded ? .secondary : status.color).lineLimit(1)
             }

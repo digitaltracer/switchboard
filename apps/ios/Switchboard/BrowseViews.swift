@@ -13,7 +13,7 @@ struct AllSessionsView: View {
             ForEach(groups) { g in
                 NavigationLink(value: g.key) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(g.key.name).font(.headline).foregroundStyle(g.isEnded ? .secondary : .primary)
+                        Text(g.title).font(.headline).foregroundStyle(g.isEnded ? .secondary : .primary)
                         Text(machine == nil ? "\(g.summary) · \(g.key.machine)" : g.summary)
                             .font(.subheadline)
                             .foregroundStyle(g.isEnded ? .secondary : g.status.color)

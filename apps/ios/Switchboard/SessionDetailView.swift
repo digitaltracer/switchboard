@@ -95,11 +95,14 @@ struct SessionDetailView: View {
                 LabeledContent("Project", value: s.projectId)
                 LabeledContent("Machine", value: "\(s.machineId) (\(s.machineStatus))")
                 if let h = s.herdrSession {
-                    LabeledContent("Herdr session", value: h)
-                    Text("On \(s.machineId): herdr session attach \(h)")
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
+                    LabeledContent("Herdr session", value: HerdrSession.title(h))
+                    // The Herdr app has no session to attach to.
+                    if h != HerdrSession.herdrApp {
+                        Text("On \(s.machineId): herdr session attach \(h)")
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
                 }
             }
             .padding(.top, 8)
