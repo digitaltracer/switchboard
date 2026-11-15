@@ -1743,6 +1743,7 @@ impl SessionService {
                             kind: a.kind.clone(),
                             name: a.name.clone(),
                             title: a.title.clone(),
+                            space: a.space.clone(),
                         })
                         .collect();
                     if let Err(e) = self.store.record_agents(&m.id, seen, self.now()).await {

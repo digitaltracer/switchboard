@@ -876,6 +876,11 @@ pub struct EndedAgent {
     /// Its last terminal title. Untrusted text.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// The Herdr workspace or Herdr app space it last ran in, as in `AgentView`. Untrusted
+    /// text. Absent for one that ended before spaces were recorded, and from older hubs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    pub space: Option<String>,
     /// When the hub first saw it, in milliseconds.
     pub started_at: i64,
     pub ended_at: i64,
@@ -889,6 +894,7 @@ impl From<SeenAgentRecord> for EndedAgent {
             herdr_session: a.herdr_session,
             kind: a.kind,
             title: a.title,
+            space: a.space,
             started_at: a.first_seen,
             ended_at: a.ended_at.unwrap_or(a.last_seen),
         }

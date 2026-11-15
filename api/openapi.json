@@ -2926,6 +2926,10 @@
             ],
             "description": "Its last terminal title. Untrusted text."
           },
+          "space": {
+            "type": "string",
+            "description": "The Herdr workspace or Herdr app space it last ran in, as in `AgentView`. Untrusted\ntext. Absent for one that ended before spaces were recorded, and from older hubs."
+          },
           "started_at": {
             "type": "integer",
             "format": "int64",

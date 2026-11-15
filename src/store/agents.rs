@@ -19,6 +19,8 @@ pub struct SeenAgent {
     pub kind: Option<String>,
     pub name: String,
     pub title: Option<String>,
+    /// The Herdr workspace or Herdr app space it runs in.
+    pub space: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -32,7 +34,12 @@ pub struct SeenAgentRecord {
     pub first_seen: i64,
     pub last_seen: i64,
     pub ended_at: Option<i64>,
+    /// Where it last ran; none for one recorded before spaces were.
+    pub space: Option<String>,
 }
+
+/// A live record's id, name, title, last sighting and space.
+type Open = (i64, String, Option<String>, i64, Option<String>);
 
 fn record(r: &Row) -> rusqlite::Result<SeenAgentRecord> {
     Ok(SeenAgentRecord {
@@ -45,6 +52,7 @@ fn record(r: &Row) -> rusqlite::Result<SeenAgentRecord> {
         first_seen: r.get(6)?,
         last_seen: r.get(7)?,
         ended_at: r.get(8)?,
+        space: r.get(9)?,
     })
 }
 
@@ -57,23 +65,25 @@ impl Store {
             let tx = c.transaction()?;
             let mut kept = HashSet::new();
             for a in live {
-                let row: Option<(i64, String, Option<String>, i64)> = tx
+                let row: Option<Open> = tx
                     .query_row(
-                        "SELECT id, name, title, last_seen FROM seen_agents WHERE machine_id = ?1
+                        "SELECT id, name, title, last_seen, space FROM seen_agents WHERE machine_id = ?1
                          AND herdr_session IS ?2 AND pane_id = ?3 AND kind IS ?4 AND ended_at IS NULL",
                         params![machine, a.herdr_session, a.pane_id, a.kind],
-                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
                     )
                     .optional()?;
                 let id = match row {
-                    Some((id, name, title, last_seen)) => {
+                    Some((id, name, title, last_seen, space)) => {
                         // `last_seen` only dates an agent that ends unseen, so a minute stale is fine.
-                        let changed = name != a.name || a.title.as_ref().is_some_and(|t| title.as_ref() != Some(t));
+                        let changed = name != a.name
+                            || a.title.as_ref().is_some_and(|t| title.as_ref() != Some(t))
+                            || a.space.as_ref().is_some_and(|s| space.as_ref() != Some(s));
                         if changed || now - last_seen > LAST_SEEN_EVERY_MS {
                             tx.execute(
                                 "UPDATE seen_agents SET name = ?2, title = COALESCE(?3, title),
-                                 last_seen = ?4 WHERE id = ?1",
-                                params![id, a.name, a.title, now],
+                                 last_seen = ?4, space = COALESCE(?5, space) WHERE id = ?1",
+                                params![id, a.name, a.title, now, a.space],
                             )?;
                         }
                         id
@@ -81,8 +91,18 @@ impl Store {
                     None => {
                         tx.execute(
                             "INSERT INTO seen_agents (machine_id, herdr_session, pane_id, kind,
-                             name, title, first_seen, last_seen) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
-                            params![machine, a.herdr_session, a.pane_id, a.kind, a.name, a.title, now],
+                             name, title, first_seen, last_seen, space)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8)",
+                            params![
+                                machine,
+                                a.herdr_session,
+                                a.pane_id,
+                                a.kind,
+                                a.name,
+                                a.title,
+                                now,
+                                a.space
+                            ],
                         )?;
                         tx.last_insert_rowid()
                     }
@@ -114,7 +134,8 @@ impl Store {
         self.call(move |c| {
             let mut stmt = c.prepare(
                 "SELECT machine_id, herdr_session, pane_id, kind, name, title, first_seen,
-                 last_seen, ended_at FROM seen_agents WHERE ended_at >= ?1 ORDER BY ended_at DESC",
+                 last_seen, ended_at, space FROM seen_agents WHERE ended_at >= ?1
+                 ORDER BY ended_at DESC",
             )?;
             let rows = stmt
                 .query_map(params![since], record)?
