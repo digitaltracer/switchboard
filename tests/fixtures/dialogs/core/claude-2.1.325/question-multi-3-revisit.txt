@@ -1,0 +1,24 @@
+
+ ▐▛███▛█   Claude Code v2.1.325
+▝▜██████▀  Fable 5.2 with high effort · Claude Ultra
+ ▝▝   ▝▝   /home/u/repo · /rc
+
+
+❯ Use the AskUserQuestion tool once with THREE single-select questions in one call: 'Pick a size' options Small, Large (header 'Size'); 'Pick a drink' options Tea, Coffee (header 'Drink'); 'Pick a
+  colour' options Red, Green, Blue (header 'Colour'). Then reply with my answers only. Do nothing else.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Size  ☒ Drink  ☒ Colour  ✔ Submit  →
+
+Pick a colour
+
+❯ 1. Red
+     Red
+  2. Green
+     Green
+  3. Blue ✔
+     Blue
+  4. Type something.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel

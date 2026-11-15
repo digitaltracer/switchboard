@@ -1,0 +1,120 @@
+
+  >_ OpenAI Codex (v0.169.0)
+     /home/u/repo
+
+
+› If you have a request_user_input tool, use it once to ask me ONE question 'Pick a colour' with options Red and Blue. If you don't have such a tool, reply exactly: NO_TOOL
+
+
+? Pick a colour
+
+  • Red
+  • Blue
+
+? Pick a colour
+
+  • Red
+  • Blue
+
+  Worked for 7s • 10:05 PM
+
+• Model changed to gpt-6-astra medium for Plan mode.
+
+
+› Use the request_user_input tool once to ask me ONE question 'Pick a colour' (header 'Colour') with options Red and Blue. Do nothing else before it.
+
+
+• Questions 1/1 answered
+  • Pick a colour
+    answer: Blue
+
+  Worked for 19s • 10:06 PM
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+› Ask Codex to do anything
+
+  GPT-6-Astra medium · /home/u/repo · NO_TOOL
+  ← for agents · ? for shortcuts                                                                                                                   Plan mode (⇧tab to cycle) · ⚠ 1 warning · f2 to view

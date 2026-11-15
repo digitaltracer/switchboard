@@ -253,7 +253,86 @@ impl Live {
             .map(|v| v["text"].as_str().unwrap_or_default().to_owned())
             .unwrap_or_default()
     }
+
+    /// Answers each dialog `agent` shows in turn, by the offered option with that label.
+    async fn pick_each(&self, agent: &str, labels: &[&str]) {
+        for label in labels {
+            let deadline = Instant::now() + TURN;
+            let (d, option) = loop {
+                if let Some(d) = self.dialog(agent).await
+                    && d.answerable
+                    && let Some(o) = d.options.iter().find(|o| o.offered && o.label == *label)
+                {
+                    let o = o.clone();
+                    break (d, o);
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "no {label}: {}",
+                    self.screen(agent).await
+                );
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            };
+            eprintln!("picking {label} on: {}", d.prompt.replace('\n', " / "));
+            self.sessions
+                .handle(Op::Answer {
+                    agent: agent.into(),
+                    occurrence: d.occurrence,
+                    option: option.id,
+                    label_sha256: option.label_sha256,
+                    deny_only: false,
+                })
+                .await
+                .unwrap();
+        }
+    }
+
+    /// Shows the previous question of the group `agent` is at, once it may go back.
+    async fn go_back(&self, agent: &str) {
+        let deadline = Instant::now() + TURN;
+        let d = loop {
+            if let Some(d) = self.dialog(agent).await
+                && d.back
+            {
+                break d;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "no way back: {}",
+                self.screen(agent).await
+            );
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        };
+        eprintln!("going back from: {}", d.prompt.replace('\n', " / "));
+        self.sessions
+            .handle(Op::Back {
+                agent: agent.into(),
+                occurrence: d.occurrence,
+            })
+            .await
+            .unwrap();
+    }
+
+    async fn wait_for_screen(&self, agent: &str, texts: &[&str]) {
+        let deadline = Instant::now() + TURN;
+        loop {
+            let screen = self.screen(agent).await;
+            if texts.iter().all(|t| screen.contains(t)) {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "never showed {texts:?}: {screen}"
+            );
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    }
 }
+
+const GROUP: &str = "three single-select questions in one call: 'Pick a size' (header 'Size') \
+    options Small, Large; 'Pick a drink' (header 'Drink') options Tea, Coffee; 'Pick a colour' \
+    (header 'Colour') options Red, Green, Blue. Do nothing else before it. Then reply with my \
+    answers only.";
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_claude_session_starts_runs_and_stops_on_core() {
@@ -448,6 +527,170 @@ async fn an_outside_claude_on_core_is_prompted_answered_denied_and_seen_to_end()
     // Claude writes its config as it exits, so it goes first.
     drop(l.core_process);
     remove_trust_key(&claude_json, &repo);
+    if let Err(panic) = outcome {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_outside_claude_on_core_has_a_group_of_questions_answered_one_by_one() {
+    if !enabled("claude") {
+        eprintln!("skipped: SWITCHBOARD_LIVE_HC=1 with claude in SWITCHBOARD_LIVE_AGENTS");
+        return;
+    }
+    let _claude_json = CLAUDE_JSON.lock().await;
+    let claude_json = home().join(".claude.json");
+    let l = live(PathBuf::from("/nonexistent/claude.json")).await;
+    let (_repo_dir, repo) = scratch_repo();
+    let mut doc: Value =
+        serde_json::from_str(&std::fs::read_to_string(&claude_json).unwrap()).unwrap();
+    doc["projects"][repo.to_string_lossy().as_ref()] = json!({ "hasTrustDialogAccepted": true });
+    std::fs::write(&claude_json, serde_json::to_vec_pretty(&doc).unwrap()).unwrap();
+    let outcome = std::panic::AssertUnwindSafe(async {
+        let claude = switchboard::runner::find_bin("claude", &home()).unwrap();
+        let t = l
+            .core
+            .client()
+            .run(&RunParams {
+                argv: vec![
+                    claude.to_string_lossy().into_owned(),
+                    "--permission-mode".into(),
+                    "default".into(),
+                ],
+                cwd: repo.to_string_lossy().into_owned(),
+                name: "asker".into(),
+                no_parent: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let agent = "hc/asker";
+        wait_until("listed idle", || {
+            l.core.facts().is_some_and(|f| {
+                f.iter()
+                    .any(|f| f.target == t.address && f.status == Status::Idle)
+            })
+        })
+        .await;
+        let sent = l
+            .sessions
+            .handle(Op::PromptAgent {
+                agent: agent.into(),
+                text: format!("Use the AskUserQuestion tool once with {GROUP}"),
+            })
+            .await
+            .unwrap();
+        assert_eq!(sent["outcome"], "sent", "{sent}");
+        l.pick_each(agent, &["Large", "Tea", "Blue"]).await;
+        // From the review, back to the last question to change its answer.
+        l.go_back(agent).await;
+        l.pick_each(agent, &["Green", "Submit answers"]).await;
+        l.wait_for_screen(
+            agent,
+            &[
+                "Pick a size → Large",
+                "Pick a drink → Tea",
+                "Pick a colour → Green",
+            ],
+        )
+        .await;
+        l.core.client().kill(&t.address).await.unwrap();
+    })
+    .catch_unwind()
+    .await;
+    drop(l.core_process);
+    remove_trust_key(&claude_json, &repo);
+    if let Err(panic) = outcome {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_outside_codex_on_core_has_a_group_of_questions_answered_one_by_one() {
+    if !enabled("codex") {
+        eprintln!("skipped: SWITCHBOARD_LIVE_HC=1 with codex in SWITCHBOARD_LIVE_AGENTS");
+        return;
+    }
+    let l = live(PathBuf::from("/nonexistent/claude.json")).await;
+    let (_repo_dir, repo) = scratch_repo();
+    let outcome = std::panic::AssertUnwindSafe(async {
+        let codex = switchboard::runner::find_bin("codex", &home()).unwrap();
+        let t = l
+            .core
+            .client()
+            .run(&RunParams {
+                argv: vec![
+                    codex.to_string_lossy().into_owned(),
+                    "--no-daemon".into(),
+                    "-s".into(),
+                    "read-only".into(),
+                    "-a".into(),
+                    "on-request".into(),
+                    // Trusted for this run only, so nothing is saved to Codex's config.
+                    "-c".into(),
+                    format!(
+                        "projects={{{:?}={{trust_level=\"trusted\"}}}}",
+                        repo.to_string_lossy()
+                    ),
+                ],
+                cwd: repo.to_string_lossy().into_owned(),
+                name: "asker".into(),
+                no_parent: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let agent = "hc/asker";
+        wait_until("listed idle", || {
+            l.core.facts().is_some_and(|f| {
+                f.iter()
+                    .any(|f| f.target == t.address && f.status == Status::Idle)
+            })
+        })
+        .await;
+        // Codex only has its question dialog in Plan mode.
+        for text in [
+            "/plan".to_owned(),
+            format!("Use the request_user_input tool once with {GROUP}"),
+        ] {
+            // The core refuses a send while Codex's animated start screen is still settling.
+            let deadline = Instant::now() + TURN;
+            let sent = loop {
+                let op = Op::PromptAgent {
+                    agent: agent.into(),
+                    text: text.clone(),
+                };
+                match l.sessions.handle(op).await {
+                    Ok(v) => break v,
+                    Err(e) if e.message.contains("still starting") => {
+                        assert!(Instant::now() < deadline, "{e:?}");
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                    }
+                    Err(e) => panic!("{e:?}"),
+                }
+            };
+            assert_eq!(sent["outcome"], "sent", "{sent}");
+            tokio::time::sleep(Duration::from_secs(3)).await;
+        }
+        l.pick_each(agent, &["Large", "Tea"]).await;
+        // From the last question, back to the second to change its answer.
+        l.go_back(agent).await;
+        l.pick_each(agent, &["Coffee", "Blue"]).await;
+        l.wait_for_screen(
+            agent,
+            &[
+                "Questions 3/3 answered",
+                "answer: Large",
+                "answer: Coffee",
+                "answer: Blue",
+            ],
+        )
+        .await;
+        l.core.client().kill(&t.address).await.unwrap();
+    })
+    .catch_unwind()
+    .await;
+    drop(l.core_process);
     if let Err(panic) = outcome {
         std::panic::resume_unwind(panic);
     }

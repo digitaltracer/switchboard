@@ -98,6 +98,11 @@ pub enum Op {
         #[serde(default)]
         deny_only: bool,
     },
+    /// Shows the previous question of a group again, by one left arrow. It submits nothing.
+    Back {
+        agent: String,
+        occurrence: String,
+    },
     Read {
         session_id: String,
         lines: u32,
@@ -187,6 +192,7 @@ impl Op {
     pub fn agent(&self) -> Option<&str> {
         match self {
             Op::Answer { agent, .. }
+            | Op::Back { agent, .. }
             | Op::ReadAgent { agent, .. }
             | Op::PromptAgent { agent, .. }
             | Op::Transcript { agent, .. }
@@ -263,6 +269,12 @@ pub struct DialogView {
     /// `not_blocked` or `answered`.
     #[serde(default)]
     pub reason: Option<String>,
+    /// A group's questions in order, as tabs; empty for a dialog that stands alone.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<crate::agents::dialog::DialogStep>,
+    /// A left arrow may show the group's previous question again.
+    #[serde(default)]
+    pub back: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -274,6 +286,9 @@ pub struct DialogOptionView {
     pub is_deny: bool,
     /// May be chosen from the phone; free-text, chat and standing-permission rows may not.
     pub offered: bool,
+    /// It answers one question of a group and submits nothing, so it needs no signature.
+    #[serde(default)]
+    pub provisional: bool,
 }
 
 /// One skill or command, as typed: `/name`, or `$name` for a Codex skill.

@@ -22,6 +22,18 @@ pub struct DialogOption {
     pub is_deny: bool,
     /// Never chosen by keys: free text or a chat.
     pub excluded: bool,
+    /// Choosing it submits nothing: it answers one question of a group, and a later choice,
+    /// which is signed, submits them all. So it needs no signature.
+    pub provisional: bool,
+}
+
+/// One question of a group asked together, as the CLI's tab for it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DialogStep {
+    pub label: String,
+    pub answered: bool,
+    /// The one the screen shows now.
+    pub current: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,6 +47,8 @@ pub struct Dialog {
     pub region: String,
     /// A pinned layer recognised it, so keys may answer it.
     pub actionable: bool,
+    /// A group's questions in order; empty for a dialog that stands alone.
+    pub steps: Vec<DialogStep>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -148,11 +162,13 @@ pub fn generic(text: &str, marker: char) -> Recognised {
                 label: (*l).to_owned(),
                 is_deny: false,
                 excluded: true,
+                provisional: false,
             })
             .collect(),
         selected: r.selected,
         region: lines[r.first.saturating_sub(1)..].join("\n"),
         actionable: false,
+        steps: Vec::new(),
     })
 }
 

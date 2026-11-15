@@ -3,6 +3,8 @@
 //! recogniser in `src/agents/` recognised by its layout. Arrows move the selection; a fresh read
 //! must then show the same occurrence with that option selected, and Herdr the same process,
 //! before the single Enter. Esc is never sent, and a send that may have happened is never retried.
+//! A group of questions is answered one question at a time, and one left arrow shows its
+//! previous question again; neither submits anything.
 //!
 //! Residual risk, accepted by the owner: input at the agent's own terminal within milliseconds
 //! of the Enter can make it answer the next dialog.
@@ -18,7 +20,7 @@ use sha2::{Digest, Sha256};
 
 use super::backend::{Read, Server};
 use super::logcache::{self, LogCache};
-use crate::agents::dialog::{Dialog, DialogKind, Recognised};
+use crate::agents::dialog::{Dialog, DialogKind, DialogStep, Recognised};
 use crate::agents::{claude, codex};
 use crate::auth::device::label_sha256;
 use crate::proto::{DialogOptionView, DialogView, ErrorCode, ProtoError};
@@ -153,6 +155,25 @@ pub async fn look<I: DialogIo>(io: &I) -> Result<Seen, ProtoError> {
     })
 }
 
+/// Which of a group's steps is open: where the runner's own Enter or left arrow last left it,
+/// which a Claude screen doesn't say once several questions are answered; else what it says.
+fn open_step(seen: &Seen, answered: &Answered) -> Option<usize> {
+    let d = seen.dialog.as_ref()?;
+    answered
+        .open(&seen.occurrence)
+        .filter(|&i| i < d.steps.len())
+        .or_else(|| d.steps.iter().position(|s| s.current))
+}
+
+/// Whether a left arrow may show the group's previous question: the open one is known and not
+/// the first, and a listed option is selected, since on a free-text row the key edits text.
+fn may_go_back(seen: &Seen, answered: &Answered) -> bool {
+    let Some(d) = &seen.dialog else { return false };
+    d.actionable
+        && open_step(seen, answered).is_some_and(|i| i > 0)
+        && d.options.get(d.selected).is_some_and(|o| !o.excluded)
+}
+
 /// Whether keys may answer what `seen` shows, and if not, why.
 fn refusal(seen: &Seen, refuse: Refusal<'_>, answered: &Answered) -> Option<&'static str> {
     let d = seen.dialog.as_ref()?;
@@ -175,6 +196,7 @@ fn refusal(seen: &Seen, refuse: Refusal<'_>, answered: &Answered) -> Option<&'st
 pub fn view(seen: &Seen, refuse: Refusal<'_>, answered: &Answered) -> Option<DialogView> {
     let d = seen.dialog.as_ref()?;
     let why = refusal(seen, refuse, answered);
+    let open = open_step(seen, answered);
     let options = d
         .options
         .iter()
@@ -186,6 +208,7 @@ pub fn view(seen: &Seen, refuse: Refusal<'_>, answered: &Answered) -> Option<Dia
                 label,
                 is_deny: o.is_deny,
                 offered: !o.excluded && d.actionable,
+                provisional: o.provisional,
             }
         })
         .collect();
@@ -197,6 +220,17 @@ pub fn view(seen: &Seen, refuse: Refusal<'_>, answered: &Answered) -> Option<Dia
         occurrence: seen.occurrence.clone(),
         answerable: why.is_none(),
         reason: why.map(str::to_owned),
+        steps: d
+            .steps
+            .iter()
+            .enumerate()
+            .map(|(i, s)| DialogStep {
+                label: redact_str(&s.label),
+                answered: s.answered,
+                current: open == Some(i),
+            })
+            .collect(),
+        back: why.is_none() && may_go_back(seen, answered),
     })
 }
 
@@ -212,13 +246,14 @@ fn changed(why: impl Into<String>) -> ProtoError {
     ProtoError::new(ErrorCode::DialogChanged, why)
 }
 
-/// Picks one option by keys. The caller holds the pane's action lock throughout.
+/// Picks one option by keys, and returns what the screen shows afterwards. The caller holds the
+/// pane's action lock throughout.
 pub async fn answer<I: DialogIo>(
     io: &I,
     refuse: Refusal<'_>,
     answered: &Answered,
     req: &AnswerRequest,
-) -> Result<(), ProtoError> {
+) -> Result<Seen, ProtoError> {
     let first = look(io).await?;
     let Some(dialog) = &first.dialog else {
         return Err(changed("no dialog is showing"));
@@ -244,10 +279,11 @@ pub async fn answer<I: DialogIo>(
     if label_sha256(&[redact_str(&option.label)]) != req.label_sha256 {
         return Err(changed("the option's label changed"));
     }
-    if req.deny_only && !option.is_deny {
+    // A group's own question submits nothing; the choice that submits is never provisional.
+    if req.deny_only && !option.is_deny && !option.provisional {
         return Err(ProtoError::new(
             ErrorCode::ApproveNotAllowed,
-            "only the deny option may be chosen without the approve right",
+            "only the deny option, or one question of a group, may be chosen without the approve right",
         ));
     }
     answered.begin(&first.occurrence).map_err(changed)?;
@@ -301,13 +337,66 @@ pub async fn answer<I: DialogIo>(
         if let Ok(after) = look(io).await
             && (after.dialog.is_none() || after.occurrence != first.occurrence)
         {
-            return Ok(());
+            if option.provisional {
+                // Nothing was submitted, so this question may be picked again if it is shown again.
+                answered.settle(&first.occurrence, Attempt::Stepped);
+                if let Some(at) = open_step(&first, answered) {
+                    answered.note_open(&after.occurrence, at + 1);
+                }
+            }
+            return Ok(after);
         }
     }
     Err(ProtoError::new(
         ErrorCode::OutcomeUnknown,
         "Enter was sent but the dialog still shows",
     ))
+}
+
+/// Shows a group's previous question again with one left arrow, which submits nothing, and
+/// returns what the screen then shows. The caller holds the pane's action lock throughout.
+pub async fn back<I: DialogIo>(
+    io: &I,
+    refuse: Refusal<'_>,
+    answered: &Answered,
+    occurrence: &str,
+) -> Result<Seen, ProtoError> {
+    let first = look(io).await?;
+    let Some(dialog) = &first.dialog else {
+        return Err(changed("no dialog is showing"));
+    };
+    if first.occurrence != occurrence {
+        return Err(changed("the dialog changed"));
+    }
+    if let Some(why) = refusal(&first, refuse, answered) {
+        return Err(changed(format!("keys may not answer this dialog: {why}")));
+    }
+    let at = open_step(&first, answered)
+        .filter(|_| may_go_back(&first, answered))
+        .ok_or_else(|| {
+            ProtoError::new(
+                ErrorCode::BadRequest,
+                "there is no earlier question to show",
+            )
+        })?;
+    if io.send(&["left"]).await.is_err() {
+        return Err(changed("sending the key failed"));
+    }
+    for _ in 0..SELECT_READS {
+        tokio::time::sleep(SETTLE).await;
+        let Ok(again) = look(io).await else {
+            continue;
+        };
+        if !again.process.same(&first.process) {
+            return Err(changed("the agent changed"));
+        }
+        let steps = again.dialog.as_ref().map_or(0, |d| d.steps.len());
+        if again.occurrence != first.occurrence && steps == dialog.steps.len() {
+            answered.note_open(&again.occurrence, at - 1);
+            return Ok(again);
+        }
+    }
+    Err(changed("the earlier question did not show"))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -319,6 +408,15 @@ pub enum Attempt {
     Aborted,
     /// Enter was or may have been sent.
     Sent,
+    /// Enter went and a group moved to its next question: nothing was submitted.
+    Stepped,
+}
+
+impl Attempt {
+    /// Whether the occurrence may be answered again.
+    fn open(self) -> bool {
+        matches!(self, Attempt::Aborted | Attempt::Stepped)
+    }
 }
 
 /// Every answer attempt by occurrence, written to disk before any key is sent.
@@ -326,6 +424,8 @@ pub enum Attempt {
 pub struct Answered {
     path: Option<PathBuf>,
     attempts: Mutex<HashMap<String, (Attempt, u64)>>,
+    /// Which step of its group an occurrence showed, where this runner's own key left it.
+    open: Mutex<HashMap<String, usize>>,
 }
 
 impl Answered {
@@ -337,7 +437,20 @@ impl Answered {
         Arc::new(Self {
             path: Some(path),
             attempts: Mutex::new(attempts),
+            open: Default::default(),
         })
+    }
+
+    fn open(&self, occurrence: &str) -> Option<usize> {
+        self.open.lock().unwrap().get(occurrence).copied()
+    }
+
+    fn note_open(&self, occurrence: &str, step: usize) {
+        let mut open = self.open.lock().unwrap();
+        if open.len() >= KEEP_ATTEMPTS {
+            open.clear();
+        }
+        open.insert(occurrence.to_owned(), step);
     }
 
     pub fn blocks(&self, occurrence: &str) -> bool {
@@ -345,16 +458,13 @@ impl Answered {
             .lock()
             .unwrap()
             .get(occurrence)
-            .is_some_and(|(a, _)| *a != Attempt::Aborted)
+            .is_some_and(|(a, _)| !a.open())
     }
 
     /// Records a started attempt; `Err` if one already started or sent, or it can't be saved.
     pub fn begin(&self, occurrence: &str) -> Result<(), &'static str> {
         let mut attempts = self.attempts.lock().unwrap();
-        if attempts
-            .get(occurrence)
-            .is_some_and(|(a, _)| *a != Attempt::Aborted)
-        {
+        if attempts.get(occurrence).is_some_and(|(a, _)| !a.open()) {
             return Err("this dialog was already answered");
         }
         attempts.insert(occurrence.to_owned(), (Attempt::Started, now_ms()));

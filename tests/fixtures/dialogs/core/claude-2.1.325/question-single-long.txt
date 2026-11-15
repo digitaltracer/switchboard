@@ -1,0 +1,31 @@
+
+ ▐▛███▛█   Claude Code v2.1.325
+▝▜██████▀  Opus 5.5 with high effort · Claude Ultra
+ ▝▝   ▝▝   /home/u/repo · /rc
+
+
+❯ Use the AskUserQuestion tool once with ONE single-select question (header 'Hub restart'). Question text, verbatim: 'The fix for grouped questions is written and proven against real Claude Code and
+  Codex, but your iPhone talks to the hub that is still running the old build in your own terminal. The project rules forbid me from typing into your terminals, and a restart drops phone connections
+  for a few seconds and denies any approval that is waiting at that moment. How should the hub get onto the new build so I can run the phone check?' Options: label 'You restart it for me' description
+  'I allow you, this once, to install the new build and restart the hub in its terminal. Then you start a throwaway test agent that asks a grouped question, and I answer it on the phone with Face ID
+  while you watch the audit log.'; label 'I will restart it myself' description 'You only install the new build. I press Ctrl+C and rerun the hub command, then tell you.'; label 'Skip the phone
+  check' description 'Leave my running hub and installed binary untouched.' Do nothing else.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ☐ Hub restart
+
+│ The fix for grouped questions is written and proven against real Claude Code and Codex, but your iPhone talks to the hub that is still running the old build in your own terminal. The project rules
+│ forbid me from typing into your terminals, and a restart drops phone connections for a few seconds and denies any approval that is waiting at that moment. How should the hub get onto the new build
+│ so I can run the phone check?
+
+❯ 1. You restart it for me
+     I allow you, this once, to install the new build and restart the hub in its terminal. Then you start a throwaway test agent that asks a grouped question, and I answer it on the phone with Face ID
+     while you watch the audit log.
+  2. I will restart it myself
+     You only install the new build. I press Ctrl+C and rerun the hub command, then tell you.
+  3. Skip the phone check
+     Leave my running hub and installed binary untouched.
+  4. Type something.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel

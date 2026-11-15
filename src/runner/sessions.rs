@@ -554,6 +554,7 @@ impl Sessions {
                 };
                 self.answer(&agent, &req).await
             }
+            Op::Back { agent, occurrence } => self.back(&agent, &occurrence).await,
             Op::Stop {
                 session_id,
                 remove_worktree_if_clean,
@@ -866,13 +867,35 @@ impl Sessions {
         let result = dialogs::answer(&p.io, &refuse, &self.answered, req).await;
         let detail = json!({
             "agent": agent, "occurrence": req.occurrence, "option": req.option,
-            "outcome": match &result { Ok(()) => "answered".to_owned(), Err(e) => code_name(e.code) },
+            "outcome": match &result { Ok(_) => "answered".to_owned(), Err(e) => code_name(e.code) },
         });
         tracing::info!(%detail, "dialog answer");
         if let Some(s) = &p.owned {
             self.audit(&s.session_id, "dialog_answer", detail);
         }
-        result.map(|()| json!({ "answered": true }))
+        // The dialog now showing goes back with the answer, so a group's next question needs no
+        // second read.
+        result.map(|after| {
+            json!({ "answered": true, "dialog": dialogs::view(&after, &refuse, &self.answered) })
+        })
+    }
+
+    async fn back(&self, agent: &str, occurrence: &str) -> Result<Value, ProtoError> {
+        let p = self.dialog_pane(agent).await?;
+        let _lock = self.pane_locks.lock(p.server.as_deref(), &p.pane_id).await;
+        let refuse = || self.key_refusal(p.owned.as_ref());
+        let result = dialogs::back(&p.io, &refuse, &self.answered, occurrence).await;
+        let detail = json!({
+            "agent": agent, "occurrence": occurrence,
+            "outcome": match &result { Ok(_) => "moved".to_owned(), Err(e) => code_name(e.code) },
+        });
+        tracing::info!(%detail, "dialog back");
+        if let Some(s) = &p.owned {
+            self.audit(&s.session_id, "dialog_back", detail);
+        }
+        result.map(|after| {
+            json!({ "moved": true, "dialog": dialogs::view(&after, &refuse, &self.answered) })
+        })
     }
 
     /// Once `agent` has just become blocked: if it is still blocked by the same state after the

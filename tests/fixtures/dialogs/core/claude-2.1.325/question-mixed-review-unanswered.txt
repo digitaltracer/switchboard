@@ -1,0 +1,34 @@
+
+ ▐▛███▛█   Claude Code v2.1.325
+▝▜██████▀  Fable 5.2 with high effort · Claude Ultra
+ ▝▝   ▝▝   /home/u/repo · /rc
+
+
+❯ Use the AskUserQuestion tool once with THREE single-select questions in one call: 'Pick a size' options Small, Large (header 'Size'); 'Pick a drink' options Tea, Coffee (header 'Drink'); 'Pick a
+  colour' options Red, Green, Blue (header 'Colour'). Then reply with my answers only. Do nothing else.
+
+⏺ User answered Claude's questions:
+  ⎿  · Pick a size → Large
+     · Pick a drink → Tea
+     · Pick a colour → Blue
+
+⏺ - Size: Large
+  - Drink: Tea
+  - Colour: Blue
+
+✻ Baked for 5s · done 10:04 PM
+
+❯ Use the AskUserQuestion tool once with TWO questions in one call: single-select 'Pick a size' options Small, Large (header 'Size'); MULTI-select (multiSelect true) 'Which toppings?' options Cheese,
+  Olives, Basil (header 'Toppings'). Then reply with my answers only. Do nothing else.
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☐ Size  ☐ Toppings  ✔ Submit  →
+
+Review your answers
+
+⚠ You have not answered all questions
+
+Ready to submit your answers?
+
+❯ 1. Submit answers
+  2. Cancel

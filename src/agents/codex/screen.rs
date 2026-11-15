@@ -2,9 +2,11 @@
 //! the Codex 0.163.0 captures in `tests/fixtures/codex-0.163.0/` and the 0.165.0 ones in
 //! `tests/fixtures/dialogs/codex-0.165.0/`, whose layout is the same; they stay as its tests. `classify` only ever
 //! yields the "Open restricted" startup key and the permission dialog's deny key; `recognise`
-//! lists a permission dialog's options for the owner's signed choice.
+//! lists the options of a permission dialog, or of one question of Plan mode's question dialog
+//! (the 0.169.0 captures in `tests/fixtures/dialogs/core/codex-0.169.0/`), for the owner's
+//! signed choice.
 
-use crate::agents::dialog::{self, Dialog, DialogOption, Recognised};
+use crate::agents::dialog::{self, Dialog, DialogOption, DialogStep, Recognised};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
@@ -127,11 +129,91 @@ fn folder_access(lines: &[&str]) -> Screen {
 }
 
 const MARKER: char = '›';
+/// `Question 2/3 (2 unanswered)`, above the question's text.
+const QUESTION_TITLE: &str = "Question ";
+/// The last question of a group says "submit all": its Enter sends every answer. Enter under the
+/// second footer only moves to the next question.
+const QUESTION_FOOTERS: &[&str] = &[
+    "tab to add notes | enter to submit answer | esc to interrupt",
+    "tab to add notes | enter to submit answer | ←/→ to navigate questions | esc to interrupt",
+    "tab to add notes | enter to submit all | ←/→ to navigate questions | esc to interrupt",
+];
+/// The row Codex adds for an answer typed as notes.
+const QUESTION_OTHER: &str = "None of the above";
 
-/// A permission dialog as options, for an answer by keys; row 2's standing approval included.
-/// Anything else is only parsed read-only.
+/// A permission dialog or one question as options, for an answer by keys; row 2's standing
+/// approval included. Anything else is only parsed read-only.
 pub fn recognise(text: &str) -> Recognised {
-    exact(text).unwrap_or_else(|| dialog::generic(text, MARKER))
+    exact(text)
+        .or_else(|| question(text))
+        .unwrap_or_else(|| dialog::generic(text, MARKER))
+}
+
+/// Which question of how many a title line names.
+fn question_title(line: &str) -> Option<(u32, u32)> {
+    let rest = line.strip_prefix(QUESTION_TITLE)?;
+    let (count, rest) = rest.split_once(' ').unwrap_or((rest, ""));
+    let (n, of) = count.split_once('/')?;
+    let (n, of): (u32, u32) = (n.parse().ok()?, of.parse().ok()?);
+    let counted = rest.is_empty() || (rest.starts_with('(') && rest.ends_with(" unanswered)"));
+    (counted && n >= 1 && n <= of).then_some((n, of))
+}
+
+/// One question of Plan mode's question dialog. Enter on a row answers it and moves to the
+/// next question, or submits them all from the last.
+fn question(text: &str) -> Option<Recognised> {
+    let lines = dialog::lines(text);
+    let footer = lines.len().checked_sub(1)?;
+    if !QUESTION_FOOTERS.contains(&lines[footer]) {
+        return None;
+    }
+    dialog::row(lines[footer.checked_sub(1)?], MARKER)?;
+    let r = dialog::rows(&lines, footer, MARKER)?;
+    let floor = r.first.saturating_sub(DIALOG_SPAN);
+    let title_at = (floor..r.first)
+        .rev()
+        .find(|&i| question_title(lines[i]).is_some())?;
+    let (n, of) = question_title(lines[title_at])?;
+    let ask = lines.get(title_at + 1..r.first).filter(|a| !a.is_empty())?;
+    // In a group the title says how far along it is and how many are still unanswered.
+    let prompt = if of > 1 {
+        lines[title_at..r.first].join("\n")
+    } else {
+        ask.join("\n")
+    };
+    let options = r
+        .rows
+        .iter()
+        .map(|&(number, row)| {
+            // A row's description follows its label on the same line.
+            let label = row.split("  ").next().unwrap_or(row);
+            DialogOption {
+                number,
+                label: label.to_owned(),
+                is_deny: false,
+                excluded: label == QUESTION_OTHER,
+                provisional: lines[footer] == QUESTION_FOOTERS[1] && label != QUESTION_OTHER,
+            }
+        })
+        .collect();
+    Some(Recognised::Dialog(Dialog {
+        kind: dialog::DialogKind::Question,
+        prompt,
+        options,
+        selected: r.selected,
+        // Without the unanswered count, which moves with the selection on an answered question.
+        region: format!("Question {n}/{of}\n{}", lines[title_at + 1..].join("\n")),
+        actionable: true,
+        // Codex says which question is open, but not which of the others are answered.
+        steps: (1..=of)
+            .filter(|_| of > 1)
+            .map(|i| DialogStep {
+                label: i.to_string(),
+                answered: false,
+                current: i == n,
+            })
+            .collect(),
+    }))
 }
 
 fn exact(text: &str) -> Option<Recognised> {
@@ -160,6 +242,7 @@ fn exact(text: &str) -> Option<Recognised> {
             label: label.to_owned(),
             is_deny: number == 3,
             excluded: false,
+            provisional: false,
         })
         .collect();
     Some(Recognised::Dialog(Dialog {
@@ -169,6 +252,7 @@ fn exact(text: &str) -> Option<Recognised> {
         selected: r.selected,
         region: lines[title_at..].join("\n"),
         actionable: true,
+        steps: Vec::new(),
     }))
 }
 
@@ -338,6 +422,129 @@ mod tests {
             format!("{base}\n› Ask Codex to do anything\n  ? for shortcuts\n"),
             fixture_165("question-queued"),
             fixture_165("ready"),
+        ];
+        for (i, text) in cases.iter().enumerate() {
+            assert!(
+                !matches!(recognise(text), Recognised::Dialog(d) if d.actionable),
+                "case {i}"
+            );
+        }
+    }
+
+    fn fixture_169(name: &str) -> String {
+        let path = format!(
+            "{}/tests/fixtures/dialogs/core/codex-0.169.0/{name}.txt",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        std::fs::read_to_string(path).unwrap()
+    }
+
+    fn offered(d: &Dialog) -> Vec<&str> {
+        d.options
+            .iter()
+            .filter(|o| !o.excluded)
+            .map(|o| o.label.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn recognises_a_single_question() {
+        let d = dialog_165(&fixture_169("question-single"));
+        assert_eq!(d.kind, dialog::DialogKind::Question);
+        assert!(d.actionable);
+        assert_eq!(d.prompt, "Pick a colour");
+        assert_eq!(offered(&d), ["Red", "Blue"]);
+        assert_eq!(d.options.len(), 3);
+        assert!(d.options[2].excluded && d.options.iter().all(|o| !o.is_deny));
+        assert!(d.options.iter().all(|o| !o.provisional), "it submits");
+        assert!(d.steps.is_empty());
+        assert_eq!(d.selected, 0);
+        assert_eq!(dialog_165(&fixture_169("question-single-down")).selected, 1);
+        assert!(d.region.starts_with("Question 1/1\nPick a colour"));
+    }
+
+    #[test]
+    fn each_question_of_a_group_is_answered_on_its_own() {
+        let cases = [
+            (
+                "question-multi-1",
+                "Question 1/3 (3 unanswered)\nPick a size",
+                0,
+            ),
+            (
+                "question-multi-1-down",
+                "Question 1/3 (3 unanswered)\nPick a size",
+                1,
+            ),
+            (
+                "question-multi-2",
+                "Question 2/3 (2 unanswered)\nPick a drink",
+                0,
+            ),
+            (
+                "question-multi-2-revisit",
+                "Question 2/3 (1 unanswered)\nPick a drink",
+                0,
+            ),
+            (
+                "question-multi-3",
+                "Question 3/3 (1 unanswered)\nPick a colour",
+                0,
+            ),
+            (
+                "question-multi-3-down",
+                "Question 3/3 (1 unanswered)\nPick a colour",
+                2,
+            ),
+        ];
+        for (name, prompt, selected) in cases {
+            let d = dialog_165(&fixture_169(name));
+            assert_eq!(d.kind, dialog::DialogKind::Question, "{name}");
+            assert!(d.actionable, "{name}");
+            assert_eq!(
+                (d.prompt.as_str(), d.selected),
+                (prompt, selected),
+                "{name}"
+            );
+            let open: Vec<&str> = d
+                .steps
+                .iter()
+                .filter(|s| s.current)
+                .map(|s| s.label.as_str())
+                .collect();
+            assert_eq!((d.steps.len(), open), (3, vec![&name[15..16]]), "{name}");
+            // Only the last question's Enter submits; the others need no signature.
+            let last = name.starts_with("question-multi-3");
+            assert!(
+                d.options
+                    .iter()
+                    .all(|o| o.provisional == (!last && !o.excluded)),
+                "{name}"
+            );
+        }
+        assert_eq!(
+            offered(&dialog_165(&fixture_169("question-multi-3"))),
+            ["Red", "Green", "Blue"]
+        );
+    }
+
+    #[test]
+    fn altered_questions_get_no_actionable_options() {
+        let base = fixture_169("question-multi-2");
+        let cases = [
+            base.replace("| esc to interrupt", "| esc to stop"),
+            base.replace("tab to add notes", "type your notes"),
+            base.replace("Question 2/3 (2 unanswered)", "Question two"),
+            base.replace("Question 2/3", "Question 4/3"),
+            base.replace("› 1. Tea", "  1. Tea"),
+            base.replace("2. Coffee", "3. Coffee"),
+            base.replace(
+                "  tab to add notes",
+                "  a note being typed\n  tab to add notes",
+            ),
+            format!("{base}\n› Ask Codex to do anything\n  ? for shortcuts\n"),
+            fixture_169("question-single-after"),
+            fixture_169("question-multi-after"),
         ];
         for (i, text) in cases.iter().enumerate() {
             assert!(

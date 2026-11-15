@@ -56,6 +56,10 @@ struct State {
     /// Changes on the first arrow.
     on_arrow: Option<OnArrow>,
     call: Option<String>,
+    /// A group's later screens with their row counts: Enter shows the next, still blocked.
+    next: std::collections::VecDeque<(String, u32)>,
+    /// The screen a left arrow shows, with its row count.
+    prev: Option<(String, u32)>,
 }
 
 struct Fake(Mutex<State>);
@@ -81,6 +85,8 @@ impl Fake {
             entered: Vec::new(),
             on_arrow: None,
             call: None,
+            next: Default::default(),
+            prev: None,
         })))
     }
 
@@ -147,8 +153,17 @@ impl DialogIo for Arc<Fake> {
                         .map(|d| select(d, s.marker, s.selected))
                         .unwrap_or_default();
                     s.entered.push(landed);
+                    if let Some((screen, rows)) = s.next.pop_front() {
+                        (s.dialog, s.rows, s.selected) = (Some(screen), rows, 1);
+                        continue;
+                    }
                     s.dialog = None;
                     s.process.state_change_seq += 1;
+                }
+                "left" => {
+                    if let Some((screen, rows)) = s.prev.take() {
+                        (s.dialog, s.rows, s.selected) = (Some(screen), rows, 1);
+                    }
                 }
                 other => panic!("unexpected key {other}"),
             }
@@ -381,9 +396,9 @@ async fn a_free_text_row_is_shown_but_never_chosen() {
 async fn read_only_dialogs_are_shown_but_not_answerable() {
     let multi = Fake::new(
         "claude",
-        fixture("claude-2.1.312", "question-multi"),
+        fixture("claude-2.1.312", "question-multiselect"),
         '❯',
-        4,
+        5,
         String::new(),
     );
     let (_, v) = seen(&multi).await;
@@ -470,4 +485,386 @@ fn whatsapp_never_reaches_the_key_path() {
             assert!(!text.contains(needle), "{} uses {needle}", path.display());
         }
     }
+}
+
+/// Answers what the screen shows now by its `index`th option, returning what the phone saw.
+async fn pick(io: &Arc<Fake>, answered: &Answered, index: usize) -> DialogView {
+    let s = look(io).await.unwrap();
+    let v = view(&s, &never, answered).unwrap();
+    assert!(v.answerable, "{v:?}");
+    answer(io, &never, answered, &request(&v, index))
+        .await
+        .unwrap();
+    v
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_claude_group_is_answered_one_question_at_a_time_then_submitted() {
+    let dir = "core/claude-2.1.325";
+    let io = Fake::new(
+        "claude",
+        fixture(dir, "question-multi-1"),
+        '❯',
+        4,
+        fixture(dir, "question-multi-after"),
+    );
+    io.0.lock().unwrap().next = [
+        (fixture(dir, "question-multi-2"), 4),
+        (fixture(dir, "question-multi-3"), 5),
+        (fixture(dir, "question-multi-review"), 2),
+    ]
+    .into();
+    let answered = Answered::default();
+    let size = pick(&io, &answered, 1).await;
+    let drink = pick(&io, &answered, 0).await;
+    let colour = pick(&io, &answered, 2).await;
+    let review = pick(&io, &answered, 0).await;
+    assert_eq!(
+        io.sent(),
+        vec![
+            vec!["down"],
+            vec!["enter"],
+            vec!["enter"],
+            vec!["down", "down"],
+            vec!["enter"],
+            vec!["enter"],
+        ]
+    );
+    let entered = io.0.lock().unwrap().entered.clone();
+    for (screen, row) in
+        entered
+            .iter()
+            .zip(["❯ 2. Large", "❯ 1. Tea", "❯ 3. Blue", "❯ 1. Submit answers"])
+    {
+        assert!(screen.contains(row), "{row}");
+    }
+    // Each step is its own occurrence, so an answer for one never lands on another.
+    let seen = [&size, &drink, &colour, &review].map(|v| v.occurrence.clone());
+    assert_eq!(
+        seen.iter().collect::<std::collections::HashSet<_>>().len(),
+        4
+    );
+    assert!(review.options[1].is_deny && !review.options[0].is_deny);
+    assert!(look(&io).await.unwrap().dialog.is_none());
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_answer_for_one_question_of_a_group_never_lands_on_the_next() {
+    let dir = "core/claude-2.1.325";
+    let io = Fake::new(
+        "claude",
+        fixture(dir, "question-multi-1"),
+        '❯',
+        4,
+        String::new(),
+    );
+    let (_, first) = seen(&io).await;
+    // Answered at the Mac meanwhile: the second question is up.
+    io.0.lock().unwrap().dialog = Some(fixture(dir, "question-multi-2"));
+    let e = answer(&io, &never, &Answered::default(), &request(&first, 1))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, ErrorCode::DialogChanged);
+    assert!(io.sent().is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn cancelling_a_claude_review_needs_no_approve_right() {
+    let dir = "core/claude-2.1.325";
+    let review = || {
+        Fake::new(
+            "claude",
+            fixture(dir, "question-multi-review"),
+            '❯',
+            2,
+            fixture(dir, "question-multi-after"),
+        )
+    };
+    let io = review();
+    let (_, v) = seen(&io).await;
+    let deny_only = |index| AnswerRequest {
+        deny_only: true,
+        ..request(&v, index)
+    };
+    let e = answer(&io, &never, &Answered::default(), &deny_only(0))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, ErrorCode::ApproveNotAllowed);
+    assert!(io.sent().is_empty());
+    answer(&io, &never, &Answered::default(), &deny_only(1))
+        .await
+        .unwrap();
+    assert_eq!(io.sent(), vec![vec!["down"], vec!["enter"]]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_codex_group_is_answered_one_question_at_a_time() {
+    let dir = "core/codex-0.169.0";
+    let io = Fake::new(
+        "codex",
+        fixture(dir, "question-multi-1"),
+        '›',
+        3,
+        fixture(dir, "question-multi-after"),
+    );
+    io.0.lock().unwrap().next = [
+        (fixture(dir, "question-multi-2"), 3),
+        (fixture(dir, "question-multi-3"), 4),
+    ]
+    .into();
+    let answered = Answered::default();
+    let first = pick(&io, &answered, 1).await;
+    assert_eq!(
+        first.options.iter().map(|o| o.offered).collect::<Vec<_>>(),
+        [true, true, false]
+    );
+    pick(&io, &answered, 0).await;
+    pick(&io, &answered, 2).await;
+    assert_eq!(
+        io.sent(),
+        vec![
+            vec!["down"],
+            vec!["enter"],
+            vec!["enter"],
+            vec!["down", "down"],
+            vec!["enter"],
+        ]
+    );
+    let entered = io.0.lock().unwrap().entered.clone();
+    for (screen, row) in entered.iter().zip(["› 2. Large", "› 1. Tea", "› 3. Blue"]) {
+        assert!(screen.contains(row), "{row}");
+    }
+    // The notes row is shown but never chosen.
+    let io = Fake::new(
+        "codex",
+        fixture(dir, "question-single"),
+        '›',
+        3,
+        fixture(dir, "question-single-after"),
+    );
+    let (_, v) = seen(&io).await;
+    let e = answer(&io, &never, &Answered::default(), &request(&v, 2))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, ErrorCode::BadRequest);
+    assert!(io.sent().is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn only_the_choice_that_submits_a_group_needs_the_approve_right() {
+    let unsigned = |v: &DialogView, index| AnswerRequest {
+        deny_only: true,
+        ..request(v, index)
+    };
+    let (claude, codex) = ("core/claude-2.1.325", "core/codex-0.169.0");
+    // A question of a group, then the screen whose Enter submits, with their row counts.
+    let cases = [
+        (
+            "claude",
+            claude,
+            '❯',
+            ("question-multi-2", 4),
+            ("question-multi-review", 2),
+        ),
+        (
+            "codex",
+            codex,
+            '›',
+            ("question-multi-2", 3),
+            ("question-multi-3", 4),
+        ),
+        (
+            "codex",
+            codex,
+            '›',
+            ("question-multi-1", 3),
+            ("question-single", 3),
+        ),
+    ];
+    for (kind, dir, marker, (question, rows), (submits, submit_rows)) in cases {
+        let io = Fake::new(kind, fixture(dir, question), marker, rows, String::new());
+        io.0.lock().unwrap().next = [(fixture(dir, submits), submit_rows)].into();
+        let (_, v) = seen(&io).await;
+        assert!(v.options[1].provisional, "{kind} {question}");
+        answer(&io, &never, &Answered::default(), &unsigned(&v, 1))
+            .await
+            .unwrap();
+        assert_eq!(io.enters(), 1, "{kind} {question}");
+        // The screen that submits them takes no unsigned choice but a deny.
+        let (_, v) = seen(&io).await;
+        assert!(v.options.iter().all(|o| !o.provisional), "{kind} {submits}");
+        let e = answer(&io, &never, &Answered::default(), &unsigned(&v, 0))
+            .await
+            .unwrap_err();
+        assert_eq!(e.code, ErrorCode::ApproveNotAllowed, "{kind} {submits}");
+        assert_eq!(io.enters(), 1, "{kind} {submits}");
+    }
+}
+
+fn open_tab(v: &DialogView) -> Option<&str> {
+    v.steps.iter().find(|s| s.current).map(|s| s.label.as_str())
+}
+
+#[tokio::test(start_paused = true)]
+async fn one_left_arrow_shows_a_groups_previous_question() {
+    let dir = "core/claude-2.1.325";
+    let io = Fake::new(
+        "claude",
+        fixture(dir, "question-multi-review"),
+        '❯',
+        2,
+        String::new(),
+    );
+    io.0.lock().unwrap().prev = Some((fixture(dir, "question-multi-3-revisit"), 5));
+    let answered = Answered::default();
+    let s = look(&io).await.unwrap();
+    let review = view(&s, &never, &answered).unwrap();
+    assert!(review.back);
+    assert_eq!(open_tab(&review), Some("Submit"));
+    back(&io, &never, &answered, &review.occurrence)
+        .await
+        .unwrap();
+    assert_eq!(io.sent(), vec![vec!["left"]]);
+    // Every tab is answered now, so the screen alone doesn't say which is open; the move does.
+    let s = look(&io).await.unwrap();
+    let colour = view(&s, &never, &answered).unwrap();
+    assert_eq!(open_tab(&colour), Some("Colour"));
+    assert!(colour.back && colour.answerable);
+    assert!(
+        view(&s, &never, &Answered::default())
+            .unwrap()
+            .steps
+            .iter()
+            .all(|s| !s.current)
+    );
+    // A tap repeated for the review now behind it moves nothing.
+    let e = back(&io, &never, &answered, &review.occurrence)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, ErrorCode::DialogChanged);
+    assert_eq!(io.sent().len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn no_left_arrow_without_an_earlier_question_or_from_a_free_text_row() {
+    let claude = "core/claude-2.1.325";
+    // (agent, folder, screen, marker, rows, the row selected)
+    let cases = [
+        ("claude", claude, "question-multi-1", '❯', 4, 1),
+        ("claude", claude, "question-single-long", '❯', 5, 1),
+        ("claude", claude, "question-multi-2", '❯', 4, 3),
+        ("claude", claude, "question-mixed-multiselect", '❯', 5, 1),
+        ("codex", "core/codex-0.169.0", "question-multi-1", '›', 3, 1),
+        ("codex", "core/codex-0.169.0", "question-single", '›', 3, 1),
+        ("codex", "codex-0.165.0", "permission-command", '›', 3, 1),
+    ];
+    for (kind, dir, screen, marker, rows, selected) in cases {
+        let io = Fake::new(kind, fixture(dir, screen), marker, rows, String::new());
+        io.0.lock().unwrap().selected = selected;
+        let s = look(&io).await.unwrap();
+        let v = view(&s, &never, &Answered::default()).unwrap();
+        assert!(!v.back, "{screen}");
+        let e = back(&io, &never, &Answered::default(), &v.occurrence)
+            .await
+            .unwrap_err();
+        assert_ne!(e.code, ErrorCode::OutcomeUnknown, "{screen}");
+        assert!(io.sent().is_empty(), "{screen}");
+    }
+    // A hooked pane gets no key either.
+    let io = Fake::new(
+        "claude",
+        fixture(claude, "question-multi-2"),
+        '❯',
+        4,
+        String::new(),
+    );
+    let (_, v) = seen(&io).await;
+    assert!(v.back);
+    let hooked = || Some("hooked");
+    let e = back(&io, &hooked, &Answered::default(), &v.occurrence)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, ErrorCode::DialogChanged);
+    assert!(io.sent().is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_question_gone_back_to_may_be_answered_again() {
+    let dir = "core/codex-0.169.0";
+    let io = Fake::new(
+        "codex",
+        fixture(dir, "question-multi-2"),
+        '›',
+        3,
+        String::new(),
+    );
+    io.0.lock().unwrap().next = [(fixture(dir, "question-multi-3"), 4)].into();
+    let answered = Answered::default();
+    let second = pick(&io, &answered, 1).await;
+    let s = look(&io).await.unwrap();
+    let third = view(&s, &never, &answered).unwrap();
+    assert_eq!(open_tab(&third), Some("3"));
+    // The very same screen comes back after a left arrow.
+    io.0.lock().unwrap().prev = Some((fixture(dir, "question-multi-2"), 3));
+    back(&io, &never, &answered, &third.occurrence)
+        .await
+        .unwrap();
+    let s = look(&io).await.unwrap();
+    let again = view(&s, &never, &answered).unwrap();
+    assert_eq!(again.occurrence, second.occurrence);
+    assert!(again.answerable, "{again:?}");
+    io.0.lock().unwrap().next = [(fixture(dir, "question-multi-3"), 4)].into();
+    pick(&io, &answered, 0).await;
+    assert_eq!(io.enters(), 2);
+}
+
+#[tokio::test(start_paused = true)]
+async fn moving_the_selection_on_an_answered_codex_question_keeps_its_occurrence() {
+    let dir = "core/codex-0.169.0";
+    let at = |screen: String| Fake::new("codex", screen, '›', 3, String::new());
+    // Codex counts the question as unanswered again once the selection moves off its answer.
+    let moved = fixture(dir, "question-multi-2-revisit-down");
+    assert!(moved.contains("Question 2/3 (2 unanswered)"));
+    let (before, _) = seen(&at(moved.replace("(2 unanswered)", "(1 unanswered)"))).await;
+    let (after, _) = seen(&at(moved)).await;
+    assert_eq!(before.occurrence, after.occurrence);
+    let (other, _) = seen(&at(fixture(dir, "question-multi-1"))).await;
+    assert_ne!(before.occurrence, other.occurrence);
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_answer_and_a_step_back_return_what_the_screen_then_shows() {
+    let dir = "core/claude-2.1.325";
+    let io = Fake::new(
+        "claude",
+        fixture(dir, "question-multi-1"),
+        '❯',
+        4,
+        String::new(),
+    );
+    io.0.lock().unwrap().next = [(fixture(dir, "question-multi-2"), 4)].into();
+    let answered = Answered::default();
+    let (_, first) = seen(&io).await;
+    let after = answer(&io, &never, &answered, &request(&first, 1))
+        .await
+        .unwrap();
+    let next = view(&after, &never, &answered).unwrap();
+    assert_eq!(next.prompt, "Pick a drink");
+    assert_eq!(open_tab(&next), Some("Drink"));
+    assert!(next.answerable && next.back);
+    io.0.lock().unwrap().prev = Some((fixture(dir, "question-multi-1"), 4));
+    let before = back(&io, &never, &answered, &next.occurrence)
+        .await
+        .unwrap();
+    assert_eq!(
+        view(&before, &never, &answered).unwrap().prompt,
+        "Pick a size"
+    );
+    // The last answer leaves no dialog to return.
+    let last = Fake::codex();
+    let (_, v) = seen(&last).await;
+    let after = answer(&last, &never, &Answered::default(), &request(&v, 0))
+        .await
+        .unwrap();
+    assert!(view(&after, &never, &Answered::default()).is_none());
 }
