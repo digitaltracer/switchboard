@@ -21,6 +21,7 @@ import com.digitaltracer.switchboard.core.HerdrSession
 import com.digitaltracer.switchboard.core.agentStatus
 import com.digitaltracer.switchboard.core.isNamed
 import com.digitaltracer.switchboard.core.needsYou
+import com.digitaltracer.switchboard.core.nameInSpace
 import com.digitaltracer.switchboard.core.shortName
 import com.digitaltracer.switchboard.core.shownTitle
 import kotlinx.coroutines.delay
@@ -82,13 +83,16 @@ private fun ended(ms: Long) = Ago.short(ms).let { if (it == "now") "Ended just n
 fun SessionRow(model: AppModel, session: HerdrSession, showMachine: Boolean, first: Boolean) {
     val status = session.status
     ListRow(
-        status.symbol, if (session.isEnded) palette.secondary else status.color, session.key.name,
+        status.symbol, if (session.isEnded) palette.secondary else status.color, session.title,
         if (showMachine) "${session.summary} · ${session.key.machine}" else session.summary, "", first,
         tag = "session-${session.key.name}", background = if (session.isEnded) palette.endedRow else Color.Transparent,
     ) { model.path.add(Route.HerdrSessionPage(session.key)) }
 }
 
-/** A Herdr session's agents: running ones first, then those that ended today. */
+/**
+ * A Herdr session's agents under the space each runs in: running ones first, then those that
+ * ended today. The Herdr app is one session, with a heading for each of its spaces.
+ */
 @Composable
 fun HerdrSessionScreen(model: AppModel, key: HerdrSession.Key) {
     LaunchedEffect(key, model.wakes, model.foreground) {
@@ -98,21 +102,28 @@ fun HerdrSessionScreen(model: AppModel, key: HerdrSession.Key) {
         }
     }
     val session = model.herdrSessions(key.machine, HerdrSession.startOfToday()).firstOrNull { it.key == key } ?: HerdrSession(key)
-    GroupedList(model, key.name, onRefresh = model::refreshAgents) {
-        item {
-            InsetGroup("Agents") {
-                if (session.agents.isEmpty()) {
+    val spaces = session.spaces
+    GroupedList(model, session.title, onRefresh = model::refreshAgents) {
+        if (session.agents.isEmpty()) {
+            item {
+                InsetGroup("Agents") {
                     GroupRow(true) { Text("No agents in this session.", style = Type.body, color = palette.secondary) }
                 }
-                session.agents.forEachIndexed { i, a ->
-                    val status = a.status
-                    GroupRow(i == 0, a.route?.let { r -> { model.path.add(r) } }, if (a.isEnded) palette.endedRow else Color.Transparent) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(Modifier.width(26.dp), Alignment.Center) { Icon(status.symbol, null, Modifier.size(22.dp), tint = status.color) }
-                            Spacer(Modifier.width(14.dp))
-                            Column(Modifier.fillMaxWidth().testTag("agent-${a.shortName}"), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                Text(a.shortName, style = Type.headline, color = if (a.isEnded) palette.secondary else palette.label, maxLines = 1)
-                                Text(a.subtitle, style = Type.subheadline, color = if (a.isEnded) palette.secondary else status.color, maxLines = 1)
+            }
+        }
+        spaces.forEach { space ->
+            item {
+                InsetGroup(space.name ?: if (spaces.size == 1) "Agents" else "No space") {
+                    space.agents.forEachIndexed { i, a ->
+                        val status = a.status
+                        GroupRow(i == 0, a.route?.let { r -> { model.path.add(r) } }, if (a.isEnded) palette.endedRow else Color.Transparent) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(Modifier.width(26.dp), Alignment.Center) { Icon(status.symbol, null, Modifier.size(22.dp), tint = status.color) }
+                                Spacer(Modifier.width(14.dp))
+                                Column(Modifier.fillMaxWidth().testTag("agent-${a.nameInSpace}"), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    Text(a.nameInSpace, style = Type.headline, color = if (a.isEnded) palette.secondary else palette.label, maxLines = 1)
+                                    Text(a.subtitle, style = Type.subheadline, color = if (a.isEnded) palette.secondary else status.color, maxLines = 1)
+                                }
                             }
                         }
                     }
@@ -121,7 +132,8 @@ fun HerdrSessionScreen(model: AppModel, key: HerdrSession.Key) {
         }
         item {
             Text(
-                "On ${key.machine}. Open it there with: herdr session attach ${key.name}",
+                if (session.isHerdrApp) "On ${key.machine}, in the Herdr app. Each heading is one of its spaces."
+                else "On ${key.machine}. Open it there with: herdr session attach ${key.name}",
                 Modifier.fillMaxWidth(), style = Type.footnote, color = palette.secondary,
             )
         }

@@ -165,7 +165,7 @@ class AppModel(context: Context, val keys: DeviceKeys) {
             null -> "Agents"
             is Route.SessionPage -> sessions.firstOrNull { it.id == under.id }?.label ?: "Back"
             is Route.AgentPage -> under.name
-            is Route.HerdrSessionPage -> under.key.name
+            is Route.HerdrSessionPage -> HerdrSession.title(under.key.name)
             Route.AllSessions -> "All sessions"
             is Route.MachinePage -> under.machine
             Route.Machines -> "Machines"

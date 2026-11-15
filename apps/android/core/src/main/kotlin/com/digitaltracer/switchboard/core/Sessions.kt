@@ -17,6 +17,28 @@ data class HerdrSession(val key: Key, val live: List<Agent> = emptyList(), val e
         data class Ended(val agent: EndedAgent) : Agent
     }
 
+    /** One space of a session, with the agents in it. [name] is null for agents in no named space. */
+    data class Space(val name: String?, val live: List<Agent>, val ended: List<Agent>) {
+        val agents get() = live + ended
+    }
+
+    val isHerdrApp get() = key.name == HERDR_APP
+
+    /** What to call it on screen. */
+    val title get() = title(key.name)
+
+    /**
+     * Its agents by space: each named space in name order, then those in none. Within a space,
+     * running ones come before those that ended.
+     */
+    val spaces: List<Space>
+        get() {
+            val names = agents.mapNotNull { it.space }.distinct().sortedBy { it.lowercase() }
+            val named = names.map { n -> Space(n, live.filter { it.space == n }, ended.filter { it.space == n }) }
+            val rest = Space(null, live.filter { it.space == null }, ended.filter { it.space == null })
+            return if (rest.agents.isEmpty()) named else named + rest
+        }
+
     /** No agent is left running in it. */
     val isEnded get() = live.isEmpty()
     val agents get() = live + ended
@@ -26,6 +48,11 @@ data class HerdrSession(val key: Key, val live: List<Agent> = emptyList(), val e
 
     companion object {
         internal val liveLifecycles = setOf("starting", "running", "stopping")
+
+        /** The name the hub gives the Herdr app's one session. The app has spaces, not sessions. */
+        const val HERDR_APP = "hc"
+
+        fun title(name: String) = if (name == HERDR_APP) "Herdr App" else name
 
         /**
          * Groups the hub's lists by machine and Herdr session. Ended agents count from [since], or
@@ -55,7 +82,7 @@ data class HerdrSession(val key: Key, val live: List<Agent> = emptyList(), val e
                 add(Agent.Ended(e), e.machineId, e.herdrSession, false)
             }
             val all = live.keys.map { HerdrSession(it, live.getValue(it), gone.getValue(it).sortedByDescending { a -> a.endedAt }) }
-            val running = all.filter { !it.isEnded }.sortedWith(compareBy({ it.key.name }, { it.key.machine }))
+            val running = all.filter { !it.isEnded }.sortedWith(compareBy({ it.title.lowercase() }, { it.key.machine }))
             val done = all.filter { it.isEnded }.sortedByDescending { it.endedAt }
             return running + done
         }
@@ -79,6 +106,26 @@ val HerdrSession.Agent.shortName: String
         is HerdrSession.Agent.Live -> agent.displayName
         is HerdrSession.Agent.Ended -> short(agent.name, agent.kind)
     }
+
+/**
+ * The named space it runs in. A bare number, Herdr's default label, is no name, and nor is what
+ * the hub says for a Herdr app terminal outside every space.
+ */
+val HerdrSession.Agent.space: String?
+    get() {
+        val (raw, session) = when (this) {
+            is HerdrSession.Agent.Task -> null to session.herdrSession
+            is HerdrSession.Agent.Live -> agent.space to agent.herdrSession
+            is HerdrSession.Agent.Ended -> agent.space to agent.herdrSession
+        }
+        val space = raw?.trim().orEmpty()
+        if (space.isEmpty() || space.all { it in '0'..'9' }) return null
+        return if (session == HerdrSession.HERDR_APP && space == "core") null else space
+    }
+
+/** Its name under its space's heading, which a live agent's [shortName] would repeat. */
+val HerdrSession.Agent.nameInSpace: String
+    get() = if (this is HerdrSession.Agent.Live) agent.agentLabel else shortName
 
 /** What its terminal says it's working on. */
 val HerdrSession.Agent.title: String?

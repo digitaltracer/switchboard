@@ -40,6 +40,7 @@ import androidx.compose.ui.unit.dp
 import com.digitaltracer.switchboard.api.models.Changes
 import com.digitaltracer.switchboard.api.models.Session
 import com.digitaltracer.switchboard.core.ConversationSource
+import com.digitaltracer.switchboard.core.HerdrSession
 import com.digitaltracer.switchboard.core.sessionTarget
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
@@ -290,8 +291,11 @@ private fun Details(s: Session) {
             Labeled("Project", s.projectId)
             Labeled("Machine", "${s.machineId} (${s.machineStatus})")
             s.herdrSession?.let { h ->
-                Labeled("Herdr session", h)
-                Text("On ${s.machineId}: herdr session attach $h", style = Type.caption, fontFamily = FontFamily.Monospace, color = palette.secondary)
+                Labeled("Herdr session", HerdrSession.title(h))
+                // The Herdr app has no session to attach to.
+                if (h != HerdrSession.HERDR_APP) {
+                    Text("On ${s.machineId}: herdr session attach $h", style = Type.caption, fontFamily = FontFamily.Monospace, color = palette.secondary)
+                }
             }
         }
     }

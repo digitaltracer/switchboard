@@ -18,14 +18,47 @@ class SessionsTest {
          "created_at":0,"updated_at":$updated,"muted":false,"notifies":true,"pending_approvals":[],"herdr_session":"$herdr"}
     """)
 
-    private fun agent(name: String, status: String = "idle", title: String? = null): AgentView {
+    private fun agent(name: String, status: String = "idle", title: String? = null, space: String? = null): AgentView {
         val t = title?.let { ""","title":"$it"""" } ?: ""
-        return json.decodeFromString("""{"machine_id":"mac","name":"$name","herdr_session":"${name.substringBefore('/')}","agent_status":"$status"$t}""")
+        val s = space?.let { ""","space":"$it"""" } ?: ""
+        return json.decodeFromString("""{"machine_id":"mac","name":"$name","herdr_session":"${name.substringBefore('/')}","agent_status":"$status"$t$s}""")
     }
 
-    private fun ended(name: String, at: Long): EndedAgent = json.decodeFromString(
-        """{"machine_id":"mac","name":"$name","herdr_session":"${name.substringBefore('/')}","started_at":0,"ended_at":$at}""",
-    )
+    private fun ended(name: String, at: Long, space: String? = null): EndedAgent {
+        val s = space?.let { ""","space":"$it"""" } ?: ""
+        return json.decodeFromString(
+            """{"machine_id":"mac","name":"$name","herdr_session":"${name.substringBefore('/')}","started_at":0,"ended_at":$at$s}""",
+        )
+    }
+
+    @Test
+    fun theHerdrAppIsOneSessionWithItsSpacesKeptApart() {
+        val groups = HerdrSession.group(
+            sessions = emptyList(),
+            agents = listOf(
+                agent("hc/orchestrator", "working", space = "switchboard"),
+                agent("hc/orchestrator-t9", space = "udp-backend"),
+                agent("hc/reviewer", space = "udp-backend"),
+                agent("hc/scratch", space = "core"),
+                agent("crm/orchestrator", space = "Imports"),
+                agent("crm/w1:p2", title = "Fix the import", space = "1"),
+            ),
+            ended = listOf(ended("hc/old", 300, "switchboard"), ended("hc/older", 200)),
+            since = null,
+        )
+        assertEquals(listOf("crm", "Herdr App"), groups.map { it.title })
+        val app = groups[1]
+        assertTrue(app.isHerdrApp && app.key.name == "hc")
+        assertEquals(listOf("switchboard", "udp-backend", null), app.spaces.map { it.name })
+        assertEquals(listOf("orchestrator", "old"), app.spaces[0].agents.map { it.nameInSpace })
+        assertEquals(listOf("orchestrator-t9", "reviewer"), app.spaces[1].live.map { it.nameInSpace })
+        // Outside every space, and one that ended before spaces were recorded.
+        assertEquals(listOf("scratch", "older"), app.spaces[2].agents.map { it.nameInSpace })
+        assertEquals("switchboard › orchestrator", app.live[0].shortName)
+        // A Herdr session is split the same way; its numbered default workspace is no name.
+        assertEquals(listOf("Imports", null), groups[0].spaces.map { it.name })
+        assertEquals(listOf("Fix the import"), groups[0].spaces[1].live.map { it.nameInSpace })
+    }
 
     @Test
     fun agentsGroupBySessionWithEndedOnesLast() {

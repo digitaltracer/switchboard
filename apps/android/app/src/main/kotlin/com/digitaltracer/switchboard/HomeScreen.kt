@@ -305,7 +305,7 @@ private fun Empty() {
 
 /** Agents working or waiting for you, in any session. */
 private fun busyTiles(groups: List<HerdrSession>): List<Tile> =
-    groups.flatMap { g -> g.live.filter { it.needsYou || it.agentStatus == "working" }.map { Tile(it, g.key.name) } }
+    groups.flatMap { g -> g.live.filter { it.needsYou || it.agentStatus == "working" }.map { Tile(it, g.title) } }
 
 /** An agent working or waiting for you, and the session it's in. */
 private data class Tile(val agent: HerdrSession.Agent, val session: String) {
