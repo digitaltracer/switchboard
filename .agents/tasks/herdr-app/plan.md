@@ -454,3 +454,30 @@ Left and found:
 - An interrupted core start found while the core is down is forgotten with its terminal left.
 - The Herdr TUI live suites were not rerun.
 - Live runs: the Claude core start and the outside-Claude prompt, answer, deny and kill passed. Codex failed as above. `~/.claude.json` was backed up and only the scratch trust keys were removed. The plan file and scratch transcripts were deleted. `~/.codex/config.toml` is unchanged. Every throwaway core was stopped and its state deleted.
+
+## Review (2026-11-12)
+
+Reviewed from `4187482` to `2bc2531`, fixed through `c9ceb37`. The report is in `review.md` beside this plan.
+
+Plan amendments:
+- Fact 7: herdr-core 0.1.20 sends `foreground` events, though `hc schema`'s `events.subscribe` description omits them. The mirror relies on them (verified by a probe).
+- 5.4: the app leaves terminal names null, so the tab name is the usual display, and tab names repeat across spaces. A shared name is listed as `<name>-<address>`, an ambiguous name is refused, and sessions are addressed by their stored address.
+- 5.5: a prompt reads the terminal fresh before `terminal.send` and is refused unless the same agent is in front.
+- 5.6: the existing start cap is 20 s (`startup_timeout`), not 60 s. The launch is a `/bin/sh` prelude. A stop whose terminal won't end keeps the worktree.
+- Section 3: the agent store is `src/store/agents.rs`.
+- Section 7: the live Claude tests that edit `~/.claude.json` run one at a time. The Codex fixtures for question and plan dialogs, and the live Codex run, wait on Codex 0.167 support.
+
+Known issues accepted (likelihood × severity):
+- The launch prelude's unquoted env loop (1×3).
+- An interrupted core start left while the core is down (1×3).
+- `Core::down` clearing the core id but keeping the mirror's terminals (2×2).
+- The owner lookup's name fallback without an identity check (1×3).
+- An occasional "the dialog changed" refusal in the live outside-Claude test, which fails safe.
+
+Closing check:
+- Steps 1 to 6: delivered.
+- Step 7: delivered.
+- Step 8: skipped by decision.
+- Section 6 safety rules: delivered.
+- Section 7 tests: delivered, except the Codex items above.
+- Next: Codex 0.167 recogniser support, as its own task.
