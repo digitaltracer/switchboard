@@ -304,6 +304,10 @@ pub struct AnswerResult {
     pub operation_id: String,
     #[serde(default)]
     pub replayed: bool,
+    /// What the screen shows after the answer, such as a group's next question. Not recorded:
+    /// a replay has none.
+    #[serde(skip)]
+    pub next: Option<DialogView>,
 }
 
 #[derive(Debug, Clone)]
@@ -1400,15 +1404,18 @@ impl SessionService {
             label_sha256: req.label_sha256.clone(),
             deny_only: !approve,
         };
-        if let Err(e) = self.runners.call(&req.machine_id, op, CALL_TIMEOUT).await {
-            let refused = e.code == ErrorCode::ApproveNotAllowed;
-            let err = self.settle_err(&op_id, sid, &req.machine_id, e).await;
-            return Err(if refused {
-                HubError::ApproveNotAllowed(caller.door.as_str())
-            } else {
-                err
-            });
-        }
+        let reply = match self.runners.call(&req.machine_id, op, CALL_TIMEOUT).await {
+            Ok(v) => v,
+            Err(e) => {
+                let refused = e.code == ErrorCode::ApproveNotAllowed;
+                let err = self.settle_err(&op_id, sid, &req.machine_id, e).await;
+                return Err(if refused {
+                    HubError::ApproveNotAllowed(caller.door.as_str())
+                } else {
+                    err
+                });
+            }
+        };
         self.store
             .resolve_attention(
                 &req.machine_id,
@@ -1419,14 +1426,47 @@ impl SessionService {
             )
             .await?;
         self.audit("hub", sid, "dialog_answered", detail).await?;
-        let result = AnswerResult {
+        let mut result = AnswerResult {
             outcome: "answered".into(),
             operation_id: op_id.clone(),
             replayed: false,
+            next: None,
         };
         let v = serde_json::to_value(&result).expect("serializes");
         self.finish(&op_id, OpState::Done, sid, &v).await?;
+        result.next = shown(&reply);
         Ok(result)
+    }
+
+    /// Shows the previous question of a group again on an agent's screen. It submits nothing, so
+    /// it needs neither a signature nor the approve right; the runner checks it against a fresh
+    /// read, and a repeat finds a different occurrence and does nothing.
+    pub async fn dialog_back(
+        &self,
+        caller: &Caller,
+        machine: &str,
+        agent: &str,
+        occurrence: &str,
+    ) -> Result<Option<DialogView>, HubError> {
+        self.known_machine(machine)?;
+        let op = Op::Back {
+            agent: agent.to_owned(),
+            occurrence: occurrence.to_owned(),
+        };
+        let result = self.runners.call(machine, op, CALL_TIMEOUT).await;
+        let outcome = match &result {
+            Ok(_) => "moved".to_owned(),
+            Err(e) => format!("{:?}", e.code),
+        };
+        let detail = json!({
+            "machine_id": machine, "agent": redact_str(agent), "occurrence": occurrence,
+            "outcome": outcome,
+        });
+        self.audit(&caller.actor, None, "dialog_back", detail)
+            .await?;
+        result
+            .map(|reply| shown(&reply))
+            .map_err(|e| runner_error(machine, e))
     }
 
     /// The dialog on an agent's screen, masked, and the occurrence the screen shows. It shares
@@ -1446,12 +1486,8 @@ impl SessionService {
             .map_err(|e| runner_error(machine, e))?;
         let mut d: AgentDialog = serde_json::from_value(v)
             .map_err(|e| HubError::BadRequest(format!("runner dialog: {e}")))?;
-        // The runner masked it already; masking is idempotent, so the label hashes still match.
         if let Some(view) = &mut d.dialog {
-            view.prompt = redact_str(&view.prompt);
-            for o in &mut view.options {
-                o.label = redact_str(&o.label);
-            }
+            remask(view);
         }
         Ok(d)
     }
@@ -3404,6 +3440,24 @@ fn finished_turn(s: &SessionRecord, new_status: &str) -> bool {
     s.lifecycle == Lifecycle::Running
         && matches!(s.agent_status.as_str(), "working" | "blocked")
         && matches!(new_status, "idle" | "done")
+}
+
+/// The runner masked it already; masking is idempotent, so the label hashes still match.
+fn remask(view: &mut DialogView) {
+    view.prompt = redact_str(&view.prompt);
+    for o in &mut view.options {
+        o.label = redact_str(&o.label);
+    }
+    for s in &mut view.steps {
+        s.label = redact_str(&s.label);
+    }
+}
+
+/// The dialog a runner says the screen shows after its key, if it sent one.
+fn shown(reply: &Value) -> Option<DialogView> {
+    let mut view: DialogView = serde_json::from_value(reply.get("dialog")?.clone()).ok()?;
+    remask(&mut view);
+    Some(view)
 }
 
 fn runner_error(machine: &str, e: ProtoError) -> HubError {

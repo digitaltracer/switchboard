@@ -79,6 +79,7 @@ pub fn routes(state: AppState) -> Router {
         .route("/agents/dialog", get(get_agent_dialog))
         .route("/agents/dialog/challenge", post(dialog_challenge))
         .route("/agents/dialog/answer", post(answer_dialog))
+        .route("/agents/dialog/back", post(dialog_back))
         .route("/attention/{id}", get(get_attention))
         .route("/meta", get(get_meta));
     Router::new().nest(PREFIX, api).with_state(state)
@@ -1142,6 +1143,27 @@ pub async fn get_agent_dialog(
     }))
 }
 
+#[utoipa::path(post, path = "/app/v1/agents/dialog/back", tag = "agents",
+    security(("device_token" = [])), request_body = DialogBackRequest,
+    responses((status = 200, description = "OK", body = DialogBackResponse), (status = 400, description = "There is no earlier question to show", body = ApiError),
+              (status = 409, description = "The dialog changed; read it again", body = ApiError)))]
+/// Shows the previous question of a group again, when the dialog says `can_go_back`. It submits
+/// nothing, so it needs no signature.
+pub async fn dialog_back(
+    State(st): State<AppState>,
+    d: DeviceAuth,
+    Json(req): Json<DialogBackRequest>,
+) -> ApiResult<DialogBackResponse> {
+    let dialog = st
+        .svc
+        .dialog_back(&d.caller(), &req.machine_id, &req.agent, &req.occurrence_id)
+        .await?;
+    Ok(Json(DialogBackResponse {
+        outcome: "moved".into(),
+        dialog: dialog.map(Into::into),
+    }))
+}
+
 #[utoipa::path(post, path = "/app/v1/agents/dialog/challenge", tag = "agents",
     security(("device_token" = [])), request_body = DialogChallengeRequest,
     responses((status = 200, description = "OK", body = DialogChallenge), (status = 404, description = "Not found", body = ApiError)))]
@@ -1173,7 +1195,8 @@ pub async fn dialog_challenge(
     responses((status = 200, description = "OK", body = DialogAnswerResponse), (status = 400, description = "Bad request", body = ApiError),
               (status = 403, description = "Not allowed", body = ApiError), (status = 409, description = "The dialog changed or was answered; read it again", body = ApiError),
               (status = 504, description = "The Enter may have been sent; never retried", body = ApiError)))]
-/// Picks one offered option. The deny needs no signature; any other option needs the device's
+/// Picks one offered option. The deny needs no signature, and nor does a `provisional` option,
+/// which only moves to the next question of a group; any other option needs the device's
 /// signature over the answer message.
 pub async fn answer_dialog(
     State(st): State<AppState>,
@@ -1230,6 +1253,7 @@ pub async fn answer_dialog(
         outcome: r.outcome,
         operation_id: r.operation_id,
         replayed: r.replayed,
+        next: r.next.map(Into::into),
     }))
 }
 

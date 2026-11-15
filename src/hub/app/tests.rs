@@ -1786,3 +1786,95 @@ async fn a_runner_that_doesnt_host_core_agents_is_never_sent_one() {
     );
     read.abort();
 }
+
+#[tokio::test]
+async fn a_group_shows_its_tabs_and_goes_back_a_question_unsigned() {
+    let mut r = rig().await;
+    let phone = Phone::new();
+    let (_, token) = r.pair(&phone).await;
+    let read = r.call_later(
+        "GET",
+        "/agents/dialog?machine_id=mac&agent=work%2Fcl",
+        &token,
+        Value::Null,
+    );
+    let req = r.req().await;
+    let mut reply = dialog_reply("occ2");
+    reply["dialog"]["options"][0]["provisional"] = json!(true);
+    reply["dialog"]["back"] = json!(true);
+    reply["dialog"]["steps"] = json!([
+        {"label": "Size", "answered": true, "current": false},
+        {"label": "Drink ghp_0123456789abcdefghijABCDEFGHIJ", "answered": false, "current": true},
+    ]);
+    r.ok(req.id, reply).await;
+    let d = read.await.unwrap().body;
+    assert_eq!(d["dialog"]["can_go_back"], true, "{d}");
+    assert_eq!(d["dialog"]["options"][0]["provisional"], true);
+    assert_eq!(d["dialog"]["options"][1]["provisional"], false);
+    assert_eq!(d["dialog"]["steps"][0]["label"], "Size");
+    assert_eq!(d["dialog"]["steps"][1]["current"], true);
+    assert!(!d["dialog"]["steps"].to_string().contains("ghp_"), "{d}");
+
+    let back = r.call_later(
+        "POST",
+        "/agents/dialog/back",
+        &token,
+        json!({"machine_id": "mac", "agent": "work/cl", "occurrence_id": "occ2"}),
+    );
+    let req = r.req().await;
+    assert_eq!(
+        req.op,
+        Op::Back {
+            agent: "work/cl".into(),
+            occurrence: "occ2".into()
+        }
+    );
+    r.ok(
+        req.id,
+        json!({"moved": true, "dialog": dialog_reply("occ1")["dialog"]}),
+    )
+    .await;
+    let moved = back.await.unwrap();
+    assert_eq!(moved.status, StatusCode::OK, "{}", moved.body);
+    assert_eq!(moved.body["outcome"], "moved");
+    // The question now showing comes back with it, masked like any dialog read.
+    assert_eq!(moved.body["dialog"]["occurrence_id"], "occ1");
+    assert!(!moved.body.to_string().contains("ghp_"), "{}", moved.body);
+
+    // An unsigned pick of one question returns the next one the same way.
+    let pick = r.call_later(
+        "POST",
+        "/agents/dialog/answer",
+        &token,
+        json!({"machine_id": "mac", "agent": "work/cl", "occurrence_id": "occ1", "option_id": "o1",
+               "label_sha256": label_sha256(&["Yes, proceed (y)".into()])}),
+    );
+    let req = r.req().await;
+    assert!(matches!(
+        req.op,
+        Op::Answer {
+            deny_only: true,
+            ..
+        }
+    ));
+    r.ok(
+        req.id,
+        json!({"answered": true, "dialog": dialog_reply("occ3")["dialog"]}),
+    )
+    .await;
+    let picked = pick.await.unwrap().body;
+    assert_eq!(picked["next"]["occurrence_id"], "occ3", "{picked}");
+    assert!(!picked.to_string().contains("ghp_"), "{picked}");
+
+    // A stale tap is told to read the dialog again.
+    let stale = r.call_later(
+        "POST",
+        "/agents/dialog/back",
+        &token,
+        json!({"machine_id": "mac", "agent": "work/cl", "occurrence_id": "occ2"}),
+    );
+    let req = r.req().await;
+    r.err(req.id, ErrorCode::DialogChanged, "the dialog changed")
+        .await;
+    assert_eq!(stale.await.unwrap().status, StatusCode::CONFLICT);
+}

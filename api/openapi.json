@@ -1844,7 +1844,7 @@
         "tags": [
           "agents"
         ],
-        "summary": "Picks one offered option. The deny needs no signature; any other option needs the device's\nsignature over the answer message.",
+        "summary": "Picks one offered option. The deny needs no signature, and nor does a `provisional` option,\nwhich only moves to the next question of a group; any other option needs the device's\nsignature over the answer message.",
         "operationId": "answer_dialog",
         "requestBody": {
           "content": {
@@ -1899,6 +1899,62 @@
           },
           "504": {
             "description": "The Enter may have been sent; never retried",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
+    "/app/v1/agents/dialog/back": {
+      "post": {
+        "tags": [
+          "agents"
+        ],
+        "summary": "Shows the previous question of a group again, when the dialog says `can_go_back`. It submits\nnothing, so it needs no signature.",
+        "operationId": "dialog_back",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DialogBackRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DialogBackResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "There is no earlier question to show",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The dialog changed; read it again",
             "content": {
               "application/json": {
                 "schema": {
@@ -2588,6 +2644,17 @@
               "null"
             ],
             "description": "Why not: `read_only`, `hooked` (answered as an approval instead),\n`hook_pending`, `hook_failed`, `not_blocked` or `answered`."
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DialogStep"
+            },
+            "description": "When the agent asked several questions together: one per question, in order, to show as\ntabs. Claude's ends with its `Submit` tab. Empty otherwise, and absent from older hubs."
+          },
+          "can_go_back": {
+            "type": "boolean",
+            "description": "The group's previous question can be shown again, with `/agents/dialog/back`. Absent\nfrom older hubs."
           }
         }
       },
@@ -2665,6 +2732,46 @@
           "replayed": {
             "type": "boolean",
             "description": "Already answered with this request id; nothing was sent again."
+          },
+          "next": {
+            "$ref": "#/components/schemas/Dialog",
+            "description": "The dialog the screen shows after the answer, such as the next question of a group, which\nsaves reading it again. Absent when nothing shows, on a replay, and from older hubs."
+          }
+        }
+      },
+      "DialogBackRequest": {
+        "type": "object",
+        "required": [
+          "machine_id",
+          "agent",
+          "occurrence_id"
+        ],
+        "properties": {
+          "machine_id": {
+            "type": "string"
+          },
+          "agent": {
+            "type": "string"
+          },
+          "occurrence_id": {
+            "type": "string",
+            "description": "The dialog being shown, so a stale tap moves nothing."
+          }
+        }
+      },
+      "DialogBackResponse": {
+        "type": "object",
+        "required": [
+          "outcome"
+        ],
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "description": "`moved`: the previous question shows."
+          },
+          "dialog": {
+            "$ref": "#/components/schemas/Dialog",
+            "description": "The dialog now showing, which saves reading it again. Absent when the hub's runner didn't\nsay; read the dialog then."
           }
         }
       },
@@ -2753,6 +2860,33 @@
           "offered": {
             "type": "boolean",
             "description": "It may be chosen from the phone; the others are shown for context."
+          },
+          "provisional": {
+            "type": "boolean",
+            "description": "It answers one question of a group and submits nothing, so it needs no signature either.\nThe choice that submits the group is signed. Absent from older hubs."
+          }
+        }
+      },
+      "DialogStep": {
+        "type": "object",
+        "description": "One question of a group asked together.",
+        "required": [
+          "label",
+          "answered",
+          "current"
+        ],
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "The agent's short name for the question, or its number."
+          },
+          "answered": {
+            "type": "boolean",
+            "description": "It has an answer already. Codex doesn't say, so its steps are never marked."
+          },
+          "current": {
+            "type": "boolean",
+            "description": "The dialog shows this one now. Claude marks its open tab only in colour, so there it is\nthe first unanswered question, and no step is marked when that can't be told."
           }
         }
       },

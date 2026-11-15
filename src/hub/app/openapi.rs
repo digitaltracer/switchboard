@@ -48,6 +48,7 @@ use super::types::*;
         super::get_agent_dialog,
         super::dialog_challenge,
         super::answer_dialog,
+        super::dialog_back,
         super::get_attention,
     ),
     components(schemas(
@@ -60,7 +61,7 @@ use super::types::*;
         AgentView, Agents, AgentActivityView, EndedAgent, ChangedFile, Changes, MessagePreviewRequest, MessagePreview,
         DeleteResponse, Transcript, TranscriptItem, Skills, Skill, ApprovalQuestion, ApprovalOption,
         Dialog, DialogOption, AgentDialog, DialogChallengeRequest, DialogChallenge,
-        DialogAnswerRequest, DialogAnswerResponse, Attention, PushProviderKind,
+        DialogAnswerRequest, DialogAnswerResponse, DialogBackRequest, DialogBackResponse, Attention, PushProviderKind,
     )),
     modifiers(&DeviceToken),
 )]

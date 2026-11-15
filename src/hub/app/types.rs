@@ -1128,6 +1128,26 @@ pub struct Dialog {
     /// `hook_pending`, `hook_failed`, `not_blocked` or `answered`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// When the agent asked several questions together: one per question, in order, to show as
+    /// tabs. Claude's ends with its `Submit` tab. Empty otherwise, and absent from older hubs.
+    #[serde(default)]
+    pub steps: Vec<DialogStep>,
+    /// The group's previous question can be shown again, with `/agents/dialog/back`. Absent
+    /// from older hubs.
+    #[serde(default)]
+    pub can_go_back: bool,
+}
+
+/// One question of a group asked together.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DialogStep {
+    /// The agent's short name for the question, or its number.
+    pub label: String,
+    /// It has an answer already. Codex doesn't say, so its steps are never marked.
+    pub answered: bool,
+    /// The dialog shows this one now. Claude marks its open tab only in colour, so there it is
+    /// the first unanswered question, and no step is marked when that can't be told.
+    pub current: bool,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -1140,6 +1160,10 @@ pub struct DialogOption {
     pub is_deny: bool,
     /// It may be chosen from the phone; the others are shown for context.
     pub offered: bool,
+    /// It answers one question of a group and submits nothing, so it needs no signature either.
+    /// The choice that submits the group is signed. Absent from older hubs.
+    #[serde(default)]
+    pub provisional: bool,
 }
 
 impl From<DialogView> for Dialog {
@@ -1160,12 +1184,23 @@ impl From<DialogView> for Dialog {
                     label_sha256: o.label_sha256,
                     is_deny: o.is_deny,
                     offered: o.offered,
+                    provisional: o.provisional,
                 })
                 .collect(),
             selected: d.selected,
             occurrence_id: d.occurrence,
             answerable: d.answerable,
             reason: d.reason,
+            steps: d
+                .steps
+                .into_iter()
+                .map(|s| DialogStep {
+                    label: s.label,
+                    answered: s.answered,
+                    current: s.current,
+                })
+                .collect(),
+            can_go_back: d.back,
         }
     }
 }
@@ -1225,6 +1260,25 @@ pub struct DialogAnswerRequest {
     pub message_version: Option<u32>,
 }
 
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct DialogBackRequest {
+    pub machine_id: String,
+    pub agent: String,
+    /// The dialog being shown, so a stale tap moves nothing.
+    pub occurrence_id: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DialogBackResponse {
+    /// `moved`: the previous question shows.
+    pub outcome: String,
+    /// The dialog now showing, which saves reading it again. Absent when the hub's runner didn't
+    /// say; read the dialog then.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    pub dialog: Option<Dialog>,
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 pub struct DialogAnswerResponse {
     /// `answered`: the dialog closed after the Enter.
@@ -1232,6 +1286,11 @@ pub struct DialogAnswerResponse {
     pub operation_id: String,
     /// Already answered with this request id; nothing was sent again.
     pub replayed: bool,
+    /// The dialog the screen shows after the answer, such as the next question of a group, which
+    /// saves reading it again. Absent when nothing shows, on a replay, and from older hubs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    pub next: Option<Dialog>,
 }
 
 /// What a `waiting` push named.
