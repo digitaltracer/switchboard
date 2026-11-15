@@ -481,3 +481,20 @@ Closing check:
 - Section 6 safety rules: delivered.
 - Section 7 tests: delivered, except the Codex items above.
 - Next: Codex 0.167 recogniser support, as its own task.
+
+## As built (2026-11-16): the Herdr app on the phone
+
+The phone listed every herdr-core agent in one session called `hc`, named `<space> › <agent>`,
+and told the owner to run `herdr session attach hc`.
+- The Herdr app has spaces, not sessions, so it stays one session, titled "Herdr App" on the
+  phone. Its page has a heading per space with that space's agents under it. A terminal outside
+  every space, and an agent that ended before spaces were recorded, come last under "No space".
+- Herdr sessions are split by named workspace the same way; a workspace Herdr only numbered is
+  no name, as before.
+- The hub records the space of each agent it sees (migration 0011, `seen_agents.space`) and
+  reports it for ended agents (`EndedAgent.space`, additive), so one that ends stays under its
+  space.
+- Agent addresses are unchanged (`hc/<name>`), so mutes, pushes and dialog answers are
+  untouched.
+- Not done: a session Switchboard starts in the Herdr app has no space in the app API, so it
+  lists under "No space".
