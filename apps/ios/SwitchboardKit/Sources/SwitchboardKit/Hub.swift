@@ -428,8 +428,9 @@ public final class Hub: Sendable {
         try await Self.unwrap { try await client.getAgentDialog(query: .init(machineId: machine, agent: agent)).ok.body.json }
     }
 
-    /// Picks one offered option. The deny is sent unsigned; any other option is signed with the
-    /// approval key, which asks for Face ID or the passcode.
+    /// Picks one offered option. The deny is sent unsigned, and so is one question of a group,
+    /// which submits nothing; any other option is signed with the approval key, which asks for
+    /// Face ID or the passcode.
     public func answer(
         machine: String, agent: String, dialog: Schemas.Dialog, option: Schemas.DialogOption, reason: String, requestId: String
     ) async throws -> Schemas.DialogAnswerResponse {
@@ -437,7 +438,7 @@ public final class Hub: Sendable {
             machineId: machine, agent: agent, occurrenceId: dialog.occurrenceId, optionId: option.id,
             labelSha256: option.labelSha256, requestId: requestId
         )
-        if !option.isDeny {
+        if !option.isDeny && option.provisional != true {
             guard let pairing else { throw HubError.notPaired }
             let ch = try await Self.unwrap {
                 try await client.dialogChallenge(body: .json(.init(machineId: machine, agent: agent, occurrenceId: dialog.occurrenceId))).ok.body.json
@@ -453,6 +454,14 @@ public final class Hub: Sendable {
         }
         let request = body
         return try await Self.unwrap { try await client.answerDialog(body: .json(request)).ok.body.json }
+    }
+
+    /// Shows the previous question of a group again, and returns it when the hub sends it. It
+    /// submits nothing, so it is sent unsigned.
+    public func back(machine: String, agent: String, dialog: Schemas.Dialog) async throws -> Schemas.Dialog? {
+        try await Self.unwrap {
+            try await client.dialogBack(body: .json(.init(machineId: machine, agent: agent, occurrenceId: dialog.occurrenceId))).ok.body.json
+        }.dialog
     }
 
     /// What a `waiting` push names, if it still shows.
