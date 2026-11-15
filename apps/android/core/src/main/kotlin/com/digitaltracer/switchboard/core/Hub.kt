@@ -18,6 +18,7 @@ import com.digitaltracer.switchboard.api.models.Agents
 import com.digitaltracer.switchboard.api.models.ApiError
 import com.digitaltracer.switchboard.api.models.Changes
 import com.digitaltracer.switchboard.api.models.DecisionKind
+import com.digitaltracer.switchboard.api.models.DialogBackRequest
 import com.digitaltracer.switchboard.api.models.DecisionRequest
 import com.digitaltracer.switchboard.api.models.DecisionResponse
 import com.digitaltracer.switchboard.api.models.DeleteResponse
@@ -412,10 +413,13 @@ class Hub private constructor(
     /** What the agent's screen shows: a dialog with options, or whether it waits on something else. */
     suspend fun dialog(machine: String, agent: String): AgentDialog = authed { agentsApi.getAgentDialog(machine, agent) }
 
-    /** Picks one offered option: the deny unsigned, any other option signed with the approval key. */
+    /**
+     * Picks one offered option: the deny unsigned, and so one question of a group, which submits
+     * nothing; any other option signed with the approval key.
+     */
     suspend fun answer(machine: String, agent: String, dialog: Dialog, option: DialogOption, reason: String, requestId: String): DialogAnswerResponse {
         var body = DialogAnswerRequest(machine, agent, dialog.occurrenceId, option.id, option.labelSha256, requestId)
-        if (!option.isDeny) {
+        if (!option.isDeny && option.provisional != true) {
             val pairing = pairing ?: throw HubError.NotPaired
             val ch = authed { agentsApi.dialogChallenge(DialogChallengeRequest(machine, agent, dialog.occurrenceId)) }
             val message = SignedMessage.answer(
@@ -426,6 +430,13 @@ class Hub private constructor(
         }
         return authed { agentsApi.answerDialog(body) }
     }
+
+    /**
+     * Shows the previous question of a group again, and returns it when the hub sends it. It
+     * submits nothing, so it is sent unsigned.
+     */
+    suspend fun back(machine: String, agent: String, dialog: Dialog): Dialog? =
+        authed { agentsApi.dialogBack(DialogBackRequest(machine, agent, dialog.occurrenceId)) }.dialog
 
     /** What a `waiting` push names, if it still shows. */
     suspend fun attention(id: String): Attention = authed { agentsApi.getAttention(id) }

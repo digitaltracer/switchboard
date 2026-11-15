@@ -1,13 +1,18 @@
 package com.digitaltracer.switchboard
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.outlined.HelpOutline
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
@@ -27,8 +32,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.digitaltracer.switchboard.api.models.Dialog
+import com.digitaltracer.switchboard.api.models.DialogOption
+import com.digitaltracer.switchboard.api.models.DialogStep
 import com.digitaltracer.switchboard.core.HubError
 import java.util.UUID
 import kotlin.coroutines.cancellation.CancellationException
@@ -88,6 +96,8 @@ fun DialogCard(model: AppModel, machine: String, agent: String, label: String) {
     var result by remember { mutableStateOf<String?>(null) }
     // The option picked on the phone, sent only on Confirm.
     var picked by remember { mutableStateOf<String?>(null) }
+    // Cancel on a group's last step was tapped once; a second tap declines every question.
+    var cancelArmed by remember { mutableStateOf(false) }
     suspend fun load() {
         val hub = model.hub ?: return
         if (busy) return
@@ -96,6 +106,7 @@ fun DialogCard(model: AppModel, machine: String, agent: String, label: String) {
         if (d.dialog?.occurrenceId != dialog?.occurrenceId) {
             if (dialog != null && d.dialog != null) result = null
             picked = null
+            cancelArmed = false
         }
         dialog = d.dialog
         waitingElsewhere = d.dialog == null && d.waiting == true
@@ -135,33 +146,32 @@ fun DialogCard(model: AppModel, machine: String, agent: String, label: String) {
             Icon(Icons.AutoMirrored.Outlined.HelpOutline, null, Modifier.size(20.dp), tint = palette.needs)
             Text("$label is waiting", style = Type.headline, color = palette.needs)
         }
-        OptionList(
-            d.prompt,
-            d.options.map { OptionItem(it.id, it.label, offered = it.offered && d.answerable) },
-            setOfNotNull(picked),
-            !busy,
-        ) { o -> picked = o.id }
-        Text(
-            if (d.answerable) "Pick an option, then confirm." else why(d.reason),
-            style = Type.footnote, color = palette.secondary,
-        )
-        result?.let { Text(it, style = Type.footnote, color = palette.secondary) }
-        if (!d.answerable) return@Column
-        val chosen = d.options.firstOrNull { it.id == picked }
-        BigButton(
-            "Confirm", if (chosen?.isDeny == true) Icons.Filled.Check else Icons.Filled.Fingerprint,
-            if (chosen == null) palette.fill else palette.accent, if (chosen == null) palette.secondary else Color.White,
-            chosen != null && !busy, Modifier.fillMaxWidth().testTag("dialog-confirm"),
-        ) {
-            val option = chosen ?: return@BigButton
+        val steps = d.steps.orEmpty()
+        if (steps.isNotEmpty()) StepTabs(steps)
+        // Puts up a dialog the hub sent back with an answer or a step back, with no second read.
+        fun show(next: Dialog) {
+            dialog = next
+            waitingElsewhere = false
+            picked = null
+            cancelArmed = false
+        }
+        fun send(option: DialogOption) {
             scope.launch {
                 val hub = model.hub ?: return@launch
                 busy = true
+                var shown = false
                 result = try {
-                    hub.answer(machine, agent, d, option, "Answer $label: ${option.label}", UUID.randomUUID().toString())
-                    dialog = null
-                    picked = null
-                    "Answered: ${option.label}."
+                    val next = hub.answer(machine, agent, d, option, "Answer $label: ${option.label}", UUID.randomUUID().toString()).next
+                    if (next != null) {
+                        // A group's next question comes back with the answer.
+                        show(next)
+                        shown = true
+                        null
+                    } else {
+                        dialog = null
+                        picked = null
+                        "Answered: ${option.label}."
+                    }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: KeyError.Cancelled) {
@@ -172,7 +182,114 @@ fun DialogCard(model: AppModel, machine: String, agent: String, label: String) {
                     e.message
                 }
                 busy = false
-                load()
+                if (!shown) load()
+            }
+        }
+        fun back() {
+            scope.launch {
+                val hub = model.hub ?: return@launch
+                busy = true
+                var shown = false
+                result = try {
+                    hub.back(machine, agent, d)?.let { show(it); shown = true }
+                    null
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: HubError.Hub) {
+                    if (e.code == "dialog_changed") "The question changed; here it is again." else e.message
+                } catch (e: Exception) {
+                    e.message
+                }
+                busy = false
+                if (!shown) load()
+            }
+        }
+        // A step's main button, with Back beside it when the group has an earlier question.
+        @Composable
+        fun Actions(main: @Composable (Modifier) -> Unit) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (d.canGoBack == true) {
+                    BigButton(
+                        "Back", Icons.AutoMirrored.Filled.ArrowBack, palette.fill, palette.label, !busy,
+                        Modifier.testTag("dialog-back").width(110.dp),
+                    ) { back() }
+                }
+                main(Modifier.weight(1f))
+            }
+        }
+        // A group's last step, when all it offers is to submit or cancel: buttons, not a list.
+        val offered = d.options.filter { it.offered }
+        val submit = offered.singleOrNull { !it.isDeny }
+            ?.takeIf { d.answerable && steps.isNotEmpty() && it.provisional != true && offered.size <= 2 }
+        if (submit != null) {
+            Text(d.prompt, style = Type.body, color = palette.label)
+            result?.let { Text(it, style = Type.footnote, color = palette.secondary) }
+            Actions { m ->
+                BigButton(
+                    submit.label, Icons.Filled.Fingerprint, palette.accent, Color.White, !busy,
+                    m.testTag("dialog-confirm"),
+                ) { send(submit) }
+            }
+            offered.firstOrNull { it.isDeny }?.let { cancel ->
+                Text(
+                    if (cancelArmed) "Tap again to decline every question" else cancel.label,
+                    Modifier.fillMaxWidth().clickable(enabled = !busy) { if (cancelArmed) send(cancel) else cancelArmed = true }
+                        .padding(vertical = 6.dp).testTag("dialog-cancel"),
+                    style = Type.subheadline, color = if (cancelArmed) palette.red else palette.secondary, textAlign = TextAlign.Center,
+                )
+            }
+            return@Column
+        }
+        OptionList(
+            d.prompt,
+            d.options.map { OptionItem(it.id, it.label, offered = it.offered && d.answerable) },
+            setOfNotNull(picked),
+            !busy,
+        ) { o -> picked = o.id }
+        Text(
+            when {
+                !d.answerable -> why(d.reason)
+                steps.isNotEmpty() -> "Pick an option for each question. Your fingerprint is asked once, when you submit."
+                else -> "Pick an option, then confirm."
+            },
+            style = Type.footnote, color = palette.secondary,
+        )
+        result?.let { Text(it, style = Type.footnote, color = palette.secondary) }
+        if (!d.answerable) return@Column
+        val chosen = d.options.firstOrNull { it.id == picked }
+        // One question of a group submits nothing, so it goes without a fingerprint.
+        val next = chosen?.provisional == true
+        Actions { m ->
+        BigButton(
+            if (next) "Next" else "Confirm",
+            when {
+                next -> Icons.AutoMirrored.Filled.ArrowForward
+                chosen?.isDeny == true -> Icons.Filled.Check
+                else -> Icons.Filled.Fingerprint
+            },
+            if (chosen == null) palette.fill else palette.accent, if (chosen == null) palette.secondary else Color.White,
+            chosen != null && !busy, m.testTag("dialog-confirm"),
+        ) { chosen?.let(::send) }
+        }
+    }
+}
+
+/** A group of questions as tabs: the open one filled, the answered ones ticked. */
+@Composable
+private fun StepTabs(steps: List<DialogStep>) {
+    Row(
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).testTag("dialog-steps"),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        steps.forEach { s ->
+            val tint = if (s.current) Color.White else if (s.answered) palette.label else palette.secondary
+            Row(
+                Modifier.card(50.dp, if (s.current) palette.accent else palette.fill).padding(horizontal = 10.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (s.answered) Icon(Icons.Filled.Check, null, Modifier.size(12.dp), tint = tint)
+                Text(s.label, style = Type.footnote, color = tint)
             }
         }
     }
