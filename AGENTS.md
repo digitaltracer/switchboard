@@ -20,16 +20,19 @@ Each of these has tests. Keep them passing, and add tests when you touch the are
   - **What may be sent:**
     - Codex's restricted-startup Enter and its permission-deny Esc.
     - The owner's signed choice of one listed option on a recognised question, plan or permission dialog. This is sent as arrow keys, then one Enter. The Enter goes only after a fresh read shows the same occurrence with that option selected, and the agent's process is unchanged. Choosing the deny option needs no signature.
+    - A group of questions asked together is answered one question at a time. Each question is its own occurrence, with its own checks and single Enter. A pick that only moves to the group's next question submits nothing, so it needs no signature. The choice that submits the group is signed: "Submit answers" on Claude's review, whose "Cancel" is the deny, or any pick on Codex's last question.
+    - One left arrow, to show a group's previous question again. It submits nothing, so it is unsigned. It goes only on a recognised group whose open question is known and isn't the first, while a listed option is selected; a fresh read must then show another question of the same group.
   - **What is never sent:**
     - free text, or an "Other" or free-text row;
-    - answers to multi-select or multi-question dialogs;
+    - answers to multi-select questions, alone or inside a group;
+    - a right arrow or Tab, or a left arrow from a group's first question (Codex wraps to its last) or from a free-text row (it edits the text);
     - keys to a screen whose layout isn't recognised;
     - keys to a pane with a pending hook call;
     - keys to a Claude pane that Switchboard started, which the hook answers instead.
   - Nothing in `src/whatsapp/` sends keys.
   - On herdr-core the same keys go by `terminal.keys`, only from those two files. Nothing ever sends `terminal.send` with `force`, and only a listed agent is targeted, never a plain shell.
   - **Residual risk, accepted by the owner:** input at the agent's own terminal within milliseconds of the final Enter can make it answer the next dialog.
-- **Approve rights and signatures.** Approvals go through the session service's decide, which checks the caller's approve right. App approvals need a valid device signature. Deny never needs one.
+- **Approve rights and signatures.** Approvals go through the session service's decide, which checks the caller's approve right. App approvals need a valid device signature. Deny never needs one, and nor does a pick that only moves to the next question of a group; the choice that submits the group does.
 - **The relay** forwards ciphertext and routing ids only. Only the app API is reachable through it, never the runner endpoint. Push text is generic, with ids only, and never names a project, tool, command or output.
 - **Worktrees.** Never force-remove one. Only clean and merged worktrees may be removed.
 - **Projects.** Only allowlisted projects. Never reroute a session to another machine. On herdr-core, only this machine's terminals: an address with `/` is never listed or targeted.

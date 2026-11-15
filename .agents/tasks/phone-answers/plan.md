@@ -346,3 +346,98 @@ any other, so they need the approve right and the device signature. Free-text ro
 something.", "Chat about this", the plan's "Tell Claude what to change") and multi-select or
 multi-question dialogs stay read-only, as `AGENTS.md` requires. The hook path for sessions
 Switchboard starts is unchanged: it still offers allow or deny only.
+
+## Changed (2026-11-15): grouped questions are answered one at a time
+
+At the owner's request, a group of questions asked in one call can be answered from the phone on
+the key path, for Claude and for Codex. Before this the phone showed the first question with
+"This kind of question can't be answered from the phone."
+- Each question of the group is recognised as its own dialog. The phone picks one option; the
+  runner sends the arrows, re-reads, and sends one Enter, exactly as for a single question. The
+  CLI then shows the next question, which is a new occurrence, and the phone's card follows it.
+- Claude ends a group with a "Review your answers" tab. It is recognised by its tab row, title,
+  "Ready to submit your answers?" and its two rows; it has no footer, so the Cancel row must end
+  the screen. "Submit answers" is a signed choice. "Cancel" declines every question, so it is the
+  deny row and needs no signature.
+- Codex has a question dialog only in Plan mode (0.169.0). It is new to the recogniser, single
+  or grouped: title `Question N/M (K unanswered)`, rows with their descriptions on the same line,
+  and one of three exact footers. Enter on the last question submits them all. Its "None of the
+  above" row takes typed notes, so it is shown and never offered.
+- Nothing moves between questions except the CLI itself: no left or right arrows, no Tab.
+- A Claude question whose text wraps over several lines is now recognised, single or grouped.
+  Claude draws it behind a `│` bar between the tab row and row 1; the recogniser expected one
+  line there, so a long question fell back to the read-only list. The tab row is now found by
+  scanning up from row 1 to the dialog's rule, at most 12 lines.
+- Still read-only: a multi-select question, alone or as one of a group, and every free-text row.
+  A group with a multi-select question in it can be answered up to that question.
+- One `waiting` push per group, as before: the agent stays blocked from the first question to
+  the last, and the push is sent when it becomes blocked.
+- No API, signature or app change. The app re-reads the dialog after each answer.
+- Captures: `tests/fixtures/dialogs/core/claude-2.1.325/` and `codex-0.169.0/`. Live runs passed
+  against Claude Code 2.1.325 and Codex 0.169.0 in throwaway cores
+  (`tests/hc_live.rs`, the two `…has_a_group_of_questions_answered_one_by_one` tests).
+
+## Changed (2026-11-15): a group is signed once, and shown as tabs
+
+The owner answered a three-question Claude group on the iPhone and found it poor: Face ID four
+times, and no sign of which question was open.
+- **One signature per group.** A pick that only moves to the group's next question is
+  `provisional`: it submits nothing, so the apps send it unsigned and the runner accepts it without
+  the approve right, as it does a deny. The choice that submits is signed as before: "Submit
+  answers" on Claude's review, or any pick on Codex's last question (footer "enter to submit
+  all"). A question that stands alone is never provisional.
+- Claude's review lists every answer and is part of the occurrence the signature names, so the
+  one signature covers what is submitted. Codex has no review: its last question's signature
+  covers that pick only, and the earlier picks are not shown again. Accepted with the request.
+- **Tabs.** A dialog carries `steps` (label, answered, current), which the apps draw as tabs.
+  Claude's come from its tab row and end with `Submit`; Codex's are numbered from its title.
+  Claude marks its open tab only in colour, which a text read lacks (herdr-core gives no
+  colours), so the open one is worked out: the Submit tab on the review; otherwise the first
+  unanswered tab; and none when the open question already has a pick and more than one tab is
+  answered. Someone moving between tabs at the Mac can make that first-unanswered guess wrong;
+  the question text shown is always the screen's own.
+- The Claude prompt is the question alone again; the tabs carry the progress.
+- API: `DialogOption.provisional` and `Dialog.steps`, both additive and optional. An older app
+  ignores them and signs every pick, which still works.
+- Apps: tabs above the question, "Next" (no Face ID or fingerprint) for a provisional pick,
+  "Confirm" for the one that submits.
+- Apps: a group's last step that offers only to submit or cancel (Claude's review) is drawn as
+  the list of answers with one "Submit answers" button, which signs, and a Cancel that takes two
+  taps. It was an option to pick and then a Confirm, which the owner found one step too many.
+- Proven on the owner's iPhone 2026-11-15 with a three-question Claude group: three unsigned
+  picks, then one signed submit.
+
+## Changed (2026-11-15): Back, to a group's previous question
+
+At the owner's request. Without it, changing an earlier answer from the phone meant cancelling
+the whole group.
+- `POST /app/v1/agents/dialog/back` (additive) and `Dialog.can_go_back`. The runner sends one
+  left arrow under the pane's lock, after the same read, occurrence and refusal checks as an
+  answer, then needs a fresh read to show another question of the same group. It submits
+  nothing, so it is unsigned and needs no approve right. It is audited as `dialog_back`.
+- It is offered only when the open question is known and isn't the first, and a listed option
+  is selected. Captured: Codex's left arrow on its first question wraps to the last, and on a
+  free-text row the key would edit text.
+- The runner remembers which step each screen showed after its own Enter or left arrow, by
+  occurrence, in memory. That is what marks the open tab once several Claude questions are
+  answered, where the screen alone can't say.
+- A group's question that moved on after its Enter is recorded as `stepped`, not `sent`: nothing
+  was submitted, so the same screen may be answered again when it is shown again. An Enter that
+  may have gone without the screen moving stays blocked, as before.
+- Codex bumps its "N unanswered" count when the selection moves off an answered question's
+  answer (captured as `question-multi-2-revisit-down`). The count is now left out of what
+  identifies the dialog, or the re-read before Enter saw a different dialog.
+- Apps: Back beside Next, Confirm and Submit.
+- Live runs passed against Claude Code 2.1.325 (back from the review, change the last answer,
+  submit) and Codex 0.169.0 (back from the last question, change the second, submit).
+
+## Changed (2026-11-15): the next question comes back with the answer
+
+The owner saw the card blank and reload after each Next. The later questions can't be sent ahead:
+the CLI draws one question at a time, so the next one exists for Switchboard only after the Enter.
+- The runner's answer and Back replies carry the dialog the screen then shows, which it has
+  already read to confirm the key landed. The hub passes it on as `next` on the answer response
+  and `dialog` on the Back response (additive, masked again, never recorded for replays).
+- The apps put it up at once instead of clearing the card and reading the dialog again.
+- Proven on the owner's iPhone with a Claude and a Codex group, and published: Android build 16
+  to Play's internal testing track; iOS build 18 archived for TestFlight.
