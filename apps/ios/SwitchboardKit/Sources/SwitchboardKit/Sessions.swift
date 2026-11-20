@@ -136,7 +136,7 @@ extension HerdrSession.Agent {
     /// what the hub says for a Herdr app terminal outside every space.
     public var space: String? {
         let (raw, session): (String?, String?) = switch self {
-        case .task(let s): (nil, s.herdrSession)
+        case .task(let s): (s.space, s.herdrSession)
         case .live(let a): (a.space, a.herdrSession)
         case .ended(let e): (e.space, e.herdrSession)
         }

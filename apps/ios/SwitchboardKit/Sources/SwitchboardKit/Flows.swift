@@ -23,10 +23,12 @@ public enum StartState: Equatable, Sendable {
 
 public enum StartFlow {
     public static func run(
-        hub: Hub, project: String, prompt: String, machine: String?, agent: String?, notify: Bool, requestId: String
+        hub: Hub, project: String, prompt: String, machine: String?, agent: String?, notify: Bool, requestId: String,
+        backend: String? = nil
     ) async -> StartState {
         do {
-            let r = try await hub.start(project: project, prompt: prompt, machine: machine, agent: agent, notify: notify, requestId: requestId)
+            let r = try await hub.start(project: project, prompt: prompt, machine: machine, agent: agent, notify: notify,
+                                        requestId: requestId, backend: backend)
             return .started(sessionId: r.sessionId, alreadyRunning: r.outcome == "deduplicated")
         } catch HubError.unreachable {
             return .unknown(requestId: requestId)

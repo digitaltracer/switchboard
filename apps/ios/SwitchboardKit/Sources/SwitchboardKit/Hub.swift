@@ -295,12 +295,20 @@ public final class Hub: Sendable {
         try await Self.unwrap { try await client.getChanges(path: .init(id: id)).ok.body.json }
     }
 
-    public func start(project: String, prompt: String, machine: String?, agent: String?, notify: Bool, requestId: String) async throws -> Schemas.StartResponse {
+    /// `backend` is `hc` or `herdr`; nil leaves it to the machine's runner.
+    public func start(project: String, prompt: String, machine: String?, agent: String?, notify: Bool, requestId: String,
+                      backend: String? = nil) async throws -> Schemas.StartResponse {
         try await Self.unwrap {
             try await client.startSession(body: .json(.init(
-                projectId: project, prompt: prompt, machineId: machine, agent: agent, notify: notify, requestId: requestId
+                projectId: project, prompt: prompt, machineId: machine, agent: agent, notify: notify, requestId: requestId,
+                backend: backend
             ))).ok.body.json
         }
+    }
+
+    /// Where a new session on `machine` opens, and which backends can take one now.
+    public func startOptions(machine: String) async throws -> Schemas.StartOptions {
+        try await Self.unwrap { try await client.getStartOptions(path: .init(id: machine)).ok.body.json }
     }
 
     public func operation(_ requestId: String) async throws -> Schemas.OperationStatus {
