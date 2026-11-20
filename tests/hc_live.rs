@@ -358,6 +358,7 @@ async fn a_claude_session_starts_runs_and_stops_on_core() {
                     "Use your Bash tool to run exactly: touch made-on-core.txt . Then reply DONE."
                         .into(),
                 deny_patterns: vec![],
+                backend: None,
             })
             .await
             .unwrap();
@@ -717,6 +718,7 @@ async fn a_codex_session_starts_on_core_and_its_denied_command_never_runs() {
                 prompt: "Run exactly this shell command: touch ~/.cache/sb-hc-live.txt . If the sandbox blocks it, request escalated permission for exactly that command. Do nothing else."
                     .into(),
                 deny_patterns: vec![],
+                backend: None,
             })
             .await
             .unwrap();

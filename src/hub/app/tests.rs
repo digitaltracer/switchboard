@@ -1880,6 +1880,98 @@ async fn a_group_shows_its_tabs_and_goes_back_a_question_unsigned() {
 }
 
 #[tokio::test]
+async fn new_session_says_where_it_opens_and_takes_a_choice() {
+    let mut r = rig_advertising("", vec![crate::proto::CAP_START_BACKEND.into()]).await;
+    let (_, token) = r.pair(&Phone::new()).await;
+    let call = r.call_later("GET", "/machines/mac/start-options", &token, Value::Null);
+    let req = r.req().await;
+    assert_eq!(req.op, Op::StartOptions);
+    r.ok(
+        req.id,
+        json!({"default": "herdr", "backends": [
+            {"backend": "hc", "available": false, "reason": "not_answering"},
+            {"backend": "herdr", "available": true}]}),
+    )
+    .await;
+    let o = call.await.unwrap();
+    assert_eq!(o.status, StatusCode::OK, "{}", o.body);
+    assert_eq!(
+        o.body,
+        json!({"machine_id": "mac", "default": "herdr", "backends": [
+            {"backend": "hc", "available": false, "reason": "not_answering"},
+            {"backend": "herdr", "available": true}]})
+    );
+
+    let bad = r
+        .call(
+            "POST",
+            "/sessions",
+            Some(&token),
+            Some(
+                json!({"project_id": "switchboard", "prompt": "x", "request_id": "rq-x",
+                        "backend": "tmux"}),
+            ),
+        )
+        .await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST, "{}", bad.body);
+
+    let body = json!({"project_id": "switchboard", "prompt": "fix it", "request_id": "rq-hc",
+                      "backend": "hc"});
+    let call = r.call_later("POST", "/sessions", &token, body);
+    let req = r.req().await;
+    let Op::StartSession { backend, .. } = &req.op else {
+        panic!("{:?}", req.op);
+    };
+    assert_eq!(*backend, Some(crate::proto::StartBackend::Hc));
+    r.err(
+        req.id,
+        ErrorCode::BackendUnavailable,
+        "the Herdr app isn't answering on this machine",
+    )
+    .await;
+    let failed = call.await.unwrap();
+    assert_eq!(failed.status, StatusCode::CONFLICT, "{}", failed.body);
+    assert_eq!(failed.body["error"]["code"], "backend_unavailable");
+}
+
+#[tokio::test]
+async fn an_older_runner_offers_no_choice_and_refuses_one() {
+    let r = rig().await;
+    let (_, token) = r.pair(&Phone::new()).await;
+    let o = r
+        .call("GET", "/machines/mac/start-options", Some(&token), None)
+        .await;
+    assert_eq!(o.status, StatusCode::OK, "{}", o.body);
+    assert!(o.body.get("default").is_none());
+    assert!(
+        o.body["backends"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|b| b["available"] == false && b["reason"] == "runner_too_old"),
+        "{}",
+        o.body
+    );
+    let refused = r
+        .call(
+            "POST",
+            "/sessions",
+            Some(&token),
+            Some(
+                json!({"project_id": "switchboard", "prompt": "x", "request_id": "rq-old",
+                        "backend": "herdr"}),
+            ),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
+    assert_eq!(refused.body["error"]["code"], "backend_unavailable");
+    let missing = r
+        .call("GET", "/machines/nowhere/start-options", Some(&token), None)
+        .await;
+    assert_eq!(missing.status, StatusCode::BAD_REQUEST, "{}", missing.body);
+}
+
+#[tokio::test]
 async fn a_herdr_app_session_lists_under_the_space_its_agent_is_in() {
     let mut r = rig().await;
     let (_, token) = r.pair(&Phone::new()).await;

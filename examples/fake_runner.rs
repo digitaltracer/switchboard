@@ -2,16 +2,17 @@
 //! starts, and answers reads with canned output, without Herdr or any agent. Each started
 //! session reports working, then asks to run `cargo test --workspace`. Of the agents it lists,
 //! the Claude one waits at a question and the Codex one at a permission dialog, until answered.
+//! Three more live in the Herdr app's spaces. A start may choose the Herdr app or a terminal.
 //!
 //! Usage: cargo run --example fake_runner -- <hub ws url> <machine id> <token>
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use switchboard::proto::{ErrorCode, Event, Op, OwnedSession, ProtoError};
+use switchboard::proto::{ErrorCode, Event, Op, OwnedSession, ProtoError, StartBackend};
 use switchboard::runner::link::{self, Handler, LinkConfig};
 use tokio::sync::mpsc;
 
@@ -28,6 +29,8 @@ struct Fake {
     events: mpsc::Sender<Event>,
     /// The Codex agent's permission dialog was answered.
     answered: AtomicBool,
+    /// Sessions started in the Herdr app, which list as its agents.
+    in_app: Mutex<Vec<String>>,
 }
 
 fn option(id: &str, label: &str, is_deny: bool, offered: bool) -> Value {
@@ -61,8 +64,19 @@ impl Handler for Fake {
     async fn handle(&self, op: Op) -> Result<Value, ProtoError> {
         match op {
             Op::StartSession {
-                session_id, branch, ..
+                session_id,
+                branch,
+                backend,
+                ..
             } => {
+                let herdr_session = match backend {
+                    Some(StartBackend::Hc) => {
+                        self.in_app.lock().unwrap().push(session_id.clone());
+                        Some("hc".to_owned())
+                    }
+                    Some(StartBackend::Herdr) => Some(format!("demo-{}", &session_id[..4])),
+                    None => None,
+                };
                 let events = self.events.clone();
                 let id = session_id.clone();
                 tokio::spawn(async move {
@@ -87,7 +101,7 @@ impl Handler for Fake {
                 });
                 Ok(
                     json!({ "session_id": session_id, "branch": branch, "worktree_path": "/tmp/fake-worktree",
-                           "workspace_id": "w1", "pane_id": "w1:p1" }),
+                           "workspace_id": "w1", "pane_id": "w1:p1", "herdr_session": herdr_session }),
                 )
             }
             Op::Read { .. } => Ok(json!({ "text": OUTPUT, "truncated": false, "untrusted": true })),
@@ -139,16 +153,31 @@ impl Handler for Fake {
                 } else {
                     "blocked"
                 };
-                Ok(json!([
-                    {"name": "crm/orchestrator", "pane_id": "w1:p1", "kind": "claude",
+                let mut list = vec![
+                    json!({"name": "crm/orchestrator", "pane_id": "w1:p1", "kind": "claude",
                      "agent_status": "blocked", "session_id": null, "herdr_session": "crm",
-                     "space": "Imports"},
-                    {"name": "crm/w1:p2", "pane_id": "w1:p2", "kind": "codex", "agent_status": codex,
+                     "space": "Imports"}),
+                    json!({"name": "crm/w1:p2", "pane_id": "w1:p2", "kind": "codex", "agent_status": codex,
                      "session_id": null, "herdr_session": "crm", "title": "Review the import",
-                     "space": "1"}
-                ]))
+                     "space": "1"}),
+                    json!({"name": "hc/search", "pane_id": "t2", "kind": "claude", "agent_status": "working",
+                     "session_id": null, "herdr_session": "hc", "title": "Add typeahead to the search bar",
+                     "space": "atlas-web"}),
+                    json!({"name": "hc/docs", "pane_id": "t3", "kind": "claude", "agent_status": "done",
+                     "session_id": null, "herdr_session": "hc", "title": "README covers the new search API",
+                     "space": "atlas-web"}),
+                    json!({"name": "hc/migrations", "pane_id": "t4", "kind": "codex", "agent_status": "idle",
+                     "session_id": null, "herdr_session": "hc", "space": "ledger-api"}),
+                ];
+                for (i, id) in self.in_app.lock().unwrap().iter().enumerate() {
+                    list.push(json!({"name": format!("sb-{id}"), "pane_id": format!("t{}", 10 + i), "kind": "claude",
+                        "agent_status": "working", "session_id": id, "herdr_session": "hc", "space": "demo"}));
+                }
+                Ok(Value::Array(list))
             }
             Op::Dialog { agent } => Ok(dialog(&agent, self.answered.load(Ordering::SeqCst))),
+            Op::StartOptions => Ok(json!({"default": "hc", "backends": [
+                {"backend": "hc", "available": true}, {"backend": "herdr", "available": true}]})),
             Op::Answer {
                 agent,
                 occurrence,
@@ -213,6 +242,7 @@ async fn main() -> anyhow::Result<()> {
     let fake = Fake {
         events: tx,
         answered: AtomicBool::new(false),
+        in_app: Mutex::new(Vec::new()),
     };
     link::run(cfg, Arc::new(fake), rx).await;
     Ok(())

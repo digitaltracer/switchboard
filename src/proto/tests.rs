@@ -33,6 +33,7 @@ fn start_op() -> Op {
         agent: Agent::Codex,
         prompt: "fix it".into(),
         deny_patterns: vec!["git push".into()],
+        backend: None,
     }
 }
 
@@ -54,6 +55,11 @@ fn every_frame_round_trips() {
             id: 20,
             deadline_ms: 3_000,
             op: Op::Activity,
+        }),
+        Frame::Req(Req {
+            id: 21,
+            deadline_ms: 3_000,
+            op: Op::StartOptions,
         }),
         Frame::Req(Req {
             id: 3,
@@ -418,4 +424,32 @@ fn an_older_runners_hello_decodes_with_no_capabilities() {
     let mut without = new.clone();
     without.as_object_mut().unwrap().remove("capabilities");
     assert!(decode(&without.to_string()).is_ok());
+}
+
+#[test]
+fn a_start_without_a_backend_is_the_old_wire_format() {
+    let v = serde_json::to_value(start_op()).unwrap();
+    assert!(v.get("backend").is_none(), "{v}");
+    let Op::StartSession { backend, .. } = serde_json::from_value(v).unwrap() else {
+        panic!("not a start");
+    };
+    assert_eq!(backend, None);
+    let mut chosen = serde_json::to_value(start_op()).unwrap();
+    chosen["backend"] = json!("hc");
+    let Op::StartSession { backend, .. } = serde_json::from_value(chosen).unwrap() else {
+        panic!("not a start");
+    };
+    assert_eq!(backend, Some(StartBackend::Hc));
+    let opts = StartOptions {
+        default: StartBackend::Herdr,
+        backends: vec![BackendOption {
+            backend: StartBackend::Hc,
+            available: false,
+            reason: Some("not_answering".into()),
+        }],
+    };
+    assert_eq!(
+        serde_json::to_value(&opts).unwrap(),
+        json!({"default": "herdr", "backends": [{"backend": "hc", "available": false, "reason": "not_answering"}]})
+    );
 }

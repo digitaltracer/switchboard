@@ -169,6 +169,7 @@ fn start_req(agent: Agent) -> StartRequest {
         agent,
         prompt: "do the task".into(),
         deny_patterns: vec![],
+        backend: None,
     }
 }
 
@@ -2106,4 +2107,64 @@ async fn a_session_from_an_earlier_core_doesnt_own_the_new_cores_terminal_at_its
         .unwrap();
     let d: crate::proto::DialogView = serde_json::from_value(v["dialog"].clone()).unwrap();
     assert!(d.answerable, "not the stale session's: {d:?}");
+}
+
+#[tokio::test]
+async fn a_chosen_herdr_app_that_isnt_answering_fails_without_falling_back() {
+    let (r, fake, repo) = core_start_rig(crate::config::NewSessions::Auto);
+    drop(fake);
+    let req = StartRequest {
+        backend: Some(crate::proto::StartBackend::Hc),
+        ..core_req(Agent::Codex, &repo)
+    };
+    let e = r.sessions.start(req).await.unwrap_err();
+    assert_eq!(e.code, ErrorCode::BackendUnavailable, "{e:?}");
+    assert!(!e.message.contains("herdr-core"), "{e:?}");
+    assert!(r.sessions.get("s1").is_none() && !r.dir.path().join("state/sessions/s1").exists());
+}
+
+#[tokio::test]
+async fn a_chosen_herdr_terminal_overrides_the_runners_setting() {
+    let dir = tempfile::tempdir().unwrap();
+    let (r, _, _) = multi_rig(dir, vec![fixture("folder-access"), fixture("ready")]);
+    r.sessions.set_core_starts(CoreStarts {
+        new_sessions: crate::config::NewSessions::Hc,
+        worktrees: "/nonexistent".into(),
+        home: "/nonexistent".into(),
+        bins: None,
+    });
+    let req = StartRequest {
+        backend: Some(crate::proto::StartBackend::Herdr),
+        ..start_req(Agent::Codex)
+    };
+    let started = r.sessions.start(req).await.unwrap();
+    assert_eq!(started["herdr_session"], "p-s1");
+}
+
+#[tokio::test]
+async fn start_options_follow_the_setting_and_whether_the_core_answers() {
+    use crate::proto::StartBackend::{Hc, Herdr};
+    let (r, fake, _) = core_start_rig(crate::config::NewSessions::Auto);
+    let o = r.sessions.start_options().await;
+    assert_eq!(o.default, Hc);
+    assert!(o.backends.iter().all(|b| b.available), "{o:?}");
+    drop(fake);
+    let o = r.sessions.start_options().await;
+    assert_eq!(o.default, Herdr);
+    let hc = o.backends.iter().find(|b| b.backend == Hc).unwrap();
+    assert!(!hc.available);
+    assert_eq!(hc.reason.as_deref(), Some("not_answering"));
+
+    let dir = tempfile::tempdir().unwrap();
+    let (r, _, _) = multi_rig(dir, vec![]);
+    r.sessions.set_core_starts(CoreStarts {
+        new_sessions: crate::config::NewSessions::Hc,
+        worktrees: "/nonexistent".into(),
+        home: "/nonexistent".into(),
+        bins: None,
+    });
+    let o = r.sessions.start_options().await;
+    assert_eq!(o.default, Hc, "the setting's choice, though it would fail");
+    let hc = o.backends.iter().find(|b| b.backend == Hc).unwrap();
+    assert_eq!(hc.reason.as_deref(), Some("not_followed"));
 }

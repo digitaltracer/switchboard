@@ -296,6 +296,62 @@
         ]
       }
     },
+    "/app/v1/machines/{id}/start-options": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Where a new session on this machine opens, and whether the Herdr app or a Herdr terminal can\ntake one now. Read-only.",
+        "operationId": "get_start_options",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StartOptions"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unknown machine",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Machine offline",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
     "/app/v1/sessions": {
       "get": {
         "tags": [
@@ -381,6 +437,16 @@
           },
           "400": {
             "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The chosen backend can't take a session there now",
             "content": {
               "application/json": {
                 "schema": {
@@ -2364,6 +2430,26 @@
           }
         }
       },
+      "BackendOption": {
+        "type": "object",
+        "required": [
+          "backend",
+          "available"
+        ],
+        "properties": {
+          "backend": {
+            "type": "string",
+            "description": "`hc` or `herdr`."
+          },
+          "available": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why it can't be chosen: `not_answering` (the Herdr app isn't open there), `not_followed`\n(its runner follows no Herdr app) or `runner_too_old` (its runner can't be told)."
+          }
+        }
+      },
       "Challenge": {
         "type": "object",
         "required": [
@@ -3604,6 +3690,30 @@
           }
         }
       },
+      "StartOptions": {
+        "type": "object",
+        "description": "Where a new session on one machine opens, and what the New session screen may choose.",
+        "required": [
+          "machine_id",
+          "backends"
+        ],
+        "properties": {
+          "machine_id": {
+            "type": "string"
+          },
+          "default": {
+            "type": "string",
+            "description": "`hc` (the Herdr app) or `herdr` (a Herdr terminal session): where a start with no\n`backend` opens now. Absent when the machine's runner is too old to say."
+          },
+          "backends": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BackendOption"
+            },
+            "description": "One entry per backend, `hc` first."
+          }
+        }
+      },
       "StartRequest": {
         "type": "object",
         "required": [
@@ -3638,6 +3748,13 @@
           "request_id": {
             "type": "string",
             "description": "Required: a lost response can be looked up, or retried, by this id."
+          },
+          "backend": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where it opens on the machine: `hc` for the Herdr app, `herdr` for a Herdr terminal\nsession. Omitted, the machine's runner chooses as it always has. A choice the machine\ncan't serve fails with `backend_unavailable`; it never falls back or moves machine."
           }
         }
       },

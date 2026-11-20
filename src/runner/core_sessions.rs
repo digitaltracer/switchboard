@@ -8,6 +8,7 @@ use super::*;
 use crate::config::NewSessions;
 use crate::hc::layout::{self, LayoutError};
 use crate::hc::types::{LAYOUT_DOC, RunParams, spaces};
+use crate::proto::{BackendOption, StartBackend, StartOptions};
 
 /// The label that ties a core terminal to its session.
 pub const SESSION_LABEL: &str = "switchboard.session";
@@ -19,6 +20,8 @@ const PRELUDE: &str = r#"for v in $(env | cut -d= -f1); do case "$v" in HERDR_*|
 const ADOPT_WAIT: Duration = Duration::from_secs(60);
 const ADOPT_POLL: Duration = Duration::from_secs(2);
 const RENAME_TRIES: u32 = 5;
+/// How long `start_options` waits for the core's `hello`.
+const OPTIONS_WAIT: Duration = Duration::from_secs(2);
 
 /// How this runner starts sessions on the core.
 #[derive(Debug, Clone)]
@@ -41,25 +44,32 @@ impl Sessions {
         let _ = self.core_starts.set(starts);
     }
 
-    /// The core a new session starts on, or none for Herdr.
-    pub(super) async fn choose_core(&self) -> Result<Option<Arc<Core>>, ProtoError> {
-        let mode = self
-            .core_starts
-            .get()
-            .map_or(NewSessions::Herdr, |s| s.new_sessions);
+    /// The core a new session starts on, or none for Herdr. `chosen` overrides `new_sessions`;
+    /// a chosen Herdr app that doesn't answer fails, never falling back.
+    pub(super) async fn choose_core(
+        &self,
+        chosen: Option<StartBackend>,
+    ) -> Result<Option<Arc<Core>>, ProtoError> {
+        let mode = match chosen {
+            Some(StartBackend::Herdr) => NewSessions::Herdr,
+            Some(StartBackend::Hc) => NewSessions::Hc,
+            None => self.new_sessions(),
+        };
         if mode == NewSessions::Herdr {
             return Ok(None);
         }
-        let answer = match self.core() {
-            Some(core) => core.client().hello().await.map(|_| core),
-            None => Err(crate::hc::HcError::InvalidArgument(
-                "this runner follows no herdr-core".into(),
-            )),
-        };
+        let answer = self.core_answers().await;
         match (mode, answer) {
             (_, Ok(core)) => {
                 tracing::info!(?mode, "starting the session in the Herdr app");
                 Ok(Some(core))
+            }
+            (NewSessions::Hc, Err(e)) if chosen.is_some() => {
+                tracing::info!(error = %e, "the chosen Herdr app isn't answering");
+                Err(err(
+                    ErrorCode::BackendUnavailable,
+                    "the Herdr app isn't answering on this machine; open it there, or start in the Herdr terminal",
+                ))
             }
             (NewSessions::Hc, Err(e)) => Err(err(
                 ErrorCode::Herdr,
@@ -71,6 +81,51 @@ impl Sessions {
                 tracing::info!(error = %e, "herdr-core isn't answering; starting the session in Herdr");
                 Ok(None)
             }
+        }
+    }
+
+    fn new_sessions(&self) -> NewSessions {
+        self.core_starts
+            .get()
+            .map_or(NewSessions::Herdr, |s| s.new_sessions)
+    }
+
+    async fn core_answers(&self) -> Result<Arc<Core>, crate::hc::HcError> {
+        match self.core() {
+            Some(core) => core.client().hello().await.map(|_| core),
+            None => Err(crate::hc::HcError::InvalidArgument(
+                "this runner follows no herdr-core".into(),
+            )),
+        }
+    }
+
+    /// Where a start with no backend would go, and whether each backend can take one now.
+    pub async fn start_options(&self) -> StartOptions {
+        let core = match self.core() {
+            None => Err("not_followed"),
+            Some(core) => match tokio::time::timeout(OPTIONS_WAIT, core.client().hello()).await {
+                Ok(Ok(_)) => Ok(()),
+                _ => Err("not_answering"),
+            },
+        };
+        let default = match (self.new_sessions(), &core) {
+            (NewSessions::Herdr, _) | (NewSessions::Auto, Err(_)) => StartBackend::Herdr,
+            (NewSessions::Hc, _) | (NewSessions::Auto, Ok(())) => StartBackend::Hc,
+        };
+        StartOptions {
+            default,
+            backends: vec![
+                BackendOption {
+                    backend: StartBackend::Hc,
+                    available: core.is_ok(),
+                    reason: core.err().map(str::to_owned),
+                },
+                BackendOption {
+                    backend: StartBackend::Herdr,
+                    available: true,
+                    reason: None,
+                },
+            ],
         }
     }
 

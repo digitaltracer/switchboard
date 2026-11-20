@@ -22,6 +22,7 @@ use super::types::*;
         super::issue_token,
         super::list_projects,
         super::list_machines,
+        super::get_start_options,
         super::list_sessions,
         super::start_session,
         super::get_operation,
@@ -53,7 +54,8 @@ use super::types::*;
     ),
     components(schemas(
         ApiError, ErrorBody, Meta, PairRequest, PairResponse, PairStatus, TokenChallengeRequest,
-        Challenge, TokenRequest, TokenResponse, Project, Machine, Approval, Session, Sessions,
+        Challenge, TokenRequest, TokenResponse, Project, Machine, StartOptions,
+        BackendOption, Approval, Session, Sessions,
         StartRequest, StartResponse, OperationStatus, Output, PromptRequest,
         PromptResponse, StopRequest, StopResponse, MuteRequest, MuteResponse, DecisionKind,
         ApprovalChallenge, DecisionRequest, DecisionResponse, Device, PushEnvironment,

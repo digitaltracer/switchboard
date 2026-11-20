@@ -518,6 +518,7 @@ impl Sessions {
                 agent,
                 prompt,
                 deny_patterns,
+                backend,
             } => {
                 self.start(StartRequest {
                     session_id,
@@ -527,6 +528,7 @@ impl Sessions {
                     agent,
                     prompt,
                     deny_patterns,
+                    backend,
                 })
                 .await
             }
@@ -572,6 +574,9 @@ impl Sessions {
             Op::ListSessions => Ok(serde_json::to_value(self.owned().await).expect("serializes")),
             Op::Agents => Ok(serde_json::to_value(self.all_agents().await?).expect("serializes")),
             Op::Activity => Ok(serde_json::to_value(self.activity().await).expect("serializes")),
+            Op::StartOptions => {
+                Ok(serde_json::to_value(self.start_options().await).expect("serializes"))
+            }
             Op::ReadAgent {
                 agent,
                 lines,
@@ -997,7 +1002,7 @@ impl Sessions {
             Agent::Codex => Some(self.codex_version().await?),
             Agent::Claude => None,
         };
-        let on_core = self.choose_core().await?;
+        let on_core = self.choose_core(req.backend).await?;
 
         let dir = self.dir(&req.session_id);
         create_private_dir(&dir)
@@ -1481,6 +1486,8 @@ pub struct StartRequest {
     pub agent: Agent,
     pub prompt: String,
     pub deny_patterns: Vec<String>,
+    /// Overrides `new_sessions` for this start.
+    pub backend: Option<crate::proto::StartBackend>,
 }
 
 fn started_json(s: &RunnerSession) -> Value {

@@ -165,6 +165,61 @@ impl Machine {
     }
 }
 
+/// Where a new session on one machine opens, and what the New session screen may choose.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct StartOptions {
+    pub machine_id: String,
+    /// `hc` (the Herdr app) or `herdr` (a Herdr terminal session): where a start with no
+    /// `backend` opens now. Absent when the machine's runner is too old to say.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    pub default: Option<String>,
+    /// One entry per backend, `hc` first.
+    pub backends: Vec<BackendOption>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct BackendOption {
+    /// `hc` or `herdr`.
+    pub backend: String,
+    pub available: bool,
+    /// Why it can't be chosen: `not_answering` (the Herdr app isn't open there), `not_followed`
+    /// (its runner follows no Herdr app) or `runner_too_old` (its runner can't be told).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    pub reason: Option<String>,
+}
+
+impl StartOptions {
+    pub fn of(machine_id: String, o: Option<crate::proto::StartOptions>) -> Self {
+        let Some(o) = o else {
+            let too_old = |b: &str| BackendOption {
+                backend: b.into(),
+                available: false,
+                reason: Some("runner_too_old".into()),
+            };
+            return Self {
+                machine_id,
+                default: None,
+                backends: vec![too_old("hc"), too_old("herdr")],
+            };
+        };
+        Self {
+            machine_id,
+            default: Some(o.default.as_str().into()),
+            backends: o
+                .backends
+                .into_iter()
+                .map(|b| BackendOption {
+                    backend: b.backend.as_str().into(),
+                    available: b.available,
+                    reason: b.reason,
+                })
+                .collect(),
+        }
+    }
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 pub struct Approval {
     pub id: String,
@@ -366,6 +421,11 @@ pub struct StartRequest {
     pub notify: bool,
     /// Required: a lost response can be looked up, or retried, by this id.
     pub request_id: String,
+    /// Where it opens on the machine: `hc` for the Herdr app, `herdr` for a Herdr terminal
+    /// session. Omitted, the machine's runner chooses as it always has. A choice the machine
+    /// can't serve fails with `backend_unavailable`; it never falls back or moves machine.
+    #[serde(default)]
+    pub backend: Option<String>,
 }
 
 fn yes() -> bool {

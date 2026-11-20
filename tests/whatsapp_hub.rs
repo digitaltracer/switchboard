@@ -392,6 +392,7 @@ impl World {
                     agent: None,
                     notify: true,
                     request_id: None,
+                    backend: None,
                 },
             )
             .await

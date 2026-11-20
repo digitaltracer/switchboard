@@ -19,8 +19,9 @@ use crate::agents::claude::answers;
 use crate::cli::Agent;
 use crate::config::{HubConfig, ProjectConfig};
 use crate::proto::{
-    AgentActivity, AgentPromptOutcome, AgentSummary, CAP_ACTIVITY, DialogView, ErrorCode, Event,
-    Frame, Hello, Op, OwnedSession, ProtoError, SkillInfo, TranscriptPage,
+    AgentActivity, AgentPromptOutcome, AgentSummary, CAP_ACTIVITY, CAP_START_BACKEND, DialogView,
+    ErrorCode, Event, Frame, Hello, Op, OwnedSession, ProtoError, SkillInfo, StartBackend,
+    StartOptions, TranscriptPage,
 };
 use crate::redact::{redact, redact_as, redact_str};
 use crate::runner::random_id;
@@ -36,6 +37,8 @@ use crate::whatsapp::watchlist::WatchState;
 pub const DEFAULT_MACHINE: &str = "vps";
 /// Longest a runner start can take: worktree, agent launch, liveness, readiness and the prompt.
 pub const START_TIMEOUT: Duration = Duration::from_secs(240);
+/// The runner waits up to 2 s for the core's hello.
+const START_OPTIONS_TIMEOUT: Duration = Duration::from_secs(5);
 pub const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 pub const STOP_TIMEOUT: Duration = Duration::from_secs(90);
 pub const DEDUPE_WINDOW: Duration = Duration::from_secs(60);
@@ -172,6 +175,11 @@ pub enum HubError {
     MachineOffline(String),
     #[error("machine {0:?} is reconciling after a reconnect; retry shortly")]
     Reconciling(String),
+    /// The start chose where to open, and this machine's runner can't be told.
+    #[error(
+        "machine {0:?} can't choose where a session opens; update its runner, or start without choosing"
+    )]
+    BackendUnsupported(String),
     #[error("unknown session {0:?}")]
     UnknownSession(String),
     #[error("unknown approval {0:?} for this session")]
@@ -215,6 +223,7 @@ impl HubError {
             HubError::ProjectNotOnMachine { .. } => "project_not_on_machine".into(),
             HubError::MachineOffline(_) => "machine_offline".into(),
             HubError::Reconciling(_) => "reconciling".into(),
+            HubError::BackendUnsupported(_) => "backend_unavailable".into(),
             HubError::UnknownSession(_) => "unknown_session".into(),
             HubError::UnknownApproval(_) => "unknown_approval".into(),
             HubError::ApproveNotAllowed(_) => "approve_not_allowed".into(),
@@ -321,6 +330,8 @@ pub struct StartRequest {
     pub agent: Option<Agent>,
     pub notify: bool,
     pub request_id: Option<String>,
+    /// Where it opens on the machine; none leaves it to the runner's `new_sessions`.
+    pub backend: Option<StartBackend>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -903,6 +914,28 @@ impl SessionService {
             .collect()
     }
 
+    /// Where a new session on `machine` would open, and what the phone may choose. None from a
+    /// runner too old to say.
+    pub async fn start_options(&self, machine: &str) -> Result<Option<StartOptions>, HubError> {
+        if self.cfg.machine(machine).is_none() {
+            return Err(HubError::UnknownMachine(machine.into()));
+        }
+        if self.runners.readiness(machine) == Readiness::Offline {
+            return Err(HubError::MachineOffline(machine.into()));
+        }
+        if !self.runners.can(machine, CAP_START_BACKEND) {
+            return Ok(None);
+        }
+        let v = self
+            .runners
+            .call(machine, Op::StartOptions, START_OPTIONS_TIMEOUT)
+            .await
+            .map_err(HubError::Runner)?;
+        serde_json::from_value(v)
+            .map(Some)
+            .map_err(|e| HubError::Runner(ProtoError::new(ErrorCode::Internal, e.to_string())))
+    }
+
     // Start.
 
     pub async fn start(
@@ -933,10 +966,14 @@ impl SessionService {
         }
         let agent = req.agent.unwrap_or(project.default_agent);
         let prompt_sha256 = sha256_hex(&prompt);
-        let fp = fingerprint(&json!({
+        let mut fp_args = json!({
             "project": project.id, "machine": machine, "agent": agent.as_str(),
             "prompt_sha256": prompt_sha256, "notify": req.notify,
-        }));
+        });
+        if let Some(b) = req.backend {
+            fp_args["backend"] = json!(b.as_str());
+        }
+        let fp = fingerprint(&fp_args);
         let rid = req.request_id.as_deref();
         if let Some(v) = self.replayed(rid, KIND_START, &fp).await? {
             return self.replay_start(v).await;
@@ -948,6 +985,9 @@ impl SessionService {
                 return Err(HubError::Reconciling(machine));
             }
             Readiness::Ready => {}
+        }
+        if req.backend.is_some() && !self.runners.can(&machine, CAP_START_BACKEND) {
+            return Err(HubError::BackendUnsupported(machine));
         }
 
         let guard = self.start_lock.lock().await;
@@ -1015,6 +1055,7 @@ impl SessionService {
             json!({
                 "project_id": project.id, "machine_id": machine, "agent": agent.as_str(),
                 "branch": record.branch, "notify": req.notify, "prompt": prompt,
+                "backend": req.backend.map(StartBackend::as_str),
                 "name": record.name,
                 "operation_id": op_id,
             }),
@@ -1029,6 +1070,7 @@ impl SessionService {
             agent,
             prompt: prompt.clone(),
             deny_patterns: project.deny_patterns.clone(),
+            backend: req.backend,
         };
         match self.runners.call(&machine, op, START_TIMEOUT).await {
             Ok(v) => {

@@ -91,13 +91,22 @@ async fn connect(
     machine: &str,
     sessions: Vec<OwnedSession>,
 ) -> FakeRunner {
+    connect_with(svc, machine, sessions, vec![]).await
+}
+
+async fn connect_with(
+    svc: &Arc<SessionService>,
+    machine: &str,
+    sessions: Vec<OwnedSession>,
+    capabilities: Vec<String>,
+) -> FakeRunner {
     let hello = Hello {
         machine_id: machine.into(),
         protocol_version: PROTOCOL_VERSION,
         runner_version: "test".into(),
         herdr_version: Some("0.9.1".into()),
         sessions,
-        capabilities: vec![],
+        capabilities,
     };
     let (generation, outbound) = svc.runner_connected(machine, hello).await;
     FakeRunner {
@@ -178,6 +187,7 @@ fn start_req(machine: &str, prompt: &str, request_id: Option<&str>) -> StartRequ
         agent: None,
         notify: true,
         request_id: request_id.map(str::to_owned),
+        backend: None,
     }
 }
 
@@ -2648,6 +2658,85 @@ async fn an_old_waiting_push_says_whether_its_agent_is_still_the_one_that_asked(
         let a = task.await.unwrap().unwrap();
         assert_eq!((a.state.as_str(), a.same_agent), ("gone", want), "case {i}");
     }
+}
+
+// Where a session opens.
+
+#[tokio::test]
+async fn a_chosen_backend_reaches_only_a_runner_that_can_take_it() {
+    let r = rig().await;
+    let mut mac = connect(&r.svc, "mac", vec![]).await;
+    let req = StartRequest {
+        backend: Some(StartBackend::Hc),
+        ..start_req("mac", "fix the bug", Some("rq-b1"))
+    };
+    let e = r.svc.start(&r.bot, req).await.unwrap_err();
+    assert!(
+        matches!(e, HubError::BackendUnsupported(ref m) if m == "mac"),
+        "{e:?}"
+    );
+    assert_eq!(e.code(), "backend_unavailable");
+    mac.no_req().await;
+    assert!(r.svc.list().await.unwrap().is_empty(), "nothing recorded");
+    assert!(r.svc.start_options("mac").await.unwrap().is_none());
+
+    let r = rig().await;
+    let mut mac = connect_with(&r.svc, "mac", vec![], vec![CAP_START_BACKEND.into()]).await;
+    let task = spawn_start(
+        &r,
+        StartRequest {
+            backend: Some(StartBackend::Herdr),
+            ..start_req("mac", "fix the bug", None)
+        },
+    );
+    let req = mac.req().await;
+    let Op::StartSession { backend, .. } = &req.op else {
+        panic!("{:?}", req.op);
+    };
+    assert_eq!(*backend, Some(StartBackend::Herdr));
+    mac.ok(req.id, json!({"workspace_id": "w2", "pane_id": "w2:p1"}))
+        .await;
+    task.await.unwrap().unwrap();
+
+    // No choice is the old op, whatever the runner can do.
+    let task = spawn_start(&r, start_req("mac", "another bug", None));
+    let req = mac.req().await;
+    assert!(
+        matches!(req.op, Op::StartSession { backend: None, .. }),
+        "{:?}",
+        req.op
+    );
+    mac.ok(req.id, json!({"workspace_id": "w3", "pane_id": "w3:p1"}))
+        .await;
+    task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn start_options_ask_the_machines_runner() {
+    let r = rig().await;
+    assert!(matches!(
+        r.svc.start_options("mac").await,
+        Err(HubError::MachineOffline(_))
+    ));
+    assert!(matches!(
+        r.svc.start_options("nowhere").await,
+        Err(HubError::UnknownMachine(_))
+    ));
+    let mut mac = connect_with(&r.svc, "mac", vec![], vec![CAP_START_BACKEND.into()]).await;
+    let svc = r.svc.clone();
+    let ask = tokio::spawn(async move { svc.start_options("mac").await });
+    let req = mac.req().await;
+    assert_eq!(req.op, Op::StartOptions);
+    mac.ok(
+        req.id,
+        json!({"default": "herdr", "backends": [
+            {"backend": "hc", "available": false, "reason": "not_answering"},
+            {"backend": "herdr", "available": true}]}),
+    )
+    .await;
+    let o = ask.await.unwrap().unwrap().unwrap();
+    assert_eq!(o.default, StartBackend::Herdr);
+    assert_eq!(o.backends[0].reason.as_deref(), Some("not_answering"));
 }
 
 #[tokio::test]

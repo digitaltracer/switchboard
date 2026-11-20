@@ -26,7 +26,7 @@ use crate::auth::device::{
 };
 use crate::cli::Agent;
 use crate::proto::auth::bearer;
-use crate::proto::{AgentPromptOutcome, ErrorCode};
+use crate::proto::{AgentPromptOutcome, ErrorCode, StartBackend};
 use crate::store::{AnswerProof, DeviceRecord, DeviceState, PushEnv, PushProvider};
 use types::*;
 
@@ -53,6 +53,7 @@ pub fn routes(state: AppState) -> Router {
         .route("/auth/token", post(issue_token))
         .route("/projects", get(list_projects))
         .route("/machines", get(list_machines))
+        .route("/machines/{id}/start-options", get(get_start_options))
         .route("/sessions", get(list_sessions).post(start_session))
         .route("/sessions/{id}", get(get_session))
         .route("/sessions/{id}/output", get(get_output))
@@ -134,7 +135,8 @@ fn status_for(code: &str) -> StatusCode {
         | "request_id_reused"
         | "answer_in_herdr"
         | "agent_blocked"
-        | "dialog_changed" => StatusCode::CONFLICT,
+        | "dialog_changed"
+        | "backend_unavailable" => StatusCode::CONFLICT,
         "rate_limited" | "busy" => StatusCode::TOO_MANY_REQUESTS,
         "machine_offline" | "reconciling" => StatusCode::SERVICE_UNAVAILABLE,
         "outcome_unknown" | "deadline_exceeded" => StatusCode::GATEWAY_TIMEOUT,
@@ -337,6 +339,21 @@ pub async fn list_machines(State(st): State<AppState>, _d: DeviceAuth) -> ApiRes
     ))
 }
 
+#[utoipa::path(get, path = "/app/v1/machines/{id}/start-options", tag = "sessions",
+    security(("device_token" = [])), params(("id" = String, Path)),
+    responses((status = 200, description = "OK", body = StartOptions), (status = 400, description = "Unknown machine", body = ApiError),
+              (status = 503, description = "Machine offline", body = ApiError)))]
+/// Where a new session on this machine opens, and whether the Herdr app or a Herdr terminal can
+/// take one now. Read-only.
+pub async fn get_start_options(
+    State(st): State<AppState>,
+    _d: DeviceAuth,
+    Path(id): Path<String>,
+) -> ApiResult<StartOptions> {
+    let o = st.svc.start_options(&id).await?;
+    Ok(Json(StartOptions::of(id, o)))
+}
+
 #[utoipa::path(get, path = "/app/v1/sessions", tag = "sessions", security(("device_token" = [])),
     params(WaitQuery),
     responses((status = 200, description = "OK", body = Sessions), (status = 401, description = "Missing or expired device token", body = ApiError)))]
@@ -356,6 +373,7 @@ pub async fn list_sessions(
 #[utoipa::path(post, path = "/app/v1/sessions", tag = "sessions", security(("device_token" = [])),
     request_body = types::StartRequest,
     responses((status = 200, description = "OK", body = StartResponse), (status = 400, description = "Bad request", body = ApiError),
+              (status = 409, description = "The chosen backend can't take a session there now", body = ApiError),
               (status = 503, description = "Machine offline or reconciling", body = ApiError), (status = 504, description = "Outcome unknown", body = ApiError)))]
 pub async fn start_session(
     State(st): State<AppState>,
@@ -371,6 +389,12 @@ pub async fn start_session(
         Some("codex") => Some(Agent::Codex),
         Some(other) => return Err(bad(&format!("unknown agent {other:?}"))),
     };
+    let backend = match req.backend.as_deref() {
+        None => None,
+        Some(b) => {
+            Some(StartBackend::parse(b).ok_or_else(|| bad(&format!("unknown backend {b:?}")))?)
+        }
+    };
     let r = st
         .svc
         .start(
@@ -382,6 +406,7 @@ pub async fn start_session(
                 agent,
                 notify: req.notify,
                 request_id: Some(req.request_id),
+                backend,
             },
         )
         .await?;
@@ -707,6 +732,7 @@ async fn follow(
                         agent: None,
                         notify: true,
                         request_id: Some(request_id.to_owned()),
+                        backend: None,
                     },
                 )
                 .await?;

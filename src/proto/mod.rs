@@ -16,6 +16,50 @@ pub const CAP_ACTIVITY: &str = "activity";
 pub const CAP_HC: &str = "hc";
 /// The `herdr_session` of a herdr-core agent or session.
 pub const CORE_SERVER: &str = "hc";
+/// A runner that takes `backend` on `Op::StartSession` and answers `Op::StartOptions`.
+pub const CAP_START_BACKEND: &str = "start_backend";
+
+/// Where one session starts: a Herdr TUI session of its own, or the Herdr app (herdr-core).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StartBackend {
+    Herdr,
+    Hc,
+}
+
+impl StartBackend {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            StartBackend::Herdr => "herdr",
+            StartBackend::Hc => "hc",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "herdr" => Some(StartBackend::Herdr),
+            "hc" => Some(StartBackend::Hc),
+            _ => None,
+        }
+    }
+}
+
+/// `Op::StartOptions`'s answer: where a start with no backend would go, and what can be chosen.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StartOptions {
+    pub default: StartBackend,
+    pub backends: Vec<BackendOption>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackendOption {
+    pub backend: StartBackend,
+    pub available: bool,
+    /// Why it isn't available: `not_answering` (no herdr-core answers) or `not_followed` (this
+    /// runner follows no herdr-core).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -74,6 +118,10 @@ pub enum Op {
         agent: Agent,
         prompt: String,
         deny_patterns: Vec<String>,
+        /// Overrides the runner's `new_sessions` for this start; only sent to runners advertising
+        /// `CAP_START_BACKEND`. A backend the runner can't serve fails the start.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        backend: Option<StartBackend>,
     },
     Prompt {
         session_id: String,
@@ -128,6 +176,9 @@ pub enum Op {
     /// Every agent's last line, as `AgentActivity`s; only for runners advertising
     /// `CAP_ACTIVITY`. Read-only.
     Activity,
+    /// Where a new session would start, as `StartOptions`; only for runners advertising
+    /// `CAP_START_BACKEND`. Read-only.
+    StartOptions,
     /// Reads any named agent; `visible` is the current screen, which shows a dialog. `ansi` adds
     /// that screen with its colours; older runners leave it out.
     ReadAgent {
@@ -180,6 +231,7 @@ impl Op {
                 | Op::ListSessions
                 | Op::Agents
                 | Op::Activity
+                | Op::StartOptions
                 | Op::ReadAgent { .. }
                 | Op::Changes { .. }
                 | Op::Transcript { .. }
@@ -389,6 +441,8 @@ impl ProtoError {
 pub enum ErrorCode {
     /// The change may or may not have happened; reconcile before retrying.
     OutcomeUnknown,
+    /// The start's chosen backend can't take a session on this machine now; nothing was started.
+    BackendUnavailable,
     DeadlineExceeded,
     RunnerDisconnected,
     Busy,
