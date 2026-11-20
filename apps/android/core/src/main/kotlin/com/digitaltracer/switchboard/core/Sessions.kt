@@ -114,7 +114,7 @@ val HerdrSession.Agent.shortName: String
 val HerdrSession.Agent.space: String?
     get() {
         val (raw, session) = when (this) {
-            is HerdrSession.Agent.Task -> null to session.herdrSession
+            is HerdrSession.Agent.Task -> session.space to session.herdrSession
             is HerdrSession.Agent.Live -> agent.space to agent.herdrSession
             is HerdrSession.Agent.Ended -> agent.space to agent.herdrSession
         }

@@ -28,8 +28,9 @@ sealed interface StartState {
 object StartFlow {
     suspend fun run(
         hub: Hub, project: String, prompt: String, machine: String?, agent: String?, notify: Boolean, requestId: String,
+        backend: String? = null,
     ): StartState = try {
-        val r = hub.start(project, prompt, machine, agent, notify, requestId)
+        val r = hub.start(project, prompt, machine, agent, notify, requestId, backend)
         StartState.Started(r.sessionId, alreadyRunning = r.outcome == "deduplicated")
     } catch (e: HubError) {
         if (e.outcomeUnknown) StartState.Unknown(requestId) else StartState.Failed(e.message.orEmpty())

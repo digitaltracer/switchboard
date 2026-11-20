@@ -12,11 +12,14 @@ class SessionsTest {
     // Its own decoder: the shared one may only be configured once, by the hub client.
     private val json = Json { ignoreUnknownKeys = true }
 
-    private fun task(id: String, herdr: String, lifecycle: String = "running", updated: Long = 0): Session = json.decodeFromString("""
+    private fun task(id: String, herdr: String, lifecycle: String = "running", updated: Long = 0, space: String? = null): Session {
+        val sp = space?.let { ""","space":"$it"""" } ?: ""
+        return json.decodeFromString("""
         {"id":"$id","label":"kraft-$id","project_id":"kraft","machine_id":"mac","machine_status":"ready",
          "agent":"claude","lifecycle":"$lifecycle","agent_status":"idle","hook_failed":false,"revision":1,
-         "created_at":0,"updated_at":$updated,"muted":false,"notifies":true,"pending_approvals":[],"herdr_session":"$herdr"}
-    """)
+         "created_at":0,"updated_at":$updated,"muted":false,"notifies":true,"pending_approvals":[],"herdr_session":"$herdr"$sp}
+        """)
+    }
 
     private fun agent(name: String, status: String = "idle", title: String? = null, space: String? = null): AgentView {
         val t = title?.let { ""","title":"$it"""" } ?: ""
@@ -83,5 +86,42 @@ class SessionsTest {
         assertTrue(HerdrSession.group(stopped, emptyList(), emptyList(), machine = "vps", since = null).isEmpty())
         val all = HerdrSession.group(stopped, emptyList(), emptyList(), since = null)
         assertTrue(all.size == 1 && all[0].isEnded)
+    }
+
+    @Test
+    fun spacesListTheHerdrAppAndTerminalSessionsTheSameWay() {
+        val spaces = AgentSpace.group(
+            sessions = listOf(task("7c1e", "hc", space = "kraft"), task("9f3c", "kraft-9f3c"), task("0000", "kraft-0000", "exited", 500)),
+            agents = listOf(
+                agent("hc/search", "working", space = "atlas-web"),
+                agent("hc/checkout", "blocked", space = "atlas-web"),
+                agent("hc/stray", space = "core"),
+                agent("main/bench", "working", space = "kraft"),
+                agent("main/zsh", space = "dotfiles"),
+                agent("crm/orchestrator", space = "Imports"),
+                agent("crm/w1:p2", title = "Fix the import", space = "1"),
+                agent("solo/reviewer", space = "only"),
+            ),
+            ended = emptyList(),
+            since = null,
+        )
+        assertEquals(
+            listOf("atlas-web", "crm", "crm › Imports", "kraft", "kraft-9f3c", "main › dotfiles", "main › kraft",
+                "Outside any space", "solo", "kraft-0000"),
+            spaces.map { it.title },
+        )
+        val atlas = spaces[0]
+        assertTrue(atlas.isHerdrApp && atlas.backend == "hc" && atlas.attach == null)
+        assertEquals("atlas-web › search", atlas.label(atlas.live[0]))
+        // A numbered workspace goes under the session's name; a session with one workspace is the session.
+        assertEquals(listOf("Fix the import"), spaces[1].live.map { it.nameInSpace })
+        assertEquals(AgentSpace.Key("mac", "crm", "Imports"), spaces[2].key)
+        assertEquals(null, spaces[8].key.space)
+        // A session Switchboard started in the Herdr app goes under its space; one in a terminal is its own.
+        assertTrue(spaces[3].isHerdrApp && spaces[3].fromSwitchboard)
+        assertEquals("kraft-9f3c", spaces[4].label(spaces[4].live[0]))
+        assertEquals(AgentSpace.Key("mac", "main", "kraft"), spaces[6].key)
+        assertTrue(spaces[9].isEnded)
+        assertEquals("kraft-9f3c", spaces.holding { it.shortName == "kraft-9f3c" }?.title)
     }
 }

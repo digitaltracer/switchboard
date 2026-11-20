@@ -44,6 +44,7 @@ import com.digitaltracer.switchboard.api.models.PushTokenRequest
 import com.digitaltracer.switchboard.api.models.Session
 import com.digitaltracer.switchboard.api.models.Skill
 import com.digitaltracer.switchboard.api.models.Sessions
+import com.digitaltracer.switchboard.api.models.StartOptions
 import com.digitaltracer.switchboard.api.models.StartRequest
 import com.digitaltracer.switchboard.api.models.StartResponse
 import com.digitaltracer.switchboard.api.models.StopRequest
@@ -330,9 +331,21 @@ class Hub private constructor(
     /** Files the session changed since it started, committed or not. */
     suspend fun changes(id: String): Changes = authed { sessions.getChanges(id) }
 
+    /** [backend] is `hc` or `herdr`; null leaves it to the machine's runner. */
     suspend fun start(
         project: String, prompt: String, machine: String?, agent: String?, notify: Boolean, requestId: String,
-    ): StartResponse = authed { sessions.startSession(StartRequest(project, prompt, requestId, machine, agent, notify)) }
+        backend: String? = null,
+    ): StartResponse = authed {
+        sessions.startSession(
+            StartRequest(
+                projectId = project, prompt = prompt, requestId = requestId, machineId = machine, agent = agent,
+                notify = notify, backend = backend,
+            ),
+        )
+    }
+
+    /** Where a new session on [machine] opens, and which backends can take one now. */
+    suspend fun startOptions(machine: String): StartOptions = authed { sessions.getStartOptions(machine) }
 
     suspend fun operation(requestId: String): OperationStatus = authed { sessions.getOperation(requestId) }
 
