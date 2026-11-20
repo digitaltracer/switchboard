@@ -498,3 +498,30 @@ and told the owner to run `herdr session attach hc`.
   untouched.
 - Not done: a session Switchboard starts in the Herdr app has no space in the app API, so it
   lists under "No space".
+
+## As built (2026-11-21): where a new session opens, and a session's space
+
+For the phone's Inbox redesign (`.agents/tasks/app-redesign/implement-brief.md`), additive within
+`/app/v1`:
+- **Choosing the backend.** `POST /sessions` takes an optional `backend`, `hc` (the Herdr app) or
+  `herdr` (a Herdr terminal session). Omitted, the runner follows `new_sessions` as before. The hub
+  passes it on `Op::StartSession` only to a runner advertising the new capability
+  `start_backend`; to an older runner it refuses with `backend_unavailable` (409) before
+  recording anything. The runner treats a choice as `new_sessions` for that one start: a chosen
+  Herdr app that doesn't answer fails with `ErrorCode::BackendUnavailable`, never falling back.
+  The machine never changes. The choice joins the start's fingerprint and audit when given.
+- **What can be chosen.** `GET /machines/{id}/start-options` asks the runner (new read-only
+  `Op::StartOptions`, core `hello` capped at 2 s): the `default` a start with no backend would get
+  now, and each backend's `available` with a `reason` (`not_answering`, `not_followed`). An older
+  runner gets no `default` and both backends unavailable with `runner_too_old`; an offline machine
+  is 503. The Herdr terminal is always available, since a runner needs Herdr to run.
+- **A session's space.** Migration 0012 adds `sessions.space`. When the hub lists a machine's
+  agents, each one with a `session_id` records its space on that session, only for a session of
+  the same machine. A change bumps the list revision but not `updated_at`. `Session.space` is
+  additive. This closes the "No space" item from the 2026-11-16 note: a Herdr app session lists
+  under the space it was adopted into.
+- The phone groups by space itself (`AgentSpace` in both apps' cores): a Herdr app space, or a
+  terminal session's workspace as `session › workspace`; a session with one workspace, or only
+  numbered ones, is one space under its name.
+- The scripted runner (`examples/fake_runner.rs`) answers start options, lists three Herdr app
+  agents, and files a session started with `backend: "hc"` under the space `demo`.
