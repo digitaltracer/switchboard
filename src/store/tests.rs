@@ -26,6 +26,7 @@ fn session(id: &str, created_at: i64) -> SessionRecord {
         start_commit: None,
         herdr_session: None,
         name: None,
+        space: None,
     }
 }
 

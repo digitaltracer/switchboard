@@ -299,6 +299,11 @@ pub struct Session {
     /// `herdr` for a Herdr TUI session, `hc` for one in the Herdr app. Older hubs leave it out.
     #[schema(required = false)]
     pub backend: String,
+    /// The Herdr app space, or Herdr workspace, its agent was last seen in, as in `AgentView`.
+    /// Untrusted text. Absent until the hub has seen it, and from older hubs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    pub space: Option<String>,
     pub pending_approvals: Vec<Approval>,
 }
 
@@ -326,6 +331,7 @@ impl From<SessionView> for Session {
             start_commit: s.start_commit,
             backend: backend(s.herdr_session.as_deref()).into(),
             herdr_session: s.herdr_session,
+            space: s.space,
         }
     }
 }

@@ -423,6 +423,8 @@ pub struct SessionView {
     pub herdr_session: Option<String>,
     /// The owner's name for it, given when it was started.
     pub name: Option<String>,
+    /// The space its agent was last seen in. Untrusted text.
+    pub space: Option<String>,
 }
 
 /// Every session, newest first, at one list revision.
@@ -990,6 +992,7 @@ impl SessionService {
             start_commit: None,
             herdr_session: None,
             name,
+            space: None,
         };
         let op_id = rid
             .map(str::to_owned)
@@ -1731,6 +1734,7 @@ impl SessionService {
         for m in self.machines().into_iter().filter(|m| m.connected) {
             match self.agents(&m.id).await {
                 Ok(agents) => {
+                    self.record_session_spaces(&m.id, &agents).await;
                     let agents: Vec<_> = agents
                         .into_iter()
                         .filter(|a| a.session_id.is_none() && !session_agents.contains(&a.name))
@@ -1755,6 +1759,27 @@ impl SessionService {
             }
         }
         out
+    }
+
+    /// Keeps each listed session agent's space on its session, so the phone can file it there.
+    async fn record_session_spaces(&self, machine: &str, agents: &[AgentSummary]) {
+        let mut changed = false;
+        for a in agents {
+            let (Some(id), Some(space)) = (&a.session_id, &a.space) else {
+                continue;
+            };
+            match self
+                .store
+                .set_session_space(machine, id, &redact_str(space))
+                .await
+            {
+                Ok(c) => changed |= c,
+                Err(e) => tracing::warn!(session = %id, error = %e, "recording a session's space"),
+            }
+        }
+        if changed {
+            self.changed();
+        }
     }
 
     /// Every agent's last line on the connected machines whose runner advertises activity,
@@ -2564,6 +2589,7 @@ impl SessionService {
             start_commit: s.start_commit,
             herdr_session: s.herdr_session,
             name: s.name,
+            space: s.space,
         })
     }
 

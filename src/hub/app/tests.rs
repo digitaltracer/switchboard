@@ -1878,3 +1878,24 @@ async fn a_group_shows_its_tabs_and_goes_back_a_question_unsigned() {
         .await;
     assert_eq!(stale.await.unwrap().status, StatusCode::CONFLICT);
 }
+
+#[tokio::test]
+async fn a_herdr_app_session_lists_under_the_space_its_agent_is_in() {
+    let mut r = rig().await;
+    let (_, token) = r.pair(&Phone::new()).await;
+    let sid = r.start(&token, "rq-space").await;
+    let call = r.call_later("GET", "/agents", &token, Value::Null);
+    let req = r.req().await;
+    assert!(matches!(req.op, Op::Agents));
+    r.ok(
+        req.id,
+        json!([{"name": "sb-x", "pane_id": "t4", "kind": "claude", "agent_status": "idle",
+                "session_id": sid, "herdr_session": "hc", "space": "kraft"}]),
+    )
+    .await;
+    assert_eq!(call.await.unwrap().status, StatusCode::OK);
+    let s = r
+        .call("GET", &format!("/sessions/{sid}"), Some(&token), None)
+        .await;
+    assert_eq!(s.body["space"], "kraft", "{}", s.body);
+}

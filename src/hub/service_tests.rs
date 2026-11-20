@@ -2649,3 +2649,38 @@ async fn an_old_waiting_push_says_whether_its_agent_is_still_the_one_that_asked(
         assert_eq!((a.state.as_str(), a.same_agent), ("gone", want), "case {i}");
     }
 }
+
+#[tokio::test]
+async fn a_sessions_space_comes_from_its_agent_in_the_listing() {
+    let r = rig().await;
+    let mut mac = connect(&r.svc, "mac", vec![]).await;
+    let id = running(&r, &mut mac).await;
+    let before = r.svc.get(&id, None, Duration::ZERO).await.unwrap();
+    assert_eq!(before.space, None);
+    let list = |space: &str, session: &str| {
+        json!([{"name": "sb-x", "pane_id": "t3", "kind": "claude", "agent_status": "working",
+                "session_id": session, "herdr_session": "hc", "space": space}])
+    };
+    for (space, session) in [
+        ("kraft", id.as_str()),
+        ("kraft", id.as_str()),
+        ("elsewhere", "not-mine"),
+    ] {
+        let svc = r.svc.clone();
+        let ask = tokio::spawn(async move { svc.herdr_agents().await });
+        let req = mac.req().await;
+        assert_eq!(req.op, Op::Agents);
+        mac.ok(req.id, list(space, session)).await;
+        assert!(
+            ask.await.unwrap().unwrap().is_empty(),
+            "a session's agent isn't listed"
+        );
+    }
+    let after = r.svc.get(&id, None, Duration::ZERO).await.unwrap();
+    assert_eq!(after.space.as_deref(), Some("kraft"));
+    assert_eq!(
+        after.updated_at, before.updated_at,
+        "seeing it changes nothing else"
+    );
+    assert!(after.revision > before.revision, "the phone hears of it");
+}

@@ -3536,6 +3536,10 @@
             "type": "string",
             "description": "`herdr` for a Herdr TUI session, `hc` for one in the Herdr app. Older hubs leave it out."
           },
+          "space": {
+            "type": "string",
+            "description": "The Herdr app space, or Herdr workspace, its agent was last seen in, as in `AgentView`.\nUntrusted text. Absent until the hub has seen it, and from older hubs."
+          },
           "pending_approvals": {
             "type": "array",
             "items": {
