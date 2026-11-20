@@ -43,6 +43,8 @@ final class Voice {
     private(set) var canRetry = false
     /// Send waits for a Retry to come back.
     private(set) var retrying = false
+    /// The words go into New session's prompt, not to review and send.
+    private(set) var dictating = false
 
     private var listener: Listener?
     private var lastHeard = Date()
@@ -78,8 +80,17 @@ final class Voice {
         network.start(queue: .global(qos: .utility))
     }
 
+    /// Fills New session's prompt by voice, after what's typed there already. Nothing is sent.
+    func dictate(after typed: String) {
+        guard phase != .listening, phase != .transcribing else { return }
+        text = typed.trimmingCharacters(in: .whitespacesAndNewlines)
+        listen(to: nil, keepText: true)
+        dictating = true
+    }
+
     func listen(to context: Schemas.TargetView?, keepText: Bool = false) {
         guard phase != .listening, phase != .transcribing else { return }
+        dictating = false
         dropRecording()
         notice = nil
         self.context = context
@@ -168,6 +179,7 @@ final class Voice {
         dropRecording()
         cloud = false
         notice = nil
+        dictating = false
         if phase == .listening { changedAt = Date() }
         phase = .idle
         text = ""
@@ -179,6 +191,7 @@ final class Voice {
     func finish() {
         dropRecording()
         notice = nil
+        dictating = false
         phase = .idle
         text = ""
         error = nil

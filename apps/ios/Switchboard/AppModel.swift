@@ -41,6 +41,7 @@ final class AppModel {
     /// Home tiles' last lines, when the hub has them.
     private(set) var tileLines: TileLines?
     private(set) var projects: [Schemas.Project] = []
+    private(set) var machines: [Schemas.Machine] = []
     /// Bumped each time the app comes back to the foreground; screens restart their polls on it,
     /// since a long-poll begun before the phone slept may be on a dead connection.
     private(set) var wakes = 0
@@ -173,6 +174,7 @@ final class AppModel {
         agents = []
         ended = []
         projects = []
+        machines = []
         current = nil
         meta = nil
         connected = false
@@ -261,17 +263,18 @@ final class AppModel {
 
     /// With `activity`, also each agent's last line, for home's tiles.
     func refreshAgents(activity: Bool = false) async {
-        guard let hub, let list = try? await hub.agents(activity: activity) else { return }
+        guard let hub else { return }
+        if activity, let m = try? await hub.machines() { machines = m }
+        guard let list = try? await hub.agents(activity: activity) else { return }
         agents = list.agents
         ended = list.ended ?? []
         if activity { tileLines = TileLines(list) }
         settleAwaiting()
     }
 
-    /// Every Herdr session with its agents, whoever started them. Ended agents count from `since`,
-    /// or all that are known when it is nil.
-    func herdrSessions(machine: String? = nil, since: Int64?) -> [HerdrSession] {
-        HerdrSession.group(sessions: sessions, agents: agents, ended: ended, machine: machine, since: since)
+    /// Every space with its agents, the Herdr app's and the Herdr terminal's alike.
+    func spaces(machine: String? = nil, since: Int64?) -> [AgentSpace] {
+        AgentSpace.group(sessions: sessions, agents: agents, ended: ended, machine: machine, since: since)
     }
 
     // The session list, long-polled: the hub answers when something newer than our revision exists.
@@ -285,6 +288,7 @@ final class AppModel {
                 do {
                     if self.meta == nil { self.meta = try await hub.meta() }
                     if self.projects.isEmpty, let p = try? await hub.projects() { self.projects = p }
+                    if self.machines.isEmpty, let m = try? await hub.machines() { self.machines = m }
                     let list = try await hub.sessions(after: revision)
                     self.sessions = list.sessions
                     self.settleAwaiting()

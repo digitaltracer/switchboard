@@ -1,7 +1,7 @@
 import SwiftUI
 import SwitchboardKit
 
-/// Everything voice mode draws over the app: the edge glow and the listening panel.
+/// Everything voice mode draws over the app: the listening page and the edge glow.
 struct VoiceOverlay: View {
     @Environment(Voice.self) private var voice
 
@@ -9,18 +9,11 @@ struct VoiceOverlay: View {
         let shown = voice.phase == .listening || voice.phase == .transcribing
         ZStack(alignment: .bottom) {
             if shown {
-                // A stray tap never throws away a recording that's already uploading.
-                Color.clear
-                    .contentShape(Rectangle())
-                    .onTapGesture { if voice.phase == .listening { voice.cancel() } }
-                    .accessibilityHidden(true)
                 ListeningPanel()
-                    .padding(10)
                     .transition(.materialize)
             }
-            EdgeGlow()
+            EdgeGlow().ignoresSafeArea()
         }
-        .ignoresSafeArea()
         .animation(.spring(response: 0.38, dampingFraction: 1), value: shown)
     }
 }
@@ -80,120 +73,107 @@ struct EdgeGlow: View {
     }
 }
 
-/// What's being heard, with Done to stop listening, ✕ to cancel and the keyboard to type instead.
+/// What's being heard, full screen: the words as they come, a level meter, then Cancel, Done and
+/// Type instead.
 struct ListeningPanel: View {
     @Environment(Voice.self) private var voice
-    @Environment(\.accessibilityReduceTransparency) private var solid
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text(voice.context.map { "To \($0.label)" } ?? "Switchboard picks the agent")
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Circle().fill(Ink.bad).frame(width: 8, height: 8)
+                Text(voice.cloud ? "Recording for OpenAI" : "Listening on this phone")
+            }
+            .font(Face.geist(13, .medium, relativeTo: .footnote))
+            .foregroundStyle(Ink.sub)
+            .frame(height: 44)
+            Text((voice.dictating ? "Dictating the prompt" : voice.context.map { "To \($0.label)" } ?? "Switchboard picks the agent").uppercased())
+                .font(Face.section)
+                .tracking(0.84)
+                .foregroundStyle(Ink.mut)
+                .padding(.top, 36)
             transcript
-                .font(.title2.weight(.semibold))
-                .frame(maxWidth: .infinity, minHeight: 60, alignment: .topLeading)
+                .font(Face.geist(38, .semibold, relativeTo: .largeTitle))
+                .tracking(-1.3)
+                .minimumScaleFactor(0.4)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .padding(.top, 8)
                 .accessibilityIdentifier("transcript")
             if let notice = voice.notice {
-                Text(notice)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .accessibilityIdentifier("voiceNotice")
+                Note(text: notice).accessibilityIdentifier("voiceNotice").padding(.bottom, 12)
             }
             if voice.phase == .transcribing {
-                HStack {
-                    CircleButton(symbol: "xmark", label: "Cancel") { voice.cancel() }
-                    Spacer()
+                HStack(spacing: 10) {
                     ProgressView()
+                    Text("Transcribing with OpenAI…").font(Face.sub).foregroundStyle(Ink.sub)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.bottom, 28)
+                HStack {
+                    Button { voice.cancel() } label: { RoundIcon(symbol: "xmark") }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Cancel")
+                    Spacer()
                 }
             } else {
-                listeningControls
-            }
-        }
-        .padding(EdgeInsets(top: 20, leading: 20, bottom: 16, trailing: 20))
-        .background {
-            RoundedRectangle(cornerRadius: 38, style: .continuous)
-                .fill(solid ? AnyShapeStyle(Color(.systemBackground)) : AnyShapeStyle(.regularMaterial))
-                .shadow(color: .black.opacity(0.12), radius: 20, y: 12)
-        }
-    }
-
-    private var listeningControls: some View {
-        HStack {
-            CircleButton(symbol: "xmark", label: "Cancel") { voice.cancel() }
-            Spacer()
-            Button { voice.stop() } label: {
-                HStack(spacing: 10) {
-                    LevelBars(level: voice.level)
-                    Text("Done")
+                Wave(level: voice.level).frame(maxWidth: .infinity).padding(.bottom, 28)
+                HStack(spacing: 12) {
+                    Button { voice.cancel() } label: { RoundIcon(symbol: "xmark") }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Cancel")
+                    Button { voice.stop() } label: { Text("Done") }
+                        .buttonStyle(BigButtonStyle())
+                        .clipShape(Capsule())
+                        .accessibilityIdentifier("voiceDone")
+                    Button { voice.typeInstead() } label: { RoundIcon(symbol: "keyboard") }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Type instead")
                 }
-                .font(.headline)
-                .padding(.leading, 16)
-                .padding(.trailing, 20)
-                .frame(height: 44)
-                .background(Color(white: 0.11), in: Capsule())
-                .foregroundStyle(.white)
             }
-            .accessibilityIdentifier("voiceDone")
-            Spacer()
-            CircleButton(symbol: "keyboard", label: "Type instead") { voice.typeInstead() }
         }
+        .padding(.horizontal, 20)
+        .padding(.bottom, 12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Ink.sf.ignoresSafeArea())
     }
 
-    /// Finished words in full colour, the one still being recognised in grey.
+    /// Finished words in full colour, the one still being recognised quieter.
     private var transcript: Text {
         let words = voice.heard.split(separator: " ")
         if voice.cloud {
             let status = voice.phase == .transcribing ? "Transcribing with OpenAI…" : "Recording for OpenAI…"
-            guard !voice.text.isEmpty else { return Text(status).foregroundColor(.secondary) }
-            return Text(voice.text + "\n") + Text(status).foregroundColor(.secondary)
+            guard !voice.text.isEmpty else { return Text(status).foregroundColor(Ink.mut) }
+            return Text(voice.text + "\n") + Text(status).foregroundColor(Ink.mut)
         }
         guard let last = words.last else {
-            return Text(voice.text.isEmpty ? "Listening…" : voice.text).foregroundColor(voice.text.isEmpty ? .secondary : .primary)
+            return Text(voice.text.isEmpty ? "Listening…" : voice.text).foregroundColor(voice.text.isEmpty ? Ink.mut : Ink.ink)
         }
         let done = ([voice.text] + words.dropLast().map(String.init)).filter { !$0.isEmpty }.joined(separator: " ")
-        return Text(done.isEmpty ? "" : done + " ") + Text(String(last)).foregroundColor(.secondary)
+        return Text(done.isEmpty ? "" : done + " ").foregroundColor(Ink.ink) + Text(String(last)).foregroundColor(Ink.mut)
     }
 }
 
-struct LevelBars: View {
+/// Bars that follow how loud it is.
+struct Wave: View {
     let level: Float
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private static let shape: [Double] = [0.2, 0.35, 0.65, 0.95, 0.55, 0.8, 1, 0.45, 0.7, 0.9, 0.4, 0.6, 0.25, 0.15]
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1 / 15, paused: reduceMotion)) { ctx in
             let t = ctx.date.timeIntervalSinceReferenceDate
-            HStack(spacing: 3) {
-                ForEach(0..<5, id: \.self) { i in
-                    let wave = 0.55 + 0.45 * abs(sin(t * 9 + Double(i) * 1.7))
-                    let edge = i == 0 || i == 4 ? 0.6 : 1.0
+            HStack(spacing: 4) {
+                ForEach(Self.shape.indices, id: \.self) { i in
+                    let wave = 0.6 + 0.4 * abs(sin(t * 7 + Double(i) * 1.3))
                     Capsule()
-                        .fill(LinearGradient(colors: [Color(red: 0.55, green: 0.36, blue: 0.96), Color(red: 1, green: 0.3, blue: 0.55)], startPoint: .top, endPoint: .bottom))
-                        .frame(width: 3, height: 4 + 16 * min(1, Double(level) * wave * edge))
+                        .fill(Ink.ink)
+                        .frame(width: 4, height: 6 + 34 * Self.shape[i] * min(1, 0.25 + Double(level) * 1.6) * wave)
                 }
             }
-            .frame(height: 20)
+            .frame(height: 40)
             .animation(.linear(duration: 0.08), value: level)
         }
         .accessibilityHidden(true)
-    }
-}
-
-struct CircleButton: View {
-    let symbol: String
-    let label: String
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: 17, weight: .semibold))
-                .frame(width: 44, height: 44)
-                .background(Color(.systemGray5), in: Circle())
-                .foregroundStyle(Color(.label))
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(label)
     }
 }
 
