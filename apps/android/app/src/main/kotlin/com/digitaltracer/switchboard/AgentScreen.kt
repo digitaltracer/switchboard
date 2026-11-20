@@ -1,73 +1,350 @@
 package com.digitaltracer.switchboard
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Keyboard
+import androidx.compose.material.icons.outlined.Notifications
+import androidx.compose.material.icons.outlined.NotificationsOff
+import androidx.compose.material.icons.outlined.StopCircle
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.digitaltracer.switchboard.api.models.Changes
+import com.digitaltracer.switchboard.api.models.DeleteResponse
+import com.digitaltracer.switchboard.api.models.Session
+import com.digitaltracer.switchboard.core.AgentSpace
 import com.digitaltracer.switchboard.core.ConversationSource
+import com.digitaltracer.switchboard.core.HerdrSession
+import com.digitaltracer.switchboard.core.Turns
+import com.digitaltracer.switchboard.core.agentLabel
 import com.digitaltracer.switchboard.core.agentTarget
 import com.digitaltracer.switchboard.core.displayName
+import com.digitaltracer.switchboard.core.holding
+import com.digitaltracer.switchboard.core.sessionTarget
+import com.digitaltracer.switchboard.core.shownTitle
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+
+enum class AgentTab(val label: String) { Summary("Summary"), Conversation("Conversation"), Screen("Screen") }
 
 /**
- * A Herdr agent Switchboard didn't start: its latest turns, refreshed while on screen. A dialog on
- * its screen is answered from its card when Switchboard recognises it.
+ * One agent: Summary, Conversation and Screen as tabs. A session Switchboard started adds its
+ * approvals, changed files, details and a row of actions; one it didn't start has a message bar.
  */
 @Composable
-fun AgentScreen(model: AppModel, voice: Voice, listen: Listen, machine: String, name: String) {
-    val convo = rememberConversation(ConversationSource.Agent(machine, name), drawsTerminal = false)
-    val info = model.agents.firstOrNull { it.machineId == machine && it.name == name }
-    val label = info?.displayName ?: name
+fun AgentScreen(model: AppModel, voice: Voice, listen: Listen, source: ConversationSource) {
+    var tab by rememberSaveable(source) { mutableStateOf(AgentTab.Summary) }
+    val convo = rememberConversation(source)
+    var session by remember(source) { mutableStateOf<Session?>(null) }
+    var changes by remember(source) { mutableStateOf<Changes?>(null) }
+    // From the last action the user took; polls don't clear it.
+    var error by remember(source) { mutableStateOf<String?>(null) }
+    // The long-poll's own trouble, cleared once it gets through again.
+    var pollError by remember(source) { mutableStateOf<String?>(null) }
+    // What a delete did, kept on screen since the session leaves the lists.
+    var notice by remember(source) { mutableStateOf<String?>(null) }
+    var lifecycle by remember { mutableStateOf(false) }
+    var details by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val scroll = rememberScrollState()
 
-    LaunchedEffect(machine, name, model.wakes, model.foreground) { if (model.foreground) convo.follow(model) }
-    // Its status pill: only home refreshes agents otherwise, and home isn't showing now.
-    LaunchedEffect(machine, name, model.wakes, model.foreground) {
+    val sessionId = (source as? ConversationSource.Session)?.id
+    val agentRef = source as? ConversationSource.Agent
+    val info = agentRef?.let { a -> model.agents.firstOrNull { it.machineId == a.machine && it.name == a.name } }
+    val s = session
+    val machine = s?.machineId ?: agentRef?.machine.orEmpty()
+    val backend = s?.backend ?: info?.backend ?: "herdr"
+    val spaces = model.spaces(since = HerdrSession.startOfToday())
+    val space: AgentSpace? = when {
+        sessionId != null -> spaces.holding { it is HerdrSession.Agent.Task && it.session.id == sessionId }
+        agentRef != null -> spaces.holding { it is HerdrSession.Agent.Live && it.agent.machineId == agentRef.machine && it.agent.name == agentRef.name }
+        else -> null
+    }
+    val me = space?.agents?.firstOrNull {
+        (it is HerdrSession.Agent.Live && it.agent.name == agentRef?.name) || (it is HerdrSession.Agent.Task && it.session.id == sessionId)
+    }
+    val title = s?.label ?: me?.let { space.label(it) } ?: info?.displayName ?: agentRef?.name ?: "Session"
+    val kind = agentName(s?.agent ?: info?.kind)
+    val target = s?.let(::sessionTarget) ?: agentRef?.let { agentTarget(it.machine, it.name, title) }
+    val status = when {
+        target != null && AppModel.saidKey(target) in model.awaiting -> SessionStatus.sent
+        s != null -> SessionStatus.of(s)
+        else -> info?.let { SessionStatus.agent(it.agentStatus) }
+    }
+    val running = s?.lifecycle == "running"
+    val meta = listOfNotNull(kind, machine.ifEmpty { null }).joinToString(" · ")
+    val pane: Route.Decision? = when {
+        s != null -> s.agentName?.takeIf { s.lifecycle == "running" }?.let { Route.Decision(s.machineId, it, s.label, meta) }
+        agentRef != null -> Route.Decision(agentRef.machine, agentRef.name, title, meta)
+        else -> null
+    }
+    val watch = remember(pane?.machine, pane?.agent) { pane?.let { DialogWatch(it.machine, it.agent) } }
+
+    suspend fun loadChanges() {
+        val hub = model.hub ?: return
+        // Older runners don't list changes; the section just stays hidden.
+        if (sessionId != null) runCatching { hub.changes(sessionId) }.onSuccess { changes = it }
+    }
+
+    suspend fun refresh() {
+        val hub = model.hub ?: return
+        convo.refresh(hub)
+        if (sessionId == null) return
+        try {
+            session = hub.session(sessionId)
+            loadChanges()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            error = e.message
+        }
+    }
+
+    fun act(call: suspend () -> Unit) {
+        scope.launch {
+            try {
+                call()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                error = e.message
+            }
+            refresh()
+        }
+    }
+
+    // Long-polls until the screen goes away; each change also refreshes the changed files.
+    LaunchedEffect(source, model.wakes, model.foreground) {
+        if (sessionId == null) return@LaunchedEffect
+        pollError = null
+        var revision: Long? = null
+        while (model.foreground) {
+            val hub = model.hub ?: return@LaunchedEffect
+            try {
+                val next = hub.session(sessionId, after = revision)
+                val changed = next.revision != revision
+                session = next
+                revision = next.revision
+                pollError = null
+                if (changed) loadChanges()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                pollError = e.message
+                delay(3_000)
+            }
+        }
+    }
+    LaunchedEffect(source, model.wakes, model.foreground) { if (model.foreground) convo.follow(model) }
+    LaunchedEffect(tab) { convo.showTerminal(tab == AgentTab.Screen) }
+    LaunchedEffect(watch, model.wakes, model.foreground) { if (model.foreground) watch?.follow(model) }
+    // Its status chip: only home refreshes agents otherwise.
+    LaunchedEffect(source, model.wakes, model.foreground) {
+        if (agentRef == null) return@LaunchedEffect
         while (model.foreground) {
             model.refreshAgents()
             delay(5_000)
         }
     }
 
-    val target = agentTarget(machine, name, label)
-    Page(model.backLabel, model::pop, bottomBar = {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-            Spacer(Modifier.weight(1f))
-            MicButton(voice, 60.dp, "Talk to $label", "agentMic") { listen(target, false) }
-            Row(Modifier.weight(1f), horizontalArrangement = Arrangement.Center) {
-                BarIcon(Icons.Outlined.Keyboard, "Type a message to $label") { voice.type(target) }
-            }
-        }
-    }) {
-        Column(
-            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(start = 20.dp, end = 20.dp, bottom = 40.dp),
-            verticalArrangement = Arrangement.spacedBy(18.dp),
-        ) {
-            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                PageTitle(label)
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    info?.let { StatusPill(SessionStatus.agent(it.agentStatus)) }
-                    Text(listOfNotNull(info?.kind?.capitalized(), machine).joinToString(" · "), style = Type.subheadline, color = palette.secondary)
+    InboxPage(
+        top = {
+            if (tab == AgentTab.Summary) {
+                PageTop(model.backLabel, model::pop, meta)
+            } else {
+                PageTop(model.backLabel, model::pop) {
+                    Text(title, Modifier.weight(1f), style = Type.text.copy(fontWeight = FontWeight.Medium), color = palette.ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    status?.let { StatusChip(it) }
                 }
             }
-            info?.title?.takeIf { it.isNotEmpty() }?.let { Text(it, style = Type.subheadline, fontWeight = FontWeight.SemiBold, color = palette.label) }
-            DialogCard(model, machine, name, label)
-            model.said[AppModel.saidKey(agentTarget(machine, name, label))]?.let { SaidBubble(it) }
-            SummaryCard(convo) { model.path.add(Route.Conversation(ConversationSource.Agent(machine, name), label)) }
-            ConversationLinks(model, ConversationSource.Agent(machine, name), label, hasConversation = convo.unavailable == null)
+        },
+        bottom = {
+            if (s != null && tab == AgentTab.Summary) {
+                Column(Modifier.fillMaxWidth().background(palette.bg)) {
+                    Hairline()
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        ActionButton(
+                            if (running) Icons.Outlined.StopCircle else Icons.Outlined.Delete, if (running) "Stop" else "Delete",
+                            "stopOrDelete", enabled = s.lifecycle !in setOf("starting", "deleted"), destructive = true,
+                        ) { lifecycle = true }
+                        Spacer(Modifier.weight(1f))
+                        ActionButton(if (s.muted) Icons.Outlined.NotificationsOff else Icons.Outlined.Notifications, if (s.muted) "Muted" else "Notify") {
+                            act { model.hub?.mute(s.id, !s.muted) }
+                        }
+                        Spacer(Modifier.weight(1f))
+                        MicDisc(52.dp, "Talk to ${s.label}", "sessionMic", running) { listen(sessionTarget(s), false) }
+                        Spacer(Modifier.weight(1f))
+                        ActionButton(Icons.Outlined.Description, "Changes", enabled = changes?.files?.isNotEmpty() == true) {
+                            scope.launch { scroll.animateScrollTo(scroll.maxValue) }
+                        }
+                        Spacer(Modifier.weight(1f))
+                        ActionButton(Icons.Outlined.Keyboard, "Type", enabled = running) { voice.type(sessionTarget(s)) }
+                    }
+                }
+            } else {
+                AskBar(
+                    "Message ${s?.label ?: info?.agentLabel ?: title}, or / for skills", dark = tab == AgentTab.Screen,
+                    enabled = target != null && (s == null || running), type = { voice.type(target) }, speak = { listen(target, false) },
+                )
+            }
+        },
+    ) {
+        if (tab == AgentTab.Summary) {
+            Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 4.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(title, style = Type.h1, color = palette.ink, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    status?.let { StatusChip(it) }
+                    WhereTag(backend)
+                    s?.branch?.let { Text("branch $it", Modifier.weight(1f, fill = false), style = Type.mono(12.5f), color = palette.sub, maxLines = 1) }
+                    if (s?.muted == true) Icon(Icons.Outlined.NotificationsOff, "Muted", Modifier.size(16.dp), tint = palette.mut)
+                }
+            }
+            Spacer(Modifier.padding(top = 8.dp))
         }
+        TextTabs(AgentTab.entries.map { it to it.label }, tab) { tab = it }
+        when (tab) {
+            AgentTab.Conversation -> ConversationFeed(model, convo, kind ?: "Agent", status)
+            AgentTab.Screen -> Screen(convo)
+            AgentTab.Summary -> Column(Modifier.fillMaxSize().verticalScroll(scroll).padding(start = 20.dp, end = 20.dp, bottom = 24.dp)) {
+                listOfNotNull(error?.let { it to palette.bad }, notice?.let { it to palette.sub }, pollError?.let { it to palette.warn }, s?.error?.let { it to palette.bad })
+                    .forEach { (text, color) -> Note(text, Modifier.padding(top = 14.dp).then(if (text == notice) Modifier.testTag("deleteNotice") else Modifier), color) }
+                if (s?.hookFailed == true) Banner("It's stuck at a dialog Switchboard won't answer. Answer it at its terminal.", Modifier.padding(top = 14.dp))
+                target?.let { model.said[AppModel.saidKey(it)] }?.let { Box(Modifier.padding(top = 14.dp)) { SaidBubble(it) } }
+                s?.pendingApprovals?.forEach { a -> Box(Modifier.padding(top = 14.dp)) { ApprovalCard(model, a, s, decided = { refresh() }) } }
+                if (watch != null && pane != null) {
+                    Box(Modifier.padding(top = 14.dp)) { WaitingCard(watch, { model.path.add(pane) }) { tab = AgentTab.Screen } }
+                }
+                info?.shownTitle?.let {
+                    SectionHead("Working on")
+                    Text(it, style = Type.title3, color = palette.ink)
+                }
+                Latest(convo, { tab = AgentTab.Conversation }) { tab = AgentTab.Screen }
+                val c = changes
+                if (c != null && c.files.isNotEmpty()) {
+                    SectionHead(c.title(), action = if (s != null) ({ DetailsLink(details) { details = !details } }) else null)
+                    ChangesList(c)
+                    Hairline()
+                } else if (s != null) {
+                    SectionHead("Details", action = { DetailsLink(details, "Show", "Hide") { details = !details } })
+                }
+                if (details && s != null) {
+                    FieldRow("Project", s.projectId, first = true)
+                    FieldRow("Machine", "") {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Dot(if (s.machineStatus == "ready") palette.ok else palette.warn)
+                            Text("${s.machineId} · ${s.machineStatus}", style = Type.field, color = palette.sub)
+                        }
+                    }
+                    s.branch?.let { FieldRow("Branch", it, mono = true) }
+                    Hairline()
+                }
+                AtYourDesk(backend, machine, space, s?.herdrSession ?: info?.herdrSession, live = s?.live ?: true)
+            }
+        }
+    }
+
+    if (lifecycle && s != null) {
+        val delete = Triple<String, String?, () -> Unit>(
+            "Delete",
+            if (running) "Also removes its Herdr session. The worktree goes only if it is clean and merged. The branch is always kept."
+            else "Removes its Herdr session. The worktree goes only if it is clean and merged. The branch is always kept.",
+        ) { act { model.hub?.let { notice = describe(it.delete(s.id)) } } }
+        ChoiceSheet(
+            if (running) "Stop or delete ${s.label}?" else "Delete ${s.label}?",
+            listOfNotNull(
+                Triple<String, String?, () -> Unit>("Stop", "Ends the agent. The worktree and branch stay.") { act { model.hub?.stop(s.id) } }
+                    .takeIf { running },
+                delete,
+            ),
+        ) { lifecycle = false }
+    }
+}
+
+@Composable
+private fun DetailsLink(open: Boolean, show: String = "Details", hide: String = "Hide details", toggle: () -> Unit) {
+    Text(if (open) hide else show, Modifier.clickable(onClick = toggle).padding(start = 8.dp), style = Type.meta.copy(fontWeight = FontWeight.Medium), color = palette.ac)
+}
+
+/** The latest reply, its tags, and the ways into the whole conversation and the screen. */
+@Composable
+private fun Latest(convo: ConversationModel, conversation: () -> Unit, screen: () -> Unit) {
+    val latest = Turns.latest(convo.conversation.items)
+    SectionHead("Latest reply", latest.at?.let(Turns::time))
+    Column(Modifier.testTag("latest")) {
+        val why = convo.unavailable
+        val reply = latest.reply?.text
+        when {
+            convo.ended -> Note("This session has ended.", color = palette.sub)
+            why != null -> Note("No conversation to show ($why). Its screen is under Screen.", color = palette.sub)
+            !convo.conversation.isLoaded -> ConversationSkeleton(rows = 1)
+            reply != null -> Clamped(286.dp) { MarkdownText(reply) }
+            else -> Note("Nothing said yet.", color = palette.sub)
+        }
+    }
+    if (latest.tags.isNotEmpty()) Row(Modifier.padding(top = 14.dp)) { TagRow(latest.tags) }
+    Column(Modifier.padding(top = 18.dp)) {
+        if (convo.unavailable == null && !convo.ended) {
+            InboxRow("Read the whole conversation", modifier = Modifier.testTag("openConversation"), first = true, onClick = conversation, trailing = { Chevron() })
+        }
+        if (!convo.ended) {
+            InboxRow("See its terminal", modifier = Modifier.testTag("openScreen"), first = convo.unavailable != null, onClick = screen, trailing = { Chevron() })
+        }
+        Hairline()
+    }
+}
+
+/** Where it runs, the space to look under, and for a terminal the command to attach. */
+@Composable
+fun AtYourDesk(backend: String, machine: String, space: AgentSpace?, herdrSession: String?, live: Boolean = true) {
+    val app = backend == "hc"
+    SectionHead("At your desk")
+    FieldRow("Where", "${if (app) "Herdr app" else "Herdr terminal"} on $machine", first = true)
+    if (app) {
+        space?.key?.space?.let { FieldRow("Space", it) }
+    } else if (live) {
+        (space?.attach ?: herdrSession)?.let { attach ->
+            space?.key?.space?.let { FieldRow("Workspace", it) }
+            FieldRow("Attach", "") { SelectionContainer { Text("herdr session attach $attach", style = Type.mono(12.5f), color = palette.sub, maxLines = 1) } }
+        }
+    }
+    Hairline()
+}
+
+private fun describe(r: DeleteResponse): String {
+    val branch = r.branch?.let { " Branch $it is kept." }.orEmpty()
+    return when {
+        r.alreadyDeleted -> "Already deleted."
+        r.worktreeRemoved -> "Deleted, with its worktree.$branch"
+        r.keptBecause != null -> "Deleted. Its worktree was kept: ${r.keptBecause}.$branch"
+        else -> "Deleted.$branch"
     }
 }

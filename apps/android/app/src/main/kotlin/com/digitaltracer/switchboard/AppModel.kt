@@ -13,8 +13,8 @@ import com.digitaltracer.switchboard.api.models.Meta
 import com.digitaltracer.switchboard.api.models.Project
 import com.digitaltracer.switchboard.api.models.Session
 import com.digitaltracer.switchboard.api.models.TargetView
-import com.digitaltracer.switchboard.core.ConversationSource
-import com.digitaltracer.switchboard.core.HerdrSession
+import com.digitaltracer.switchboard.api.models.Machine
+import com.digitaltracer.switchboard.core.AgentSpace
 import com.digitaltracer.switchboard.core.DeviceKeys
 import com.digitaltracer.switchboard.core.Hub
 import com.digitaltracer.switchboard.core.HubError
@@ -42,14 +42,12 @@ import kotlinx.serialization.json.Json
 sealed interface Route {
     data class SessionPage(val id: String) : Route
     data class AgentPage(val machine: String, val name: String) : Route
-    data class HerdrSessionPage(val key: HerdrSession.Key) : Route
-    data object AllSessions : Route
+    data class Space(val key: AgentSpace.Key) : Route
     data class MachinePage(val machine: String) : Route
     data object Machines : Route
-    data object Projects : Route
     data object Settings : Route
-    /** [screen]: opens on the agent's screen instead of the conversation. */
-    data class Conversation(val source: ConversationSource, val title: String, val screen: Boolean = false) : Route
+    /** The dialog on an agent's screen, as its own page. [meta]: `Claude Code · mac`. */
+    data class Decision(val machine: String, val agent: String, val label: String, val meta: String?) : Route
 }
 
 /** The app's state: the pairing, the live session list and what the user is doing. */
@@ -107,6 +105,8 @@ class AppModel(context: Context, val keys: DeviceKeys) {
         private set
     var projects by mutableStateOf<List<Project>>(emptyList())
         private set
+    var machines by mutableStateOf<List<Machine>>(emptyList())
+        private set
 
     /**
      * Bumped each time the app comes back to the foreground; screens restart their polls on it,
@@ -155,23 +155,24 @@ class AppModel(context: Context, val keys: DeviceKeys) {
 
     val path = mutableStateListOf<Route>()
 
+    /** Home's tab, kept while a page is open on top of it. */
+    var homeTab by mutableStateOf(HomeTab.Now)
+
     fun pop() {
         if (path.isNotEmpty()) path.removeAt(path.lastIndex)
     }
 
-    /** What the back link says: the title of the screen underneath, as on iOS. */
+    /** What the back button is called: where it goes. */
     val backLabel: String
         get() = when (val under = path.getOrNull(path.size - 2)) {
-            null -> "Agents"
-            is Route.SessionPage -> sessions.firstOrNull { it.id == under.id }?.label ?: "Back"
-            is Route.AgentPage -> under.name
-            is Route.HerdrSessionPage -> HerdrSession.title(under.key.name)
-            Route.AllSessions -> "All sessions"
-            is Route.MachinePage -> under.machine
-            Route.Machines -> "Machines"
-            Route.Projects -> "Projects"
-            Route.Settings -> "Settings"
-            is Route.Conversation -> under.title
+            null -> "Back to Home"
+            is Route.SessionPage -> "Back to ${sessions.firstOrNull { it.id == under.id }?.label ?: "the session"}"
+            is Route.AgentPage -> "Back to ${under.name}"
+            is Route.Space -> "Back to ${under.key.space ?: under.key.session}"
+            is Route.MachinePage -> "Back to ${under.machine}"
+            Route.Machines -> "Back to machines"
+            Route.Settings -> "Back to settings"
+            is Route.Decision -> "Back to the question"
         }
 
     init {
@@ -260,6 +261,7 @@ class AppModel(context: Context, val keys: DeviceKeys) {
         agents = emptyList()
         ended = emptyList()
         projects = emptyList()
+        machines = emptyList()
         meta = null
         connected = false
         unreachable = false
@@ -381,6 +383,7 @@ class AppModel(context: Context, val keys: DeviceKeys) {
     /** With [activity], also each agent's last line, for home's tiles. */
     suspend fun refreshAgents(activity: Boolean = false) {
         val hub = hub ?: return
+        if (activity) runCatching { hub.machines() }.onSuccess { machines = it }
         runCatching { hub.agents(activity) }.onSuccess {
             agents = it.agents
             ended = it.ended.orEmpty()
@@ -389,9 +392,8 @@ class AppModel(context: Context, val keys: DeviceKeys) {
         }
     }
 
-    /** Every Herdr session with its agents, whoever started them. Ended agents count from [since], or all that are known when null. */
-    fun herdrSessions(machine: String? = null, since: Long?): List<HerdrSession> =
-        HerdrSession.group(sessions, agents, ended, machine, since)
+    /** Every space with its agents, the Herdr app's and the Herdr terminal's alike. */
+    fun spaces(machine: String? = null, since: Long?): List<AgentSpace> = AgentSpace.group(sessions, agents, ended, machine, since)
 
     // The session list, long-polled: the hub answers when something newer than our revision exists.
 
@@ -404,6 +406,7 @@ class AppModel(context: Context, val keys: DeviceKeys) {
                 try {
                     if (meta == null) meta = hub.meta()
                     if (projects.isEmpty()) runCatching { hub.projects() }.onSuccess { projects = it }
+                    if (machines.isEmpty()) runCatching { hub.machines() }.onSuccess { machines = it }
                     val list = hub.sessions(after = revision)
                     sessions = list.sessions
                     settleAwaiting()

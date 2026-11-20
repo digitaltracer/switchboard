@@ -1,13 +1,13 @@
 package com.digitaltracer.switchboard
 
 import android.view.HapticFeedbackConstants
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -15,24 +15,18 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.outlined.MicOff
-import androidx.compose.material.icons.outlined.MonitorHeart
+import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -47,23 +41,22 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.digitaltracer.switchboard.api.models.MessagePreview
+import com.digitaltracer.switchboard.api.models.Skill
+import com.digitaltracer.switchboard.api.models.TargetView
 import com.digitaltracer.switchboard.core.HubError
 import com.digitaltracer.switchboard.core.RouteOption
 import com.digitaltracer.switchboard.core.RouteOptions
+import com.digitaltracer.switchboard.core.SkillSearch
 import com.digitaltracer.switchboard.core.StartFlow
 import com.digitaltracer.switchboard.core.StartState
 import com.digitaltracer.switchboard.core.sessionTarget
-import com.digitaltracer.switchboard.api.models.Skill
-import com.digitaltracer.switchboard.api.models.TargetView
-import com.digitaltracer.switchboard.core.SkillSearch
-import androidx.compose.ui.text.font.FontFamily
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
@@ -185,106 +178,78 @@ fun SendSheet(model: AppModel, voice: Voice, listen: Listen) {
     ModalBottomSheet(
         onDismissRequest = { voice.finish() },
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-        containerColor = palette.background,
+        containerColor = palette.sf,
         shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
     ) {
-        Column(Modifier.imePadding().navigationBarsPadding()) {
-            Box(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, bottom = 12.dp)) {
-                Text("Cancel", Modifier.align(Alignment.CenterStart).clickable { voice.finish() }, style = Type.body, color = palette.accent)
-                Text("Ready to send", Modifier.align(Alignment.Center), style = Type.headline, color = palette.label)
+        Column(Modifier.fillMaxHeight(0.95f).imePadding().navigationBarsPadding()) {
+            Row(Modifier.fillMaxWidth().height(44.dp).padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Cancel", Modifier.clickable { voice.finish() }.padding(vertical = 10.dp), style = Type.field.copy(fontWeight = FontWeight.Medium), color = palette.ac)
+                Spacer(Modifier.weight(1f))
+                Text(current?.let { "To ${it.label}" } ?: "Review before sending", style = Type.meta, color = palette.mut, maxLines = 1)
             }
-            Column(
-                Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()).padding(horizontal = 20.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
-            ) {
-                voice.error?.let {
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Outlined.MicOff, null, Modifier.size(16.dp), tint = palette.secondary)
-                        Text(it, style = Type.footnote, color = palette.secondary)
-                    }
-                }
-                voice.notice?.let { Text(it, style = Type.footnote, color = palette.secondary) }
+            Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(top = 8.dp)) {
+                voice.error?.let { Banner(it, Modifier.padding(bottom = 12.dp)) }
+                voice.notice?.let { Note(it, Modifier.padding(bottom = 12.dp)) }
                 if (voice.retrying) {
-                    Row(Modifier.testTag("voiceRetrying"), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-                        Text("Transcribing with OpenAI…", style = Type.footnote, color = palette.secondary)
+                    Row(Modifier.padding(bottom = 12.dp).testTag("voiceRetrying"), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = palette.mut)
+                        Note("Transcribing with OpenAI…")
                     }
                 } else if (voice.canRetry) {
-                    Box(
-                        Modifier.height(36.dp).background(palette.fill, CircleShape).clickable { voice.retry() }
-                            .padding(horizontal = 16.dp).testTag("voiceRetry"),
-                        Alignment.Center,
-                    ) { Text("Retry", style = Type.subheadline, color = palette.accent) }
+                    BigButton("Retry", Modifier.fillMaxWidth().padding(bottom = 12.dp).testTag("voiceRetry"), ButtonKind.Outline) { voice.retry() }
                 }
-                val fieldStyle = Type.title3.copy(fontWeight = FontWeight.Normal, color = palette.label)
+                val skillsShown = SkillSearch.isTyping(voice.text)
+                val fieldStyle = (if (skillsShown) Type.mono(22f, FontWeight.Medium) else Type.draft).copy(color = palette.ink)
                 BasicTextField(
                     voice.text, { voice.text = it },
-                    Modifier.fillMaxWidth().card(16.dp, palette.card).padding(14.dp).heightIn(min = 56.dp)
-                        .focusRequester(focus).testTag("composeField"),
+                    Modifier.fillMaxWidth().heightIn(min = 40.dp).focusRequester(focus).testTag("composeField"),
                     textStyle = fieldStyle,
-                    cursorBrush = SolidColor(palette.accent),
-                    minLines = 2, maxLines = 6,
+                    cursorBrush = SolidColor(palette.ac),
+                    maxLines = 8,
                     decorationBox = { inner ->
                         if (voice.text.isEmpty()) {
-                            Text(current?.let { "Message ${it.label}" } ?: "Say or type what you want done", style = fieldStyle.copy(color = palette.tertiary))
+                            Text(current?.let { "Message ${it.label}" } ?: "Say or type what you want done", style = fieldStyle.copy(color = palette.mut))
                         }
                         inner()
                     },
                 )
-                if (SkillSearch.isTyping(voice.text) && current != null) {
+                if (skillsShown && current != null) {
                     SkillList(model, current, voice.text) { voice.text = "$it " }
                 }
                 if (shown.options.isNotEmpty()) {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(
-                            preview?.message ?: "Goes to", Modifier.padding(horizontal = 4.dp).testTag("previewMessage"),
-                            style = Type.footnote, fontWeight = FontWeight.SemiBold, color = palette.secondary,
-                        )
-                        Column(Modifier.fillMaxWidth().card(14.dp, palette.card)) {
-                            shown.options.forEachIndexed { i, o ->
-                                RouteRow(o, o.id == chosen?.id, i == 0) {
-                                    picked = o.id
-                                    requestId = UUID.randomUUID().toString()
-                                }
-                            }
-                            if (unoffered.isNotEmpty()) {
-                                NewTaskRow(unoffered) { p ->
-                                    newProject = p
-                                    picked = RouteOptions.newTask(p).id
-                                    requestId = UUID.randomUUID().toString()
-                                }
-                            }
+                    SectionHead(if (shown.options.size == 1) "Goes to" else "Where should this go?", top = 30.dp)
+                    preview?.message?.let { Note(it, Modifier.padding(bottom = 8.dp).testTag("previewMessage")) }
+                    shown.options.forEachIndexed { i, o ->
+                        RouteRow(o, o.id == chosen?.id, i == 0) {
+                            picked = o.id
+                            requestId = UUID.randomUUID().toString()
                         }
                     }
+                    if (unoffered.isNotEmpty()) {
+                        NewTaskRow(unoffered) { p ->
+                            newProject = p
+                            picked = RouteOptions.newTask(p).id
+                            requestId = UUID.randomUUID().toString()
+                        }
+                    }
+                    Hairline()
                 } else if (preview?.outcome == "refused") {
-                    Text(preview?.message.orEmpty(), style = Type.footnote, color = palette.secondary)
+                    Note(preview?.message.orEmpty(), Modifier.padding(top = 14.dp))
                 }
-                note?.let { Text(it, Modifier.testTag("composeNote"), style = Type.footnote, color = palette.secondary) }
+                note?.let { Note(it, Modifier.padding(top = 12.dp).testTag("composeNote"), palette.sub) }
             }
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Box(
-                    Modifier.size(50.dp).background(palette.fill, CircleShape).clickable { listen(voice.target, keepText = true) },
-                    Alignment.Center,
-                ) { Icon(Icons.Filled.Mic, "Keep talking", Modifier.size(22.dp), tint = palette.accent) }
-                val ready = chosen != null && !empty && !sending && !voice.retrying
-                Box(
-                    Modifier.weight(1f).height(50.dp).background(if (chosen == null || empty || voice.retrying) Color.Gray else palette.accent, CircleShape)
-                        .clickable(enabled = ready) { send() }.testTag("composeSend"),
-                    Alignment.Center,
-                ) {
-                    if (sending) {
-                        CircularProgressIndicator(Modifier.size(22.dp), color = Color.White, strokeWidth = 2.dp)
-                    } else {
-                        Text(
-                            chosen?.verb ?: if (empty) "Say or type something" else "Pick where this goes",
-                            style = Type.headline, color = Color.White, maxLines = 1,
-                        )
-                    }
-                }
+                RoundIcon(Icons.Outlined.Mic, "Keep talking") { listen(voice.target, keepText = true) }
+                BigButton(
+                    chosen?.verb ?: if (empty) "Say or type something" else "Pick where this goes",
+                    Modifier.weight(1f).testTag("composeSend"),
+                    enabled = chosen != null && !empty && !voice.retrying, busy = sending,
+                    shape = RoundedCornerShape(26.dp), icon = Icons.Filled.ArrowUpward,
+                ) { send() }
             }
         }
     }
@@ -295,22 +260,13 @@ fun SendSheet(model: AppModel, voice: Voice, listen: Listen) {
 private fun NewTaskRow(projects: List<String>, pick: (String) -> Unit) {
     var open by remember { mutableStateOf(false) }
     Box {
-        Column(Modifier.fillMaxWidth().clickable { open = true }.testTag("routeNewTask")) {
-            HorizontalDivider(Modifier.padding(start = 58.dp), 0.5.dp, palette.separator)
-            Row(Modifier.heightIn(min = 56.dp).padding(horizontal = 14.dp), verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(32.dp).background(palette.fill, RoundedCornerShape(9.dp)), Alignment.Center) {
-                    Icon(Icons.Filled.Add, null, Modifier.size(18.dp), tint = palette.label)
-                }
-                Spacer(Modifier.width(12.dp))
-                Column(Modifier.weight(1f)) {
-                    Text("New task in…", style = Type.body, fontWeight = FontWeight.SemiBold, color = palette.label, maxLines = 1)
-                    Text("Pick a project", style = Type.footnote, color = palette.secondary, maxLines = 1)
-                }
-            }
-        }
-        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+        RadioRow("New task in…", false, Modifier.testTag("routeNewTask"), onClick = { open = true }) { Note("Pick a project") }
+        DropdownMenu(open, { open = false }) {
             projects.forEach { p ->
-                DropdownMenuItem(text = { Text(p) }, onClick = { open = false; pick(p) }, modifier = Modifier.testTag("newTask-$p"))
+                DropdownMenuItem({ Text(p, style = Type.field) }, {
+                    open = false
+                    pick(p)
+                })
             }
         }
     }
@@ -318,26 +274,8 @@ private fun NewTaskRow(projects: List<String>, pick: (String) -> Unit) {
 
 @Composable
 private fun RouteRow(option: RouteOption, selected: Boolean, first: Boolean, pick: () -> Unit) {
-    Column(Modifier.fillMaxWidth().background(if (selected) palette.accent.copy(alpha = 0.06f) else Color.Transparent).clickable(onClick = pick)
-        .testTag("route-${option.id}")) {
-        if (!first) HorizontalDivider(Modifier.padding(start = 58.dp), 0.5.dp, palette.separator)
-        Row(Modifier.heightIn(min = 56.dp).padding(horizontal = 14.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                Modifier.size(32.dp).background(if (option.isNew) palette.fill else palette.accent.copy(alpha = 0.14f), RoundedCornerShape(9.dp)),
-                Alignment.Center,
-            ) {
-                Icon(
-                    if (option.isNew) Icons.Filled.Add else Icons.Outlined.MonitorHeart, null, Modifier.size(18.dp),
-                    tint = if (option.isNew) palette.label else palette.accent,
-                )
-            }
-            Spacer(Modifier.width(12.dp))
-            Column(Modifier.weight(1f)) {
-                Text(option.title, style = Type.body, fontWeight = FontWeight.SemiBold, color = palette.label, maxLines = 1)
-                Text(option.detail, style = Type.footnote, color = palette.secondary, maxLines = 1)
-            }
-            Icon(Icons.Filled.Check, null, Modifier.size(20.dp), tint = palette.accent.copy(alpha = if (selected) 1f else 0f))
-        }
+    RadioRow(option.title, selected, Modifier.testTag("route-${option.id}"), first = first, onClick = pick) {
+        Text(option.detail, style = Type.sub, color = palette.sub, maxLines = 1)
     }
 }
 
@@ -363,39 +301,33 @@ private fun SkillList(model: AppModel, target: TargetView, typed: String, pick: 
             error = e.message
         }
     }
-    Column(Modifier.fillMaxWidth().card(14.dp, palette.card)) {
+    Column(Modifier.fillMaxWidth()) {
         val all = skills
         when {
             all != null -> {
                 val shown = SkillSearch.filter(all, typed).take(30)
-                if (shown.isEmpty()) Text("No skill matches $typed.", Modifier.padding(14.dp), style = Type.footnote, color = palette.secondary)
+                SectionHead("Skills matching ${typed.trim()}", "${shown.size}", top = 30.dp)
+                if (shown.isEmpty()) StateRow("No skill matches $typed.")
                 shown.forEachIndexed { i, skill ->
-                    Column(Modifier.fillMaxWidth().clickable { pick(skill.name) }.testTag("skill-${skill.name}")) {
-                        if (i > 0) HorizontalDivider(Modifier.padding(start = 14.dp), thickness = 0.5.dp, color = palette.separator)
-                        Column(Modifier.heightIn(min = 44.dp).padding(horizontal = 14.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Text(skill.name, style = Type.callout, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.SemiBold, color = palette.label)
-                                sourceLabel(skill.source)?.let { Text(it, style = Type.caption, fontWeight = FontWeight.SemiBold, color = palette.secondary) }
-                            }
-                            if (skill.description.isNotEmpty()) {
-                                Text(skill.description, style = Type.footnote, color = palette.secondary, maxLines = 2)
-                            }
-                        }
-                    }
+                    InboxRow(
+                        skill.name, skill.description.ifEmpty { null }, Modifier.testTag("skill-${skill.name}"), first = i == 0,
+                        onClick = { pick(skill.name) },
+                        trailing = { sourceLabel(skill.source)?.let { Text(it, style = Type.meta, color = palette.mut) } },
+                    )
                 }
+                Hairline()
+                Note("Tapping a skill puts its name in the message. Nothing is sent until you tap Send.", Modifier.padding(top = 12.dp))
             }
-            error != null -> Text("Couldn't list its skills: $error", Modifier.padding(14.dp), style = Type.footnote, color = palette.secondary)
-            else -> Row(Modifier.padding(14.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-                Text("Listing its skills…", style = Type.footnote, color = palette.secondary)
-            }
+            error != null -> StateRow("Couldn't list its skills: $error", error = true)
+            else -> StateRow("Listing its skills…", busy = true)
         }
     }
 }
 
 private fun sourceLabel(source: String): String? = when (source) {
-    "repo" -> "THIS REPO"
-    "plugin" -> "PLUGIN"
-    "builtin" -> "BUILT IN"
+    "repo" -> "this repo"
+    "plugin" -> "plugin"
+    "builtin" -> "built in"
+    "user" -> "yours"
     else -> null
 }

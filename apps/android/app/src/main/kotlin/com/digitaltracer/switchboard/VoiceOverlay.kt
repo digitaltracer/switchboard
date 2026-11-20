@@ -18,7 +18,6 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -27,13 +26,14 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -42,10 +42,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.outlined.Keyboard
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -54,24 +52,18 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.blur
-import androidx.compose.ui.draw.scale
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.digitaltracer.switchboard.api.models.TargetView
@@ -108,90 +100,68 @@ fun rememberListen(voice: Voice): Listen {
     }
 }
 
-/** The mic, which fades into the listening panel while voice mode is on. */
-@Composable
-fun MicButton(voice: Voice, size: Dp, label: String, tag: String, enabled: Boolean = true, onClick: () -> Unit) {
-    val listening = voice.phase == Voice.Phase.Listening || voice.phase == Voice.Phase.Transcribing
-    val shown by animateFloatAsState(if (listening) 0f else 1f, tween(if (listening) 200 else 250, if (listening) 0 else 200), label = "mic")
-    Box(
-        Modifier.size(size).scale(0.7f + 0.3f * shown).alpha(shown * if (enabled) 1f else 0.4f)
-            .shadow(12.dp, CircleShape, ambientColor = palette.accent, spotColor = palette.accent)
-            .background(palette.accent, CircleShape)
-            .clickable(enabled = enabled, onClick = onClick)
-            .semantics { contentDescription = label }.testTag(tag),
-        Alignment.Center,
-    ) {
-        Icon(Icons.Filled.Mic, null, Modifier.size(size * 0.42f), tint = Color.White)
-    }
-}
-
-@Composable
-fun CircleButton(icon: ImageVector, label: String, size: Dp = 44.dp, background: Color = palette.fill, tag: String? = null, onClick: () -> Unit) {
-    Box(
-        Modifier.size(size).background(background, CircleShape).clickable(onClick = onClick)
-            .semantics { contentDescription = label }.then(if (tag != null) Modifier.testTag(tag) else Modifier),
-        Alignment.Center,
-    ) {
-        Icon(icon, null, Modifier.size(22.dp), tint = palette.label)
-    }
-}
-
-/** Everything voice mode draws over the app: the edge glow and the listening panel. */
+/** Everything voice mode draws over the app: the listening page and the edge glow. */
 @Composable
 fun VoiceOverlay(voice: Voice) {
     val listening = voice.phase == Voice.Phase.Listening
     val shown = listening || voice.phase == Voice.Phase.Transcribing
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
-        if (shown) {
-            // A stray tap never throws away a recording that's already uploading.
-            Box(Modifier.fillMaxSize().clickable(remember { MutableInteractionSource() }, null) { if (listening) voice.cancel() })
-        }
-        EdgeGlow(listening, voice.level)
+    Box(Modifier.fillMaxSize()) {
         AnimatedVisibility(
             shown,
-            enter = fadeIn(tween(300)) + scaleIn(tween(300), 0.9f) + slideInVertically(tween(300)) { it / 4 },
-            exit = fadeOut(tween(200)) + scaleOut(tween(200), 0.9f) + slideOutVertically(tween(200)) { it / 4 },
+            enter = fadeIn(tween(300)) + scaleIn(tween(300), 0.96f) + slideInVertically(tween(300)) { it / 8 },
+            exit = fadeOut(tween(200)) + scaleOut(tween(200), 0.96f),
         ) {
             ListeningPanel(voice)
+        }
+        EdgeGlow(listening, voice.level)
+    }
+}
+
+/** What's being heard, full screen: the words as they come, a level meter, then Cancel, Done and Type instead. */
+@Composable
+private fun ListeningPanel(voice: Voice) {
+    Column(
+        Modifier.fillMaxSize().background(palette.sf).clickable(remember { MutableInteractionSource() }, null) {}
+            .windowInsetsPadding(WindowInsets.systemBars).padding(horizontal = 20.dp).padding(bottom = 12.dp),
+    ) {
+        Row(Modifier.height(44.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Dot(palette.bad)
+            Text(if (voice.cloud) "Recording for OpenAI" else "Listening on this phone", style = Type.meta.copy(fontWeight = FontWeight.Medium), color = palette.sub)
+        }
+        Text(
+            (if (voice.dictating) "Dictating the prompt" else voice.target?.let { "To ${it.label}" } ?: "Switchboard picks the agent").uppercase(),
+            Modifier.padding(top = 36.dp), style = Type.section, color = palette.mut,
+        )
+        Column(Modifier.weight(1f).padding(top = 8.dp).verticalScroll(rememberScrollState())) { Transcript(voice) }
+        voice.notice?.let { Note(it, Modifier.padding(bottom = 12.dp).testTag("voiceNotice")) }
+        if (voice.phase == Voice.Phase.Transcribing) {
+            Row(Modifier.fillMaxWidth().padding(bottom = 28.dp), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(Modifier.size(20.dp), color = palette.mut, strokeWidth = 2.dp)
+                Text("Transcribing with OpenAI…", Modifier.padding(start = 10.dp), style = Type.sub, color = palette.sub)
+            }
+            RoundIcon(Icons.Filled.Close, "Cancel") { voice.cancel() }
+        } else {
+            Wave(voice.level)
+            Row(Modifier.fillMaxWidth().padding(top = 28.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                RoundIcon(Icons.Filled.Close, "Cancel") { voice.cancel() }
+                BigButton("Done", Modifier.weight(1f).testTag("voiceDone"), shape = RoundedCornerShape(26.dp)) { voice.stop() }
+                RoundIcon(Icons.Outlined.Keyboard, "Type instead") { voice.typeInstead() }
+            }
         }
     }
 }
 
-/** What's being heard, with Done to stop listening, ✕ to cancel and the keyboard to type instead. */
+/** Bars that follow how loud it is. */
 @Composable
-private fun ListeningPanel(voice: Voice) {
-    Column(
-        Modifier.windowInsetsPadding(WindowInsets.navigationBars).padding(10.dp).fillMaxWidth()
-            .shadow(20.dp, RoundedCornerShape(38.dp))
-            .background(palette.card, RoundedCornerShape(38.dp))
-            .clickable(remember { MutableInteractionSource() }, null) {}
-            .padding(start = 20.dp, end = 20.dp, top = 20.dp, bottom = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
-    ) {
-        Text(
-            voice.target?.let { "To ${it.label}" } ?: "Switchboard picks the agent",
-            style = Type.footnote, fontWeight = FontWeight.SemiBold, color = palette.secondary,
-        )
-        Transcript(voice)
-        voice.notice?.let { Text(it, Modifier.testTag("voiceNotice"), style = Type.footnote, color = palette.secondary) }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            CircleButton(Icons.Filled.Close, "Cancel") { voice.cancel() }
-            Spacer(Modifier.weight(1f))
-            if (voice.phase == Voice.Phase.Transcribing) {
-                CircularProgressIndicator(Modifier.size(22.dp), color = palette.accent, strokeWidth = 2.dp)
-                return@Row
-            }
-            Row(
-                Modifier.height(44.dp).background(Color(0xFF1C1C1C), CircleShape).clickable { voice.stop() }
-                    .padding(start = 16.dp, end = 20.dp).testTag("voiceDone"),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                LevelBars(voice.level)
-                Text("Done", style = Type.headline, color = Color.White)
-            }
-            Spacer(Modifier.weight(1f))
-            CircleButton(Icons.Outlined.Keyboard, "Type instead") { voice.typeInstead() }
+private fun Wave(level: Float) {
+    val t by rememberInfiniteTransition(label = "wave").animateFloat(
+        0f, 1000f, infiniteRepeatable(tween(1_000_000, easing = LinearEasing), RepeatMode.Restart), label = "t",
+    )
+    val shape = listOf(0.2f, 0.35f, 0.65f, 0.95f, 0.55f, 0.8f, 1f, 0.45f, 0.7f, 0.9f, 0.4f, 0.6f, 0.25f, 0.15f)
+    Row(Modifier.fillMaxWidth().height(40.dp), horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally), verticalAlignment = Alignment.CenterVertically) {
+        shape.forEachIndexed { i, h ->
+            val wave = 0.6f + 0.4f * abs(sin(t * 7 + i * 1.3f))
+            Box(Modifier.width(4.dp).height((6 + 34 * h * minOf(1f, 0.25f + level * 1.6f) * wave).dp).background(palette.ink, CircleShape))
         }
     }
 }
@@ -200,45 +170,30 @@ private fun ListeningPanel(voice: Voice) {
 @Composable
 private fun Transcript(voice: Voice) {
     val words = voice.heard.split(" ").filter { it.isNotEmpty() }
-    val style = Type.title3.copy(fontSize = 22.sp, lineHeight = 28.sp, fontWeight = FontWeight.SemiBold)
+    val style = Type.state.copy(fontSize = 38.sp, lineHeight = 41.sp)
     val text = if (voice.cloud) {
         buildAnnotatedString {
             if (voice.text.isNotEmpty()) {
-                withStyle(SpanStyle(color = palette.label)) { append(voice.text + "\n") }
+                withStyle(SpanStyle(color = palette.ink)) { append(voice.text + "\n") }
             }
-            withStyle(SpanStyle(color = palette.secondary)) {
+            withStyle(SpanStyle(color = palette.mut)) {
                 append(if (voice.phase == Voice.Phase.Transcribing) "Transcribing with OpenAI…" else "Recording for OpenAI…")
             }
         }
     } else if (words.isEmpty()) {
         buildAnnotatedString {
-            withStyle(SpanStyle(color = if (voice.text.isEmpty()) palette.secondary else palette.label)) {
+            withStyle(SpanStyle(color = if (voice.text.isEmpty()) palette.mut else palette.ink)) {
                 append(voice.text.ifEmpty { "Listening…" })
             }
         }
     } else {
         val done = (listOf(voice.text) + words.dropLast(1)).filter { it.isNotEmpty() }.joinToString(" ")
         buildAnnotatedString {
-            withStyle(SpanStyle(color = palette.label)) { append(if (done.isEmpty()) "" else "$done ") }
-            withStyle(SpanStyle(color = palette.secondary)) { append(words.last()) }
+            withStyle(SpanStyle(color = palette.ink)) { append(if (done.isEmpty()) "" else "$done ") }
+            withStyle(SpanStyle(color = palette.mut)) { append(words.last()) }
         }
     }
     Text(text, Modifier.fillMaxWidth().heightIn(min = 60.dp).testTag("transcript"), style = style)
-}
-
-@Composable
-fun LevelBars(level: Float) {
-    val t by rememberInfiniteTransition(label = "bars").animateFloat(
-        0f, 1000f, infiniteRepeatable(tween(1_000_000, easing = LinearEasing), RepeatMode.Restart), label = "t",
-    )
-    val brush = Brush.verticalGradient(listOf(Color(0xFF8C5CF5), Color(0xFFFF4D8C)))
-    Row(Modifier.height(20.dp), horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.CenterVertically) {
-        repeat(5) { i ->
-            val wave = 0.55f + 0.45f * abs(sin(t * 9 + i * 1.7f))
-            val edge = if (i == 0 || i == 4) 0.6f else 1f
-            Box(Modifier.width(3.dp).height((4 + 16 * minOf(1f, level * wave * edge)).dp).background(brush, CircleShape))
-        }
-    }
 }
 
 /** The light along the screen's edge while listening, louder speech brighter. */

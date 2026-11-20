@@ -1,42 +1,25 @@
 package com.digitaltracer.switchboard
 
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxScope
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.navigationBars
-import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.outlined.Keyboard
-import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
-import com.digitaltracer.switchboard.api.models.TargetView
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Computer
-import androidx.compose.material.icons.outlined.Folder
-import androidx.compose.material.icons.outlined.Inbox
-import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material.icons.outlined.WifiOff
+import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -51,18 +34,25 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import com.digitaltracer.switchboard.api.models.Approval
+import com.digitaltracer.switchboard.api.models.Session
+import com.digitaltracer.switchboard.api.models.TargetView
+import com.digitaltracer.switchboard.core.AgentSpace
+import com.digitaltracer.switchboard.core.ConversationSource
 import com.digitaltracer.switchboard.core.FallbackPacer
 import com.digitaltracer.switchboard.core.HerdrSession
 import com.digitaltracer.switchboard.core.TileLines
 import com.digitaltracer.switchboard.core.agentStatus
 import com.digitaltracer.switchboard.core.machineId
+import com.digitaltracer.switchboard.core.nameInSpace
 import com.digitaltracer.switchboard.core.needsYou
-import com.digitaltracer.switchboard.core.shortName
+import com.digitaltracer.switchboard.core.title
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -75,58 +65,81 @@ fun PairedRoot(model: AppModel, voice: Voice) {
     Box(Modifier.fillMaxSize()) {
         when (val route = model.path.lastOrNull()) {
             null -> HomeScreen(model, voice, listen)
-            is Route.SessionPage -> SessionScreen(model, voice, listen, route.id)
-            is Route.AgentPage -> AgentScreen(model, voice, listen, route.machine, route.name)
-            is Route.HerdrSessionPage -> HerdrSessionScreen(model, route.key)
-            Route.AllSessions -> AllSessionsScreen(model)
-            is Route.MachinePage -> AllSessionsScreen(model, route.machine)
+            is Route.SessionPage -> AgentScreen(model, voice, listen, ConversationSource.Session(route.id))
+            is Route.AgentPage -> AgentScreen(model, voice, listen, ConversationSource.Agent(route.machine, route.name))
+            is Route.Decision -> DecisionScreen(model, route)
+            is Route.Space -> SpaceScreen(model, route.key)
+            is Route.MachinePage -> MachineSpacesScreen(model, route.machine)
             Route.Machines -> MachinesScreen(model)
-            Route.Projects -> ProjectsScreen(model)
             Route.Settings -> SettingsScreen(model)
-            is Route.Conversation -> ConversationScreen(model, voice, listen, route.source, route.title, route.screen)
         }
         model.banner?.let { b ->
             LaunchedEffect(b) {
                 delay(6_000)
                 if (model.banner == b) model.banner = null
             }
-            Text(
+            Banner(
                 b,
                 Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(horizontal = 16.dp, vertical = 8.dp)
-                    .card(20.dp, palette.card).clickable { model.banner = null }.padding(horizontal = 14.dp, vertical = 10.dp)
-                    .testTag("banner"),
-                style = Type.footnote, fontWeight = FontWeight.Medium, color = palette.label,
+                    .shadow(10.dp, androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
+                    .clickable { model.banner = null }.testTag("banner"),
             )
         }
         VoiceOverlay(voice)
     }
-    if (voice.phase == Voice.Phase.Review) SendSheet(model, voice, listen)
+    if (voice.phase == Voice.Phase.Review && !voice.dictating) SendSheet(model, voice, listen)
 }
 
-/** Home: what needs you, what's running, then lists. */
+enum class HomeTab(val label: String) { Now("Now"), Spaces("Spaces"), Projects("Projects") }
+
+/** A live agent and the space it's in. */
+private data class Item(val agent: HerdrSession.Agent, val space: AgentSpace) {
+    val label get() = space.label(agent)
+    val id: String
+        get() = when (agent) {
+            is HerdrSession.Agent.Task -> agent.session.id
+            is HerdrSession.Agent.Live -> "${agent.agent.machineId}/${agent.agent.name}"
+            is HerdrSession.Agent.Ended -> "${agent.agent.machineId}/${agent.agent.name}/${agent.agent.endedAt}"
+        }
+}
+
+/**
+ * Home: the hub's state, a sentence saying what needs you, then Now, Spaces and Projects. The ask
+ * bar stays at the bottom: plus to start a session, a tap to type, the mic to speak.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(model: AppModel, voice: Voice, listen: Listen) {
-    val waiting = model.sessions.filter { it.pendingApprovals.isNotEmpty() }
-    val groups = model.herdrSessions(since = HerdrSession.startOfToday())
-    val busy = busyTiles(groups)
-    // The last line each busy agent said, by tile id.
-    val lastLines = remember { mutableStateMapOf<String, String>() }
-    val scope = rememberCoroutineScope()
+    val tab = model.homeTab
+    var starting by remember { mutableStateOf<String?>(null) }
     var refreshing by remember { mutableStateOf(false) }
-    var starting by remember { mutableStateOf(false) }
-
+    val scope = rememberCoroutineScope()
+    // The last line each busy agent said, by item id.
+    val lastLines = remember { mutableStateMapOf<String, String>() }
     val pacer = remember { FallbackPacer() }
+
+    val spaces = model.spaces(since = HerdrSession.startOfToday())
+    val approvals: List<Pair<Session, Approval>> =
+        model.sessions.flatMap { s -> s.pendingApprovals.map { s to it } }.sortedBy { it.second.deadline }
+    val live = spaces.flatMap { sp -> sp.live.map { Item(it, sp) } }
+    val waiting = live.filter { i ->
+        i.agent.needsYou && (i.agent !is HerdrSession.Agent.Task || i.agent.session.pendingApprovals.isEmpty())
+    }
+    val working = live.filter { it.agent.agentStatus == "working" }
+    val since = HerdrSession.startOfToday()
+    val finished = live.filter { it.agent.agentStatus == "done" } +
+        spaces.flatMap { sp -> sp.ended.filter { it is HerdrSession.Agent.Task && it.session.updatedAt >= since }.map { Item(it, sp) } }
 
     LaunchedEffect(model.wakes, model.foreground) {
         while (model.foreground) {
             model.refreshAgents(activity = true)
             val hub = model.hub ?: break
-            // Each tile's line comes from the hub's activity list; where that doesn't cover its machine, from
+            // Each row's line comes from the hub's activity list; where that doesn't cover its machine, from
             // the conversation at most every 30 s. Reading the terminal would scroll it on the Mac.
-            // The tiles are worked out after the refresh, not from the last composition, which predates it.
             var reads = 0
-            for (t in busyTiles(model.herdrSessions(since = HerdrSession.startOfToday()))) {
+            val now = model.spaces(since = HerdrSession.startOfToday()).flatMap { sp -> sp.live.map { Item(it, sp) } }
+                .filter { it.agent.agentStatus == "working" || it.agent.agentStatus == "done" }
+            for (t in now) {
                 when (val known = model.tileLines?.line(t.agent) ?: TileLines.Line.Unknown) {
                     is TileLines.Line.Known -> {
                         val line = known.line
@@ -149,188 +162,205 @@ fun HomeScreen(model: AppModel, voice: Voice, listen: Listen) {
         }
     }
 
-    Page(back = null, actions = {
-        BarIcon(Icons.Filled.Add, "Start a session", "startButton") { starting = true }
-        BarIcon(Icons.Outlined.Settings, "Settings", "devicesButton") { model.path.add(Route.Settings) }
-    }) {
-      Box(Modifier.fillMaxSize()) {
+    InboxPage(
+        top = {
+            Row(
+                Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.statusBars).height(44.dp).padding(start = 20.dp, end = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Row(Modifier.weight(1f).testTag("hubState"), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val (dot, text) = when {
+                        model.connected -> palette.ok to hubLine(model)
+                        model.unreachable -> palette.warn to "Can’t reach the hub · retrying"
+                        else -> palette.mut to "Connecting…"
+                    }
+                    Dot(dot)
+                    Text(text, style = Type.meta.copy(fontWeight = FontWeight.Medium), color = palette.sub, maxLines = 1)
+                }
+                Box(
+                    Modifier.size(44.dp).clickable { model.path.add(Route.Settings) }.semantics { contentDescription = "Settings" }.testTag("devicesButton"),
+                    Alignment.Center,
+                ) { Icon(Icons.Outlined.Tune, null, Modifier.size(22.dp), tint = palette.ink) }
+            }
+        },
+        bottom = {
+            AskBar("Say or type what you want done", start = { starting = "" }, type = { voice.type(null) }, speak = { listen(null, false) })
+        },
+    ) {
+        val headline = when (tab) {
+            HomeTab.Now -> {
+                val needs = approvals.size + waiting.size
+                if (needs == 0 && live.isEmpty() && finished.isEmpty()) {
+                    stateText("Nothing running yet.", "Say what you want done.")
+                } else {
+                    stateText(
+                        if (needs == 0) "Nothing needs you." else "$needs ${if (needs == 1) "thing needs" else "things need"} you.",
+                        if (working.isEmpty()) "Nothing working." else "${working.size} ${if (working.size == 1) "agent" else "agents"} working.",
+                    )
+                }
+            }
+            HomeTab.Spaces -> {
+                val all = model.spaces(since = null)
+                val liveCount = all.count { !it.isEnded }
+                val need = all.count { it.glyph == Glyph.Need }
+                if (liveCount == 0) stateText("No spaces live.", if (all.isEmpty()) null else "${all.size} ended.")
+                else stateText("$liveCount ${if (liveCount == 1) "space" else "spaces"} live.", if (need == 0) "None need you." else "$need need${if (need == 1) "s" else ""} you.")
+            }
+            HomeTab.Projects -> stateText("${model.projects.size} ${if (model.projects.size == 1) "project" else "projects"}.", "Tap one to start.")
+        }
+        StateLine(headline, Modifier.padding(start = 20.dp, end = 20.dp, top = 8.dp).testTag("headline"))
+        Spacer(Modifier.height(14.dp))
+        TextTabs(HomeTab.entries.map { it to it.label }, tab) { model.homeTab = it }
         PullToRefreshBox(
             refreshing,
             {
                 scope.launch {
                     refreshing = true
                     model.startPolling()
-                    model.refreshAgents()
+                    model.refreshAgents(activity = true)
                     refreshing = false
                 }
             },
-            Modifier.fillMaxSize(),
+            Modifier.weight(1f).fillMaxWidth(),
         ) {
-            LazyColumn(
-                Modifier.fillMaxSize().testTag("sessionsList"),
-                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 170.dp),
-                verticalArrangement = Arrangement.spacedBy(24.dp),
-            ) {
-                item {
-                    Column {
-                        LargeTitle("Agents", horizontal = 0)
-                        Summary(model.connected, model.unreachable, waiting.size, groups.count { !it.isEnded }, busy.count { it.agent.agentStatus == "working" })
-                    }
-                }
-                model.lastSent?.takeIf { System.currentTimeMillis() - it.at < 600_000 }?.let { sent ->
-                    item { SentCard(sent) { t -> open(model, t) } }
-                }
-                for (s in waiting) {
-                    items(s.pendingApprovals, key = { it.id }) { a ->
-                        ApprovalCard(model, a, s, open = { model.path.add(Route.SessionPage(s.id)) })
-                    }
-                }
-                if (busy.isNotEmpty()) {
-                    item {
-                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Text("Busy now", style = Type.title3, color = palette.label)
-                            LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                                items(busy, key = { it.id }) { t ->
-                                    BusyTile(t, lastLines[t.id]) { t.agent.route?.let { model.path.add(it) } }
-                                }
-                            }
-                        }
-                    }
-                }
-                if (groups.isEmpty()) item { Empty() }
-                if (groups.isNotEmpty()) {
-                    item {
-                        val machines = groups.map { it.key.machine }.toSet().size
-                        InsetGroup("Sessions") {
-                            groups.forEachIndexed { i, g -> SessionRow(model, g, machines > 1, i == 0) }
-                        }
-                    }
-                }
-                item {
-                    InsetGroup("Browse") {
-                        ListRow(Icons.Outlined.Inbox, palette.secondary, "All sessions", null, "${model.herdrSessions(since = null).size}", true) {
-                            model.path.add(Route.AllSessions)
-                        }
-                        ListRow(Icons.Outlined.Computer, palette.accent, "Machines", null, "", false) { model.path.add(Route.Machines) }
-                        ListRow(Icons.Outlined.Folder, palette.accent, "Projects", null, "", false) { model.path.add(Route.Projects) }
-                    }
+            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 24.dp)) {
+                when (tab) {
+                    HomeTab.Now -> Now(model, voice, listen, approvals, waiting, working, finished, live.isEmpty(), lastLines) { model.homeTab = it }
+                    HomeTab.Spaces -> SpacesList(model)
+                    HomeTab.Projects -> ProjectsList(model) { starting = it }
                 }
             }
         }
-        Dock(voice, listen)
-      }
     }
-    if (starting) {
-        StartSheet(model) { id ->
-            starting = false
+    starting?.let { project ->
+        StartSheet(model, voice, project.ifEmpty { null }) { id ->
+            starting = null
             id?.let { model.path.add(Route.SessionPage(it)) }
+        }
+    }
+}
+
+private fun hubLine(model: AppModel): String {
+    val m = model.machines
+    if (m.size == 1) return "${m[0].id} · connected"
+    val d = m.firstOrNull { it.default }
+    if (d != null && m.size > 1) return "${d.id} and ${m.size - 1} more · connected"
+    return "Connected"
+}
+
+@Composable
+private fun Now(
+    model: AppModel, voice: Voice, listen: Listen,
+    approvals: List<Pair<Session, Approval>>, waiting: List<Item>, working: List<Item>, finished: List<Item>,
+    nothingLive: Boolean, lastLines: Map<String, String>, switchTab: (HomeTab) -> Unit,
+) {
+    model.lastSent?.takeIf { System.currentTimeMillis() - it.at < 600_000 }?.let { sent ->
+        InboxRow(
+            if (sent.started) "Started ${sent.target?.label ?: "a session"}" else "Sent to ${sent.target?.label ?: "the hub"}",
+            "“${sent.text}”", Modifier.padding(bottom = 6.dp).testTag("sentCard"), first = true,
+            onClick = { sent.target?.let { open(model, it) } },
+            leading = { StatusGlyph(Glyph.Done) },
+            trailing = { Text(Ago.short(sent.at), style = Type.meta, color = palette.mut) },
+        )
+    }
+    approvals.firstOrNull()?.let { (s, a) ->
+        Box(Modifier.padding(bottom = 6.dp)) { ApprovalCard(model, a, s, open = { model.path.add(Route.SessionPage(s.id)) }) }
+    }
+    approvals.drop(1).forEachIndexed { i, (s, a) ->
+        InboxRow(
+            when (a.kind) {
+                "question" -> "${s.label} has a question"
+                "plan" -> "${s.label} has a plan for you"
+                else -> "${s.label} wants to run"
+            },
+            a.inputText, subtitleMono = a.kind == "permission", first = i == 0,
+            onClick = { model.path.add(Route.SessionPage(s.id)) },
+            leading = { StatusGlyph(Glyph.Need) }, trailing = { WhereTag(s.backend ?: "herdr") },
+        )
+    }
+    waiting.forEachIndexed { i, item ->
+        val a = item.agent
+        val subtitle = when {
+            a is HerdrSession.Agent.Task && a.session.hookFailed -> "Stuck at a dialog · answer it at its terminal"
+            else -> a.title?.takeIf { it != a.nameInSpace }?.let { "Waiting for you · $it" } ?: "Waiting for you"
+        }
+        InboxRow(
+            item.label, subtitle, Modifier.testTag("needs-${item.label}"), subtitleColor = palette.warn, first = i == 0 && approvals.size <= 1,
+            onClick = {
+                when (a) {
+                    is HerdrSession.Agent.Live -> model.path.add(
+                        Route.Decision(a.agent.machineId, a.agent.name, item.label, listOfNotNull(agentName(a.agent.kind), a.agent.machineId).joinToString(" · ")),
+                    )
+                    else -> a.route?.let { model.path.add(it) }
+                }
+            },
+            leading = { StatusGlyph(Glyph.Need) }, trailing = { WhereTag(item.space.backend) },
+        )
+    }
+    if (working.isNotEmpty()) {
+        SectionHead("Working", "${working.size}")
+        working.forEachIndexed { i, item ->
+            val line = lastLines[item.id]
+            InboxRow(
+                item.label, line ?: item.agent.title?.takeIf { it != item.agent.nameInSpace } ?: "Working",
+                Modifier.testTag("busy-${item.label}"), subtitleMono = line != null, first = i == 0,
+                onClick = item.agent.route?.let { r -> { model.path.add(r) } },
+                leading = { StatusGlyph(Glyph.Work) }, trailing = { WhereTag(item.space.backend) },
+            )
+        }
+    }
+    if (finished.isNotEmpty()) {
+        SectionHead("Finished today", "${finished.size}")
+        finished.forEachIndexed { i, item ->
+            InboxRow(
+                item.label, lastLines[item.id] ?: item.agent.title ?: item.agent.subtitle, first = i == 0,
+                onClick = item.agent.route?.let { r -> { model.path.add(r) } },
+                leading = { StatusGlyph(if (item.agent.isEnded) Glyph.End else Glyph.Done) },
+                trailing = {
+                    val a = item.agent
+                    if (a is HerdrSession.Agent.Task && item.agent.isEnded) Text(Ago.short(a.session.updatedAt), style = Type.meta, color = palette.mut)
+                    else WhereTag(item.space.backend)
+                },
+            )
+        }
+    }
+    if (nothingLive && finished.isEmpty() && approvals.isEmpty()) {
+        val p = model.projects.map { it.id }
+        SectionHead("Try saying")
+        Example("“In ${p.firstOrNull() ?: "kraft"}, fix the flaky retry test.”", "Starts a new task in ${p.firstOrNull() ?: "a project"}, on its own branch", true) {
+            listen(null, false)
+        }
+        Example("“What is everyone working on?”", "Switchboard picks where it goes, and asks if unsure", false) { listen(null, false) }
+        SectionHead("Ready on this hub")
+        InboxRow(
+            "${p.size} ${if (p.size == 1) "project" else "projects"}",
+            if (p.size > 3) "${p.take(3).joinToString(", ")} and ${p.size - 3} more" else p.joinToString(", "),
+            first = true, onClick = { switchTab(HomeTab.Projects) }, trailing = { Chevron() },
+        )
+        val ready = model.machines.filter { it.status == "ready" }.map { it.id }
+        InboxRow(
+            "${model.machines.size} ${if (model.machines.size == 1) "machine" else "machines"}",
+            if (ready.isEmpty()) "None ready" else "${ready.joinToString(" and ")} ${if (ready.size == 1) "is" else "are"} ready",
+            onClick = { model.path.add(Route.Machines) }, trailing = { Chevron() },
+        )
+        Hairline()
+    } else if (approvals.isEmpty() && waiting.isEmpty() && working.isEmpty() && finished.isEmpty()) {
+        val n = model.spaces(since = HerdrSession.startOfToday()).sumOf { it.live.size }
+        StateRow("$n ${if (n == 1) "agent is" else "agents are"} idle. They're under Spaces.")
+    }
+}
+
+@Composable
+private fun Example(said: String, what: String, first: Boolean, onClick: () -> Unit) {
+    Column(Modifier.fillMaxWidth().clickable(onClick = onClick)) {
+        if (!first) Hairline()
+        Column(Modifier.padding(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(said, style = Type.title3, color = palette.ink)
+            Text(what, style = Type.sub, color = palette.sub)
         }
     }
 }
 
 private fun open(model: AppModel, t: TargetView) {
     t.sessionId?.let { model.path.add(Route.SessionPage(it)) } ?: t.agent?.let { model.path.add(Route.AgentPage(t.machineId, it)) }
-}
-
-/** The mic is the main way in; the keyboard is beside it. */
-@Composable
-private fun BoxScope.Dock(voice: Voice, listen: Listen) {
-    Column(
-        Modifier.align(Alignment.BottomCenter).fillMaxWidth()
-            // Solid before the hint, so rows scrolling under it don't show through.
-            .background(Brush.verticalGradient(0f to palette.background.copy(alpha = 0f), 0.22f to palette.background))
-            .windowInsetsPadding(WindowInsets.navigationBars)
-            .padding(start = 16.dp, end = 16.dp, top = 36.dp, bottom = 8.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        Text("Tap and say what you want done", style = Type.footnote, color = palette.secondary)
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                Modifier.size(50.dp).shadow(6.dp, CircleShape).background(palette.card, CircleShape)
-                    .clickable { voice.type(null) }.semantics { contentDescription = "Type instead" }.testTag("typeButton"),
-                Alignment.Center,
-            ) { Icon(Icons.Outlined.Keyboard, null, Modifier.size(24.dp), tint = palette.label) }
-            Spacer(Modifier.weight(1f))
-            MicButton(voice, 72.dp, "Talk to your agents", "micButton") { listen(null, false) }
-            Spacer(Modifier.weight(1f))
-            Spacer(Modifier.size(50.dp))
-        }
-    }
-}
-
-@Composable
-private fun SentCard(sent: AppModel.Sent, open: (TargetView) -> Unit) {
-    Column(
-        Modifier.fillMaxWidth().card(20.dp, palette.card).clickable { sent.target?.let(open) }.padding(16.dp).testTag("sentCard"),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            Icon(Icons.Filled.Check, null, Modifier.size(16.dp), tint = palette.done)
-            Text(
-                if (sent.started) "Started ${sent.target?.label ?: "a session"}" else "Sent to ${sent.target?.label ?: "the hub"}",
-                style = Type.footnote, fontWeight = FontWeight.SemiBold, color = palette.done,
-            )
-        }
-        Text(sent.text, Modifier.card(18.dp, palette.accent).padding(horizontal = 13.dp, vertical = 9.dp), style = Type.body, color = Color.White)
-    }
-}
-
-@Composable
-private fun Summary(connected: Boolean, unreachable: Boolean, waiting: Int, sessions: Int, working: Int) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-        if (connected) {
-            Dot(palette.done)
-            val parts = listOfNotNull(
-                if (waiting > 0) "$waiting need${if (waiting == 1) "s" else ""} you" else null,
-                "$sessions ${if (sessions == 1) "session" else "sessions"}", "$working working",
-            )
-            Text(parts.joinToString(" · "), style = Type.subheadline, color = palette.secondary)
-        } else if (unreachable) {
-            Icon(Icons.Outlined.WifiOff, null, Modifier.size(16.dp), tint = palette.needs)
-            Text("Can't reach the hub; retrying.", style = Type.subheadline, color = palette.secondary)
-        } else {
-            Text("Connecting…", style = Type.subheadline, color = palette.secondary)
-        }
-    }
-}
-
-@Composable
-private fun Empty() {
-    Column(Modifier.fillMaxWidth().card(20.dp, palette.card).padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text("Nothing running yet", style = Type.headline, color = palette.label)
-        Text("Tap the mic and say what to do, like “In kraft, fix the flaky retry test.”", style = Type.body, color = palette.secondary)
-    }
-}
-
-/** Agents working or waiting for you, in any session. */
-private fun busyTiles(groups: List<HerdrSession>): List<Tile> =
-    groups.flatMap { g -> g.live.filter { it.needsYou || it.agentStatus == "working" }.map { Tile(it, g.title) } }
-
-/** An agent working or waiting for you, and the session it's in. */
-private data class Tile(val agent: HerdrSession.Agent, val session: String) {
-    val id: String
-        get() = when (agent) {
-            is HerdrSession.Agent.Task -> agent.session.id
-            is HerdrSession.Agent.Live -> "${agent.agent.machineId}/${agent.agent.name}"
-            is HerdrSession.Agent.Ended -> "${agent.agent.machineId}/${agent.agent.name}/${agent.agent.endedAt}"
-        }
-}
-
-@Composable
-private fun BusyTile(tile: Tile, lastLine: String?, open: () -> Unit) {
-    val status = tile.agent.status
-    Column(
-        Modifier.size(width = 168.dp, height = 150.dp).card(20.dp, palette.card).clickable(onClick = open).padding(14.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            Dot(status.color, 7.dp)
-            Text(status.text, style = Type.caption, fontWeight = FontWeight.SemiBold, color = status.color)
-        }
-        Text(tile.agent.shortName, style = Type.subheadline, fontWeight = FontWeight.SemiBold, color = palette.label, maxLines = 1)
-        Text("${tile.session} · ${tile.agent.machineId}", style = Type.footnote, color = palette.secondary, maxLines = 1)
-        Spacer(Modifier.weight(1f))
-        Text(lastLine.orEmpty(), color = palette.secondary, fontFamily = FontFamily.Monospace, fontSize = 11.sp, lineHeight = 14.sp, maxLines = 2)
-    }
 }

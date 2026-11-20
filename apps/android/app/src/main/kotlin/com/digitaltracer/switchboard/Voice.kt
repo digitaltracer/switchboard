@@ -106,8 +106,21 @@ class Voice(private val context: Context, private val key: VoiceKey, private val
     var retrying by mutableStateOf(false)
         private set
 
+    /** The words go into New session's prompt, not to review and send. */
+    var dictating by mutableStateOf(false)
+        private set
+
+    /** Fills New session's prompt by voice, after what's typed there already. Nothing is sent. */
+    fun dictate(after: String) {
+        if (phase == Phase.Listening || phase == Phase.Transcribing) return
+        text = after.trim()
+        listen(null, keepText = true)
+        dictating = true
+    }
+
     fun listen(to: TargetView?, keepText: Boolean = false) {
         if (phase == Phase.Listening || phase == Phase.Transcribing) return
+        dictating = false
         dropRecording()
         notice = null
         target = to
@@ -176,6 +189,7 @@ class Voice(private val context: Context, private val key: VoiceKey, private val
         dropRecording()
         cloud = false
         notice = null
+        dictating = false
         if (phase == Phase.Listening) changedAt = System.currentTimeMillis()
         phase = Phase.Idle
         text = ""
@@ -187,6 +201,7 @@ class Voice(private val context: Context, private val key: VoiceKey, private val
     fun finish() {
         dropRecording()
         notice = null
+        dictating = false
         phase = Phase.Idle
         text = ""
         error = null
