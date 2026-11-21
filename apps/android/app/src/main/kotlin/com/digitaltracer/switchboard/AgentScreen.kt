@@ -1,5 +1,7 @@
 package com.digitaltracer.switchboard
 
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -26,6 +28,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -77,6 +80,10 @@ fun AgentScreen(model: AppModel, voice: Voice, listen: Listen, source: Conversat
     var details by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val scroll = rememberScrollState()
+    val pager = rememberPagerState(initialPage = tab.ordinal) { AgentTab.entries.size }
+    // A tapped tab scrolls the pager; a settled swipe picks the tab, so passing a middle page doesn't.
+    LaunchedEffect(tab) { if (pager.settledPage != tab.ordinal) pager.animateScrollToPage(tab.ordinal) }
+    LaunchedEffect(pager) { snapshotFlow { pager.settledPage }.collect { tab = AgentTab.entries[it] } }
 
     val sessionId = (source as? ConversationSource.Session)?.id
     val agentRef = source as? ConversationSource.Agent
@@ -232,64 +239,66 @@ fun AgentScreen(model: AppModel, voice: Voice, listen: Listen, source: Conversat
             Spacer(Modifier.padding(top = 8.dp))
         }
         TextTabs(AgentTab.entries.map { it to it.label }, tab) { tab = it }
-        when (tab) {
-            AgentTab.Conversation -> ConversationFeed(model, convo, kind ?: "Agent", status)
-            AgentTab.Screen -> Screen(convo)
-            AgentTab.Summary -> Column(Modifier.fillMaxSize().verticalScroll(scroll).padding(start = 20.dp, end = 20.dp, bottom = 24.dp)) {
-                listOfNotNull(error?.let { it to palette.bad }, notice?.let { it to palette.sub }, pollError?.let { it to palette.warn }, s?.error?.let { it to palette.bad })
-                    .forEach { (text, color) -> Note(text, Modifier.padding(top = 14.dp).then(if (text == notice) Modifier.testTag("deleteNotice") else Modifier), color) }
-                if (s?.hookFailed == true) Banner("It's stuck at a dialog Switchboard won't answer. Answer it at its terminal.", Modifier.padding(top = 14.dp))
-                target?.let { model.said[AppModel.saidKey(it)] }?.let { Box(Modifier.padding(top = 14.dp)) { SaidBubble(it) } }
-                val act = model.away
-                model.awayFor(machine, s?.agentName ?: (source as? ConversationSource.Agent)?.name, sessionId)?.let { mine ->
-                    if (act != null) AwayTimeline(mine, act.since, act.now, Turns.latest(convo.conversation.items).reply?.text)
-                }
-                s?.pendingApprovals?.forEach { a -> Box(Modifier.padding(top = 14.dp)) { ApprovalCard(model, a, s, decided = { refresh() }) } }
-                if (watch != null && pane != null) {
-                    Box(Modifier.padding(top = 14.dp)) { WaitingCard(watch, { model.path.add(pane) }) { tab = AgentTab.Screen } }
-                }
-                info?.shownTitle?.let {
-                    SectionHead("Working on")
-                    Text(it, style = Type.title3, color = palette.ink)
-                }
-                val c = changes
-                LatestReply(convo, hideFiles = c != null && c.files.isNotEmpty())
-                if (c != null && c.files.isNotEmpty()) {
-                    val open = sessionId?.let { id -> { i: Int -> model.path.add(Route.Diff(id, c.files.map { it.path }, i)); Unit } }
-                    val added = c.files.sumOf { it.added ?: 0 }
-                    val deleted = c.files.sumOf { it.deleted ?: 0 }
-                    SectionHead(
-                        "${c.title()} · +$added −$deleted",
-                        action = open?.let { o -> { Text("Review all", Modifier.clickable { o(0) }.testTag("reviewAll"), style = Type.meta.copy(fontWeight = FontWeight.Medium), color = palette.ac) } },
-                    )
-                    Column(Modifier.fillMaxWidth().card(16.dp, palette.sf).border(1.dp, palette.line, androidx.compose.foundation.shape.RoundedCornerShape(16.dp)).padding(horizontal = 14.dp)) {
-                        ChangesList(c, open)
+        HorizontalPager(pager, Modifier.fillMaxWidth().weight(1f), beyondViewportPageCount = 1) { page ->
+            when (AgentTab.entries[page]) {
+                AgentTab.Conversation -> ConversationFeed(model, convo, kind ?: "Agent", status)
+                AgentTab.Screen -> Screen(convo)
+                AgentTab.Summary -> Column(Modifier.fillMaxSize().verticalScroll(scroll).padding(start = 20.dp, end = 20.dp, bottom = 24.dp)) {
+                    listOfNotNull(error?.let { it to palette.bad }, notice?.let { it to palette.sub }, pollError?.let { it to palette.warn }, s?.error?.let { it to palette.bad })
+                        .forEach { (text, color) -> Note(text, Modifier.padding(top = 14.dp).then(if (text == notice) Modifier.testTag("deleteNotice") else Modifier), color) }
+                    if (s?.hookFailed == true) Banner("It's stuck at a dialog Switchboard won't answer. Answer it at its terminal.", Modifier.padding(top = 14.dp))
+                    target?.let { model.said[AppModel.saidKey(it)] }?.let { Box(Modifier.padding(top = 14.dp)) { SaidBubble(it) } }
+                    val act = model.away
+                    model.awayFor(machine, s?.agentName ?: (source as? ConversationSource.Agent)?.name, sessionId)?.let { mine ->
+                        if (act != null) AwayTimeline(mine, act.since, act.now, Turns.latest(convo.conversation.items).reply?.text)
                     }
-                }
-                val shipTarget = s?.let(::sessionTarget) ?: (source as? ConversationSource.Agent)?.let { com.digitaltracer.switchboard.api.models.TargetView("agent", it.machine, info?.agentLabel ?: it.name, null, it.name) }
-                if (shipTarget != null) {
-                    val latest = Turns.latest(convo.conversation.items)
-                    ShipCard(
-                        model, shipTarget, s?.projectId, s?.branch, s?.agentStatus ?: info?.agentStatus ?: "unknown",
-                        latest.reply?.text, latest.at?.let { runCatching { java.time.Instant.parse(it).toEpochMilli() }.getOrNull() },
-                    )
-                }
-                ConversationRows(convo, { tab = AgentTab.Conversation }) { tab = AgentTab.Screen }
-                if (s != null) {
-                    SectionHead("Details", action = { DetailsLink(details, "Show", "Hide") { details = !details } })
-                }
-                if (details && s != null) {
-                    FieldRow("Project", s.projectId, first = true)
-                    FieldRow("Machine", "") {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Dot(if (s.machineStatus == "ready") palette.ok else palette.warn)
-                            Text("${s.machineId} · ${s.machineStatus}", style = Type.field, color = palette.sub)
+                    s?.pendingApprovals?.forEach { a -> Box(Modifier.padding(top = 14.dp)) { ApprovalCard(model, a, s, decided = { refresh() }) } }
+                    if (watch != null && pane != null) {
+                        Box(Modifier.padding(top = 14.dp)) { WaitingCard(watch, { model.path.add(pane) }) { tab = AgentTab.Screen } }
+                    }
+                    info?.shownTitle?.let {
+                        SectionHead("Working on")
+                        Text(it, style = Type.title3, color = palette.ink)
+                    }
+                    val c = changes
+                    LatestReply(convo, hideFiles = c != null && c.files.isNotEmpty())
+                    if (c != null && c.files.isNotEmpty()) {
+                        val open = sessionId?.let { id -> { i: Int -> model.path.add(Route.Diff(id, c.files.map { it.path }, i)); Unit } }
+                        val added = c.files.sumOf { it.added ?: 0 }
+                        val deleted = c.files.sumOf { it.deleted ?: 0 }
+                        SectionHead(
+                            "${c.title()} · +$added −$deleted",
+                            action = open?.let { o -> { Text("Review all", Modifier.clickable { o(0) }.testTag("reviewAll"), style = Type.meta.copy(fontWeight = FontWeight.Medium), color = palette.ac) } },
+                        )
+                        Column(Modifier.fillMaxWidth().card(16.dp, palette.sf).border(1.dp, palette.line, androidx.compose.foundation.shape.RoundedCornerShape(16.dp)).padding(horizontal = 14.dp)) {
+                            ChangesList(c, open)
                         }
                     }
-                    s.branch?.let { FieldRow("Branch", it, mono = true) }
-                    Hairline()
+                    val shipTarget = s?.let(::sessionTarget) ?: (source as? ConversationSource.Agent)?.let { com.digitaltracer.switchboard.api.models.TargetView("agent", it.machine, info?.agentLabel ?: it.name, null, it.name) }
+                    if (shipTarget != null) {
+                        val latest = Turns.latest(convo.conversation.items)
+                        ShipCard(
+                            model, shipTarget, s?.projectId, s?.branch, s?.agentStatus ?: info?.agentStatus ?: "unknown",
+                            latest.reply?.text, latest.at?.let { runCatching { java.time.Instant.parse(it).toEpochMilli() }.getOrNull() },
+                        )
+                    }
+                    ConversationRows(convo, { tab = AgentTab.Conversation }) { tab = AgentTab.Screen }
+                    if (s != null) {
+                        SectionHead("Details", action = { DetailsLink(details, "Show", "Hide") { details = !details } })
+                    }
+                    if (details && s != null) {
+                        FieldRow("Project", s.projectId, first = true)
+                        FieldRow("Machine", "") {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Dot(if (s.machineStatus == "ready") palette.ok else palette.warn)
+                                Text("${s.machineId} · ${s.machineStatus}", style = Type.field, color = palette.sub)
+                            }
+                        }
+                        s.branch?.let { FieldRow("Branch", it, mono = true) }
+                        Hairline()
+                    }
+                    AtYourDesk(backend, machine, space, s?.herdrSession ?: info?.herdrSession, live = s?.live ?: true)
                 }
-                AtYourDesk(backend, machine, space, s?.herdrSession ?: info?.herdrSession, live = s?.live ?: true)
             }
         }
     }
