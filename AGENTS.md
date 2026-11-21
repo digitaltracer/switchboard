@@ -79,6 +79,10 @@ Each test file's header says what it needs.
   - `route.rs` decides where a message goes (start, send, or ask). Every front door uses it through the session service.
   - `app/` is the app API.
   - `relay_link.rs` is the link to the relay.
+  - `live.rs` keeps each phone's lock-screen card current; `src/live.rs` builds the board and
+    seals it to the device's live key, so pushes carry only ciphertext.
+  - `away.rs` (under `service.rs`) is "while you were away": recorded agent events, and the
+    opt-in summary.
 - **herdr-core client:** `src/hc/`: socket discovery, a `hello` per connection, typed calls, the event stream and compare-and-set layout renames. It only dials.
 - **Runner** (`src/runner/`):
   - `local.rs` is the runner built into the hub for its own machine; `link.rs` is a remote runner's WebSocket to the hub. Both carry the same masked frames.
@@ -88,6 +92,8 @@ Each test file's header says what it needs.
   - `sessions.rs` covers worktrees and the agent lifecycle.
   - `hooks.rs` is the hook endpoint.
   - `codex.rs` and `dialogs.rs` are the only key paths: Codex's own startup and deny keys, and the owner's chosen option on a recognised dialog.
+  - `diff.rs` is the read-only diff of a session's changed file; `summary.rs` runs the
+    opt-in `claude -p` summary with every tool, setting, hook and MCP server off.
 - **Agent profiles:** `src/agents/`. Claude Code runs in auto mode by default; what still asks goes through the hook, and deny patterns are checked before every tool. A machine can choose acceptEdits, where every shell command asks. Codex runs in restricted mode. The dialog recognisers are `dialog.rs` (the shared option-row parser) with a layer per CLI in `claude/screen.rs` and `codex/screen.rs` that knows its layouts.
 - **Hook helper:** `src/hook/`. It denies on any error.
 - **Pairing and signatures:** `src/auth/`. **Push:** `src/push/`. **Relay:** `src/relay/`. **WhatsApp:** `src/whatsapp/`.
