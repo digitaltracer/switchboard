@@ -125,7 +125,7 @@ public enum Turns {
         return nil
     }
 
-    static func date(_ s: String) -> Date? {
+    public static func date(_ s: String) -> Date? {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return f.date(from: s) ?? ISO8601DateFormatter().date(from: s)

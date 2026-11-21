@@ -295,6 +295,11 @@ public final class Hub: Sendable {
         try await Self.unwrap { try await client.getChanges(path: .init(id: id)).ok.body.json }
     }
 
+    /// A page of one changed file's diff, from hunk `from`.
+    public func diff(_ id: String, path: String, from: Int = 0) async throws -> Schemas.FileDiffView {
+        try await Self.unwrap { try await client.getDiff(path: .init(id: id), query: .init(path: path, from: Int32(from))).ok.body.json }
+    }
+
     /// `backend` is `hc` or `herdr`; nil leaves it to the machine's runner.
     public func start(project: String, prompt: String, machine: String?, agent: String?, notify: Bool, requestId: String,
                       backend: String? = nil) async throws -> Schemas.StartResponse {
@@ -487,11 +492,73 @@ public final class Hub: Sendable {
         _ = try await Self.unwrap { try await client.revokeDevice(path: .init(id: deviceId)).noContent }
     }
 
+    /// Registers this phone's lock-screen card: the key boards are sealed to, and its push tokens.
+    public func setLive(key: Data, startToken: Data?, activityToken: Data?, startedAt: Date?, mode: LiveShowMode) async throws {
+        let hex = { (d: Data?) in d.map { $0.map { String(format: "%02x", $0) }.joined() } }
+        let (start, activity) = (hex(startToken), hex(activityToken))
+        _ = try await Self.unwrap {
+            try await client.setLive(body: .json(.init(
+                liveKey: key.base64URL, startToken: start, activityToken: activity,
+                activityStartedAt: startedAt.map { Int64($0.timeIntervalSince1970) },
+                mode: mode == .always ? .always : .working
+            ))).noContent
+        }
+    }
+
+    public func clearLive() async throws {
+        _ = try await Self.unwrap { try await client.clearLive().noContent }
+    }
+
+    /// What agents did since `since` (Unix ms).
+    public func activity(since: Int64) async throws -> Schemas.Activity {
+        try await Self.unwrap { try await client.getActivity(query: .init(since: since)).ok.body.json }
+    }
+
+    public func activitySummary(since: Int64) async throws -> String {
+        try await Self.unwrap { try await client.postActivitySummary(body: .json(.init(since: since))).ok.body.json }.summary
+    }
+
+    public func awaySettings() async throws -> Schemas.AwaySettingsView {
+        try await Self.unwrap { try await client.getAwaySettings().ok.body.json }
+    }
+
+    public func setAwaySettings(_ s: Schemas.AwaySettingsView) async throws {
+        _ = try await Self.unwrap { try await client.setAwaySettings(body: .json(s)).noContent }
+    }
+
+    public func shipButtons() async throws -> Schemas.ShipButtons {
+        try await Self.unwrap { try await client.getShipButtons().ok.body.json }
+    }
+
+    /// Replaces one scope's buttons: `*` for all projects, or a project id.
+    public func setShipButtons(scope: String, _ buttons: [ShipButton]) async throws {
+        _ = try await Self.unwrap {
+            try await client.setShipButtons(body: .json(.init(scope: scope, buttons: buttons.map(\.view)))).noContent
+        }
+    }
+
+    /// What the lock-screen card shows.
+    public func live() async throws -> LiveBoard {
+        let v = try await Self.unwrap { try await client.getLive().ok.body.json }
+        return LiveBoard(v)
+    }
+
     public func setPushToken(_ token: Data?, sandbox: Bool) async throws {
         let hex = token.map { $0.map { String(format: "%02x", $0) }.joined() }
         _ = try await Self.unwrap {
             try await client.setPushToken(body: .json(.init(token: hex, environment: sandbox ? .sandbox : .production))).noContent
         }
+    }
+}
+
+extension LiveBoard {
+    public init(_ v: Schemas.LiveBoardView) {
+        self.init(
+            at: Date(timeIntervalSince1970: TimeInterval(v.at)),
+            waiting: v.waiting.map { .init(name: $0.name, space: $0.space, since: Date(timeIntervalSince1970: TimeInterval($0.since)), error: $0.error) },
+            more: Int(v.more), running: v.running, runningMore: Int(v.runningMore), idle: Int(v.idle),
+            finished: v.finished, finishedAt: v.finishedAt.map { Date(timeIntervalSince1970: TimeInterval($0)) }
+        )
     }
 }
 

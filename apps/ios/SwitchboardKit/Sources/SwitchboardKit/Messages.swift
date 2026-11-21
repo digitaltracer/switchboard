@@ -70,11 +70,3 @@ public func pairingFingerprint(hubId: String, authKey: String, approvalKey: Stri
     }.joined(separator: "-")
 }
 
-extension Data {
-    public var base64URL: String {
-        base64EncodedString()
-            .replacingOccurrences(of: "+", with: "-")
-            .replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: "=", with: "")
-    }
-}

@@ -61,14 +61,6 @@ public enum StartFlow {
     }
 }
 
-extension Data {
-    public init?(base64URL: String) {
-        var s = base64URL.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
-        s += String(repeating: "=", count: (4 - s.count % 4) % 4)
-        self.init(base64Encoded: s)
-    }
-}
-
 /// Which APNs environment this build's push tokens belong to. A development-signed build
 /// carries a profile saying `development`; TestFlight and App Store builds carry none and use
 /// production; the simulator's pushes come from `simctl` and only need a token-less sandbox.
