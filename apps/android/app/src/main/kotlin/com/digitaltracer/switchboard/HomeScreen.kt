@@ -16,6 +16,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -32,6 +34,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.shadow
@@ -119,6 +122,20 @@ fun HomeScreen(model: AppModel, voice: Voice, listen: Listen) {
     // The last line each busy agent said, by item id.
     val lastLines = remember { mutableStateMapOf<String, String>() }
     val pacer = remember { FallbackPacer() }
+    val pager = rememberPagerState(initialPage = tab.ordinal) { HomeTab.entries.size }
+    // A tapped tab scrolls the pager; a settled swipe picks the tab. The settled page, not the current
+    // one, so passing over a middle page doesn't pick it.
+    LaunchedEffect(tab) { if (pager.settledPage != tab.ordinal) pager.animateScrollToPage(tab.ordinal) }
+    LaunchedEffect(pager) { snapshotFlow { pager.settledPage }.collect { model.homeTab = HomeTab.entries[it] } }
+    // Connecting has taken long enough to say so.
+    var slow by remember { mutableStateOf(false) }
+    LaunchedEffect(model.loaded) {
+        slow = false
+        if (!model.loaded) {
+            delay(8_000)
+            slow = true
+        }
+    }
 
     val spaces = model.spaces(since = HerdrSession.startOfToday())
     val approvals: List<Pair<Session, Approval>> =
@@ -189,7 +206,8 @@ fun HomeScreen(model: AppModel, voice: Voice, listen: Listen) {
             AskBar("Say or type what you want done", start = { starting = "" }, type = { voice.type(null) }, speak = { listen(null, false) })
         },
     ) {
-        val headline = when (tab) {
+        val connect = if (model.loaded) null else ConnectState.of(model, slow)
+        val headline = if (connect != null) stateText(connect.main, connect.quiet) else when (tab) {
             HomeTab.Now -> {
                 val needs = approvals.size + waiting.size
                 if (needs == 0 && live.isEmpty() && finished.isEmpty()) {
@@ -213,6 +231,10 @@ fun HomeScreen(model: AppModel, voice: Voice, listen: Listen) {
         }
         StateLine(headline, Modifier.padding(start = 20.dp, end = 20.dp, top = 8.dp).testTag("headline"))
         Spacer(Modifier.height(14.dp))
+        if (connect != null && model.unreachable) {
+            HubUnreachable(model, connect)
+            return@InboxPage
+        }
         TextTabs(HomeTab.entries.map { it to it.label }, tab) { model.homeTab = it }
         PullToRefreshBox(
             refreshing,
@@ -226,11 +248,15 @@ fun HomeScreen(model: AppModel, voice: Voice, listen: Listen) {
             },
             Modifier.weight(1f).fillMaxWidth(),
         ) {
-            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 24.dp)) {
-                when (tab) {
-                    HomeTab.Now -> Now(model, voice, listen, approvals, waiting, working, finished, live.isEmpty(), lastLines) { model.homeTab = it }
-                    HomeTab.Spaces -> SpacesList(model)
-                    HomeTab.Projects -> ProjectsList(model) { starting = it }
+            HorizontalPager(pager, Modifier.fillMaxSize(), beyondViewportPageCount = 1) { page ->
+                Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 24.dp)) {
+                    // Until the hub's first answer, placeholders: empty lists would read as "nothing running".
+                    if (!model.loaded) LoadingRows()
+                    else when (HomeTab.entries[page]) {
+                        HomeTab.Now -> Now(model, voice, listen, approvals, waiting, working, finished, live.isEmpty(), lastLines) { model.homeTab = it }
+                        HomeTab.Spaces -> SpacesList(model)
+                        HomeTab.Projects -> ProjectsList(model) { starting = it }
+                    }
                 }
             }
         }
@@ -331,7 +357,11 @@ private fun Now(
     if (nothingLive && finished.isEmpty() && approvals.isEmpty()) {
         val p = model.projects.map { it.id }
         SectionHead("Try saying")
-        Example("“In ${p.firstOrNull() ?: "kraft"}, fix the flaky retry test.”", "Starts a new task in ${p.firstOrNull() ?: "a project"}, on its own branch", true) {
+        val first = p.firstOrNull()
+        Example(
+            if (first != null) "“In $first, fix the flaky retry test.”" else "“Fix the flaky retry test.”",
+            if (first != null) "Starts a new task in $first, on its own branch" else "Starts a new task, on its own branch", true,
+        ) {
             listen(null, false)
         }
         Example("“What is everyone working on?”", "Switchboard picks where it goes, and asks if unsure", false) { listen(null, false) }

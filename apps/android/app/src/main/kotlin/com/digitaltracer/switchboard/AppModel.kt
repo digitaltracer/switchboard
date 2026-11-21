@@ -1,6 +1,8 @@
 package com.digitaltracer.switchboard
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Build
 import android.provider.Settings
 import androidx.compose.runtime.getValue
@@ -97,6 +99,19 @@ class AppModel(context: Context, val keys: DeviceKeys) {
     /** A request has failed since the last answer; until then, not yet connected is "connecting". */
     var unreachable by mutableStateOf(false)
         private set
+    private var sessionsLoaded by mutableStateOf(false)
+    private var agentsLoaded by mutableStateOf(false)
+    /** The first session list and agent list have both arrived; until then home shows placeholders. */
+    val loaded: Boolean get() = sessionsLoaded && agentsLoaded
+    /** A poll is on its way while not connected, for Try again. */
+    var trying by mutableStateOf(false)
+        private set
+    /** Why the last poll failed, while [unreachable]. */
+    var reach by mutableStateOf(HubError.Reach.Unknown)
+        private set
+    /** Whether this phone reaches its hub through the relay. */
+    val viaRelay: Boolean get() = pairing?.relay != null
+    val relayHost: String? get() = pairing?.relay?.relayUrl?.let { runCatching { URI(it).host }.getOrNull() }
     var meta by mutableStateOf<Meta?>(null)
         private set
 
@@ -315,6 +330,8 @@ class AppModel(context: Context, val keys: DeviceKeys) {
         meta = null
         connected = false
         unreachable = false
+        sessionsLoaded = false
+        agentsLoaded = false
         current = null
         lastSent = null
         awaiting = emptyMap()
@@ -477,6 +494,7 @@ class AppModel(context: Context, val keys: DeviceKeys) {
         runCatching { hub.agents(activity) }.onSuccess {
             agents = it.agents
             ended = it.ended.orEmpty()
+            agentsLoaded = true
             if (activity) tileLines = TileLines.of(it)
             settleAwaiting()
         }
@@ -493,6 +511,7 @@ class AppModel(context: Context, val keys: DeviceKeys) {
             var revision: Long? = null
             while (isActive) {
                 val hub = hub ?: return@launch
+                if (!connected) trying = true
                 try {
                     if (meta == null) meta = hub.meta()
                     if (projects.isEmpty()) runCatching { hub.projects() }.onSuccess { projects = it }
@@ -505,16 +524,27 @@ class AppModel(context: Context, val keys: DeviceKeys) {
                     revision = list.revision
                     connected = true
                     unreachable = false
+                    trying = false
+                    sessionsLoaded = true
+                    if (!agentsLoaded) launch { refreshAgents(activity = true) }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
                     connected = false
                     unreachable = true
+                    trying = false
+                    reach = if (!online()) HubError.Reach.Offline else (e as? HubError.Unreachable)?.reach ?: HubError.Reach.Unknown
                     if (handleRevoked(e)) return@launch
                     delay(3_000)
                 }
             }
         }
+    }
+
+    private fun online(): Boolean {
+        val cm = appContext.getSystemService(ConnectivityManager::class.java) ?: return true
+        val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
     }
 
     /** A refused token refresh means the hub no longer knows this device. */
