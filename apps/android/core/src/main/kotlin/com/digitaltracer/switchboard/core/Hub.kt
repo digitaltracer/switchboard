@@ -81,7 +81,20 @@ sealed class HubError(message: String) : Exception(message) {
     class Hub(override val code: String, message: String, val operationId: String?, val sessionId: String?) : HubError(message)
 
     /** No answer: the request may or may not have reached the hub. */
-    class Unreachable(why: String) : HubError("Can't reach the hub: $why")
+    class Unreachable(why: String, val reach: Reach = Reach.Unknown) : HubError("Can't reach the hub: $why")
+
+    /** Which step from this phone to the hub failed. */
+    enum class Reach {
+        /** This phone has no network. */
+        Offline,
+        /** The relay didn't answer. */
+        Relay,
+        /** The relay is up, but the hub isn't connected to it. */
+        Hub,
+        /** The hub is connected but didn't answer in time. */
+        Slow,
+        Unknown,
+    }
 
     object NotPaired : HubError("This phone isn't paired.")
 
