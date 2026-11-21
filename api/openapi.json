@@ -744,6 +744,92 @@
         ]
       }
     },
+    "/app/v1/sessions/{id}/diff": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "One changed file's unified diff since the session started, a page of hunks at a time.\nRead-only and masked; a binary file gives its size, a secrets file nothing.",
+        "operationId": "get_diff",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "description": "A path from the session's Changes, as listed.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "The first hunk to return: 0, or an earlier page's `next`.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileDiffView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Not one of the session's changed files, or the runner is too old",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Machine offline",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
     "/app/v1/sessions/{id}/transcript": {
       "get": {
         "tags": [
@@ -1347,6 +1433,306 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/PushTokenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Done"
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
+    "/app/v1/devices/self/live": {
+      "put": {
+        "tags": [
+          "devices"
+        ],
+        "summary": "Turns on this device's lock-screen card, or updates how to reach it. iOS sends its live key,\nto which every board is sealed, and its card's push tokens; Android sends none.",
+        "operationId": "set_live",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LiveRegistrationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Done"
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "devices"
+        ],
+        "summary": "Turns off this device's lock-screen card.",
+        "operationId": "clear_live",
+        "responses": {
+          "204": {
+            "description": "Done"
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
+    "/app/v1/live": {
+      "get": {
+        "tags": [
+          "agents"
+        ],
+        "summary": "What the lock-screen card shows: who needs you, who is running, how many are idle. Masked.",
+        "operationId": "get_live",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LiveBoardView"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
+    "/app/v1/ship-buttons": {
+      "get": {
+        "tags": [
+          "agents"
+        ],
+        "summary": "The ship buttons every paired phone shows, for all projects and per project.",
+        "operationId": "get_ship_buttons",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShipButtons"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "agents"
+        ],
+        "summary": "Replaces the ship buttons for all projects, or one project's own list.",
+        "operationId": "set_ship_buttons",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetShipButtonsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Done"
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
+    "/app/v1/activity": {
+      "get": {
+        "tags": [
+          "agents"
+        ],
+        "summary": "What each agent did since a time: turns, dialogs, errors, approvals and sessions started, plus\nits last line. Masked.",
+        "operationId": "get_activity",
+        "parameters": [
+          {
+            "name": "since",
+            "in": "query",
+            "description": "Unix ms: when this phone last had the app open.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Activity"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
+    "/app/v1/activity/summary": {
+      "post": {
+        "tags": [
+          "agents"
+        ],
+        "summary": "The same facts, summarised by `claude -p` with every tool off; only when the owner turned it on.",
+        "operationId": "post_activity_summary",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SummaryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SummaryResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The summary is off, or the runner is too old",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Machine offline",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
+    "/app/v1/settings/away": {
+      "get": {
+        "tags": [
+          "devices"
+        ],
+        "operationId": "get_away_settings",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AwaySettingsView"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "devices"
+        ],
+        "operationId": "set_away_settings",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AwaySettingsView"
               }
             }
           },
@@ -2096,6 +2482,38 @@
   },
   "components": {
     "schemas": {
+      "Activity": {
+        "type": "object",
+        "description": "What agents did since a time, from facts the hub records; no model involved.",
+        "required": [
+          "since",
+          "now",
+          "agents",
+          "summary_on"
+        ],
+        "properties": {
+          "since": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "now": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix ms, the hub's clock."
+          },
+          "agents": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AwayAgentView"
+            },
+            "description": "Who needs you first, then the most recent."
+          },
+          "summary_on": {
+            "type": "boolean",
+            "description": "The owner turned on the `claude -p` summary."
+          }
+        }
+      },
       "AgentActivityView": {
         "type": "object",
         "description": "The first line of the last thing an agent said or did, as a tile shows it.",
@@ -2430,6 +2848,91 @@
           }
         }
       },
+      "AwayAgentView": {
+        "type": "object",
+        "required": [
+          "machine_id",
+          "agent",
+          "facts"
+        ],
+        "properties": {
+          "machine_id": {
+            "type": "string"
+          },
+          "agent": {
+            "type": "string",
+            "description": "Its Herdr name."
+          },
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Now: `waiting`, `error`, `working` or `idle`, when the hub has seen it."
+          },
+          "facts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AwayFactView"
+            },
+            "description": "Oldest first."
+          },
+          "last_reply": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The first line of the last thing it said, masked."
+          }
+        }
+      },
+      "AwayFactView": {
+        "type": "object",
+        "required": [
+          "at",
+          "kind",
+          "text"
+        ],
+        "properties": {
+          "at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix ms."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`started`, `working`, `finished`, `waiting`, `error`, `asked`, `allowed` or `denied`."
+          },
+          "text": {
+            "type": "string",
+            "description": "Masked."
+          }
+        }
+      },
+      "AwaySettingsView": {
+        "type": "object",
+        "description": "\"While you were away\" choices, kept on the hub.",
+        "required": [
+          "summary",
+          "model"
+        ],
+        "properties": {
+          "summary": {
+            "type": "boolean",
+            "description": "Summarise with `claude -p` on the owner's Claude account, every tool off. Off by default."
+          },
+          "model": {
+            "type": "string",
+            "description": "The model it uses, e.g. `haiku`."
+          }
+        }
+      },
       "BackendOption": {
         "type": "object",
         "required": [
@@ -2501,6 +3004,16 @@
           "deleted": {
             "type": "integer",
             "format": "int64",
+            "minimum": 0
+          },
+          "binary": {
+            "type": "boolean",
+            "description": "A binary file: its diff shows its size only. Absent means false."
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Bytes, for a binary file still in the worktree.",
             "minimum": 0
           }
         }
@@ -2976,6 +3489,78 @@
           }
         }
       },
+      "DiffHunkView": {
+        "type": "object",
+        "required": [
+          "header",
+          "old_start",
+          "new_start",
+          "lines",
+          "cut"
+        ],
+        "properties": {
+          "header": {
+            "type": "string",
+            "description": "The `@@ -a,b +c,d @@` line, masked."
+          },
+          "old_start": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "new_start": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DiffLineView"
+            },
+            "description": "With up to 25 unchanged lines around each change; the app folds long runs."
+          },
+          "cut": {
+            "type": "boolean",
+            "description": "The hunk was too long for one page and is cut short."
+          }
+        }
+      },
+      "DiffLineView": {
+        "type": "object",
+        "required": [
+          "kind",
+          "text"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "`\" \"` unchanged, `\"+\"` added or `\"-\"` deleted."
+          },
+          "old": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Its number in the old file; absent for an added line.",
+            "minimum": 0
+          },
+          "new": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Its number in the new file; absent for a deleted line.",
+            "minimum": 0
+          },
+          "text": {
+            "type": "string",
+            "description": "Masked."
+          }
+        }
+      },
       "EndedAgent": {
         "type": "object",
         "description": "An agent that has left its pane. Sessions Switchboard started keep their own records.",
@@ -3053,6 +3638,211 @@
               "string",
               "null"
             ]
+          }
+        }
+      },
+      "FileDiffView": {
+        "type": "object",
+        "description": "A page of one changed file's unified diff since the session started. Read-only, masked.",
+        "required": [
+          "path",
+          "binary",
+          "hunk_count",
+          "hunks",
+          "withheld"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "binary": {
+            "type": "boolean"
+          },
+          "size": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Bytes, for a binary file.",
+            "minimum": 0
+          },
+          "added": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "deleted": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "hunk_count": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "hunks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DiffHunkView"
+            }
+          },
+          "next": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Pass as `from` for the next page; absent on the last.",
+            "minimum": 0
+          },
+          "withheld": {
+            "type": "boolean",
+            "description": "The file is the kind that holds secrets (an env file or a key), so nothing of it is shown."
+          }
+        }
+      },
+      "LiveBoardView": {
+        "type": "object",
+        "required": [
+          "at",
+          "waiting",
+          "more",
+          "running",
+          "running_more",
+          "idle"
+        ],
+        "properties": {
+          "at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix seconds the board was built."
+          },
+          "waiting": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LiveWaitingView"
+            },
+            "description": "Longest wait first, at most two."
+          },
+          "more": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How many more wait.",
+            "minimum": 0
+          },
+          "running": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "running_more": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Running agents beyond the named ones.",
+            "minimum": 0
+          },
+          "idle": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "finished": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "An agent that finished within the last minute."
+          },
+          "finished_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          }
+        }
+      },
+      "LiveMode": {
+        "type": "string",
+        "description": "When a phone's lock-screen card shows.",
+        "enum": [
+          "working",
+          "always"
+        ]
+      },
+      "LiveRegistrationRequest": {
+        "type": "object",
+        "properties": {
+          "live_key": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "iOS: the P-256 key-agreement key boards are sealed to, SEC1 uncompressed, base64url."
+          },
+          "start_token": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "iOS 17.2 and later: the push-to-start token, as hex."
+          },
+          "activity_token": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "iOS: the running card's update token, as hex; null when no card is running."
+          },
+          "activity_started_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Unix seconds the running card started."
+          },
+          "mode": {
+            "$ref": "#/components/schemas/LiveMode",
+            "description": "When the card shows; `working` when absent."
+          }
+        }
+      },
+      "LiveWaitingView": {
+        "type": "object",
+        "required": [
+          "name",
+          "since",
+          "error"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The agent's Herdr name."
+          },
+          "space": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "since": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix seconds it has waited since."
+          },
+          "error": {
+            "type": "boolean",
+            "description": "It stopped on an error rather than asking."
           }
         }
       },
@@ -3654,6 +4444,88 @@
           }
         }
       },
+      "SetShipButtonsRequest": {
+        "type": "object",
+        "required": [
+          "scope",
+          "buttons"
+        ],
+        "properties": {
+          "scope": {
+            "type": "string",
+            "description": "`*` for all projects, or a project id."
+          },
+          "buttons": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ShipButtonView"
+            },
+            "description": "In order; an empty list removes a project's own list."
+          }
+        }
+      },
+      "ShipButtonView": {
+        "type": "object",
+        "description": "A button on a finished agent that asks it to run one of its own skills.",
+        "required": [
+          "skill",
+          "label"
+        ],
+        "properties": {
+          "skill": {
+            "type": "string",
+            "description": "As the agent runs it: `/pr` for Claude Code, `$pr` for a Codex skill. A bare name gets `/`."
+          },
+          "label": {
+            "type": "string"
+          },
+          "after_pr": {
+            "type": "boolean",
+            "description": "Shown only once the agent's reply names a pull request."
+          }
+        }
+      },
+      "ShipButtons": {
+        "type": "object",
+        "required": [
+          "all",
+          "projects"
+        ],
+        "properties": {
+          "all": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ShipButtonView"
+            },
+            "description": "For every project without its own list. The first that isn't after-PR is the main one."
+          },
+          "projects": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ShipScope"
+            },
+            "description": "Projects with their own list, which replaces `all` there."
+          }
+        }
+      },
+      "ShipScope": {
+        "type": "object",
+        "required": [
+          "project",
+          "buttons"
+        ],
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "buttons": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ShipButtonView"
+            }
+          }
+        }
+      },
       "Skill": {
         "type": "object",
         "description": "A skill or command, as typed: `/name`, or `$name` for a Codex skill.",
@@ -3831,6 +4703,30 @@
           },
           "already_stopped": {
             "type": "boolean"
+          }
+        }
+      },
+      "SummaryRequest": {
+        "type": "object",
+        "required": [
+          "since"
+        ],
+        "properties": {
+          "since": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "SummaryResponse": {
+        "type": "object",
+        "required": [
+          "summary"
+        ],
+        "properties": {
+          "summary": {
+            "type": "string",
+            "description": "Masked."
           }
         }
       },

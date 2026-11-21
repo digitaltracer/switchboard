@@ -58,6 +58,7 @@ pub fn routes(state: AppState) -> Router {
         .route("/sessions/{id}", get(get_session))
         .route("/sessions/{id}/output", get(get_output))
         .route("/sessions/{id}/changes", get(get_changes))
+        .route("/sessions/{id}/diff", get(get_diff))
         .route("/sessions/{id}/transcript", get(get_transcript))
         .route("/sessions/{id}/skills", get(get_skills))
         .route("/sessions/{id}/prompt", post(prompt_session))
@@ -70,6 +71,15 @@ pub fn routes(state: AppState) -> Router {
         .route("/devices", get(list_devices))
         .route("/devices/{id}", delete(revoke_device))
         .route("/devices/self/push", put(set_push_token))
+        .route("/devices/self/live", put(set_live).delete(clear_live))
+        .route("/live", get(get_live))
+        .route("/ship-buttons", get(get_ship_buttons).put(set_ship_buttons))
+        .route("/activity", get(get_activity))
+        .route("/activity/summary", post(post_activity_summary))
+        .route(
+            "/settings/away",
+            get(get_away_settings).put(set_away_settings),
+        )
         .layer(middleware::from_fn(check_build))
         .route("/messages", post(post_message))
         .route("/messages/preview", post(preview_message))
@@ -489,6 +499,21 @@ pub async fn get_changes(
     Path(id): Path<String>,
 ) -> ApiResult<Changes> {
     Ok(Json(st.svc.changes(&id).await?.into()))
+}
+
+#[utoipa::path(get, path = "/app/v1/sessions/{id}/diff", tag = "sessions",
+    security(("device_token" = [])), params(("id" = String, Path), DiffQuery),
+    responses((status = 200, description = "OK", body = FileDiffView), (status = 400, description = "Not one of the session's changed files, or the runner is too old", body = ApiError),
+              (status = 404, description = "Not found", body = ApiError), (status = 503, description = "Machine offline", body = ApiError)))]
+/// One changed file's unified diff since the session started, a page of hunks at a time.
+/// Read-only and masked; a binary file gives its size, a secrets file nothing.
+pub async fn get_diff(
+    State(st): State<AppState>,
+    _d: DeviceAuth,
+    Path(id): Path<String>,
+    Query(q): Query<DiffQuery>,
+) -> ApiResult<FileDiffView> {
+    Ok(Json(st.svc.diff(&id, &q.path, q.from).await?.into()))
 }
 
 #[utoipa::path(get, path = "/app/v1/sessions/{id}/transcript", tag = "sessions",
@@ -1148,6 +1173,192 @@ pub async fn set_push_token(
         .set_push_registration(&d.0.id, token.as_deref(), Some(env), provider, st.svc.now())
         .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(put, path = "/app/v1/devices/self/live", tag = "devices",
+    security(("device_token" = [])), request_body = LiveRegistrationRequest,
+    responses((status = 204, description = "Done"), (status = 400, description = "Bad request", body = ApiError)))]
+/// Turns on this device's lock-screen card, or updates how to reach it. iOS sends its live key,
+/// to which every board is sealed, and its card's push tokens; Android sends none.
+pub async fn set_live(
+    State(st): State<AppState>,
+    d: DeviceAuth,
+    Json(req): Json<LiveRegistrationRequest>,
+) -> Result<StatusCode, AppError> {
+    use base64::Engine;
+    if let Some(k) = &req.live_key {
+        let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(k)
+            .map_err(|_| bad("the live key must be base64url"))?;
+        p256::PublicKey::from_sec1_bytes(&raw)
+            .map_err(|_| bad("the live key is not a P-256 key"))?;
+    }
+    let token = |t: &Option<String>| match t {
+        Some(t) if t.is_empty() || t.len() > 200 || !t.bytes().all(|b| b.is_ascii_hexdigit()) => {
+            Err(bad("a card token must be hex"))
+        }
+        t => Ok(t.as_ref().map(|t| t.to_ascii_lowercase())),
+    };
+    let reg = crate::store::LiveRegistration {
+        live_key: req.live_key.clone(),
+        start_token: token(&req.start_token)?,
+        activity_token: token(&req.activity_token)?,
+        activity_started_at: req.activity_started_at,
+        always: req.mode == Some(LiveMode::Always),
+    };
+    st.svc.store().set_live(&d.0.id, reg, st.svc.now()).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(delete, path = "/app/v1/devices/self/live", tag = "devices",
+    security(("device_token" = [])), responses((status = 204, description = "Done")))]
+/// Turns off this device's lock-screen card.
+pub async fn clear_live(State(st): State<AppState>, d: DeviceAuth) -> Result<StatusCode, AppError> {
+    st.svc.store().clear_live(&d.0.id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(get, path = "/app/v1/activity", tag = "agents",
+    security(("device_token" = [])), params(ActivityQuery),
+    responses((status = 200, description = "OK", body = Activity)))]
+/// What each agent did since a time: turns, dialogs, errors, approvals and sessions started, plus
+/// its last line. Masked.
+pub async fn get_activity(
+    State(st): State<AppState>,
+    _d: DeviceAuth,
+    Query(q): Query<ActivityQuery>,
+) -> ApiResult<Activity> {
+    let agents = st.svc.away(q.since).await?;
+    Ok(Json(Activity {
+        since: q.since,
+        now: st.svc.now(),
+        summary_on: st.svc.away_settings().await?.summary,
+        agents: agents
+            .into_iter()
+            .map(|a| AwayAgentView {
+                machine_id: a.machine_id,
+                agent: a.agent,
+                session_id: a.session_id,
+                state: a.state,
+                facts: a
+                    .facts
+                    .into_iter()
+                    .map(|f| AwayFactView {
+                        at: f.at,
+                        kind: f.kind,
+                        text: f.text,
+                    })
+                    .collect(),
+                last_reply: a.last_reply,
+            })
+            .collect(),
+    }))
+}
+
+#[utoipa::path(post, path = "/app/v1/activity/summary", tag = "agents",
+    security(("device_token" = [])), request_body = SummaryRequest,
+    responses((status = 200, description = "OK", body = SummaryResponse), (status = 400, description = "The summary is off, or the runner is too old", body = ApiError),
+              (status = 503, description = "Machine offline", body = ApiError)))]
+/// The same facts, summarised by `claude -p` with every tool off; only when the owner turned it on.
+pub async fn post_activity_summary(
+    State(st): State<AppState>,
+    _d: DeviceAuth,
+    Json(req): Json<SummaryRequest>,
+) -> ApiResult<SummaryResponse> {
+    Ok(Json(SummaryResponse {
+        summary: st.svc.away_summary(req.since).await?,
+    }))
+}
+
+#[utoipa::path(get, path = "/app/v1/settings/away", tag = "devices",
+    security(("device_token" = [])), responses((status = 200, description = "OK", body = AwaySettingsView)))]
+pub async fn get_away_settings(
+    State(st): State<AppState>,
+    _d: DeviceAuth,
+) -> ApiResult<AwaySettingsView> {
+    let s = st.svc.away_settings().await?;
+    Ok(Json(AwaySettingsView {
+        summary: s.summary,
+        model: s.model,
+    }))
+}
+
+#[utoipa::path(put, path = "/app/v1/settings/away", tag = "devices",
+    security(("device_token" = [])), request_body = AwaySettingsView,
+    responses((status = 204, description = "Done"), (status = 400, description = "Bad request", body = ApiError)))]
+pub async fn set_away_settings(
+    State(st): State<AppState>,
+    d: DeviceAuth,
+    Json(req): Json<AwaySettingsView>,
+) -> Result<StatusCode, AppError> {
+    let s = service::away::AwaySettings {
+        summary: req.summary,
+        model: req.model.trim().to_owned(),
+    };
+    st.svc.set_away_settings(&d.caller(), s).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(get, path = "/app/v1/ship-buttons", tag = "agents",
+    security(("device_token" = [])), responses((status = 200, description = "OK", body = ShipButtons)))]
+/// The ship buttons every paired phone shows, for all projects and per project.
+pub async fn get_ship_buttons(
+    State(st): State<AppState>,
+    _d: DeviceAuth,
+) -> ApiResult<ShipButtons> {
+    let view = |b: crate::store::ShipButton| ShipButtonView {
+        skill: b.skill,
+        label: b.label,
+        after_pr: b.after_pr,
+    };
+    let mut out = ShipButtons {
+        all: vec![],
+        projects: vec![],
+    };
+    for (scope, list) in st.svc.ship_buttons().await? {
+        let buttons = list.into_iter().map(view).collect();
+        if scope == "*" {
+            out.all = buttons;
+        } else {
+            out.projects.push(ShipScope {
+                project: scope,
+                buttons,
+            });
+        }
+    }
+    Ok(Json(out))
+}
+
+#[utoipa::path(put, path = "/app/v1/ship-buttons", tag = "agents",
+    security(("device_token" = [])), request_body = SetShipButtonsRequest,
+    responses((status = 204, description = "Done"), (status = 400, description = "Bad request", body = ApiError)))]
+/// Replaces the ship buttons for all projects, or one project's own list.
+pub async fn set_ship_buttons(
+    State(st): State<AppState>,
+    d: DeviceAuth,
+    Json(req): Json<SetShipButtonsRequest>,
+) -> Result<StatusCode, AppError> {
+    let buttons = req
+        .buttons
+        .into_iter()
+        .map(|b| crate::store::ShipButton {
+            skill: b.skill,
+            label: b.label,
+            after_pr: b.after_pr,
+        })
+        .collect();
+    st.svc
+        .set_ship_buttons(&d.caller(), &req.scope, buttons)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(get, path = "/app/v1/live", tag = "agents",
+    security(("device_token" = [])),
+    responses((status = 200, description = "OK", body = LiveBoardView)))]
+/// What the lock-screen card shows: who needs you, who is running, how many are idle. Masked.
+pub async fn get_live(State(st): State<AppState>, _d: DeviceAuth) -> ApiResult<LiveBoardView> {
+    Ok(Json(st.svc.board().await?.into()))
 }
 
 #[utoipa::path(get, path = "/app/v1/agents/dialog", tag = "agents",

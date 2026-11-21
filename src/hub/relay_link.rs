@@ -253,7 +253,7 @@ impl RelayLink {
         self.pushes.lock().unwrap().insert(id, tx);
         let frame = HubFrame::Push {
             id,
-            push: RelayPush {
+            push: Box::new(RelayPush {
                 token: push.token.clone().unwrap_or_default(),
                 env: push.env.as_str().into(),
                 kind: push.kind.as_str().into(),
@@ -264,7 +264,8 @@ impl RelayLink {
                     .then(|| push.provider.as_str().to_owned()),
                 collapse_id: push.collapse_id.clone(),
                 expires_at: push.expires_at,
-            },
+                live: push.live.clone(),
+            }),
         };
         if out.send(frame).await.is_err() {
             self.pushes.lock().unwrap().remove(&id);

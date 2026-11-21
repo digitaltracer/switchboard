@@ -5,6 +5,7 @@ pub mod backend;
 pub mod codex;
 pub mod core_watch;
 pub mod dialogs;
+pub mod diff;
 pub mod herdrs;
 pub mod hooks;
 pub mod link;
@@ -13,6 +14,7 @@ pub mod logcache;
 pub mod logwatch;
 pub mod sessions;
 pub mod skills;
+pub mod summary;
 pub mod transcript;
 pub mod watch;
 

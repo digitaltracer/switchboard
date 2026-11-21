@@ -48,6 +48,8 @@ pub struct Facts {
     pub blocked_kind: Option<String>,
     /// The core's `turn`.
     pub turn: Option<u64>,
+    /// The core says the program stopped on an error; its status reads as done.
+    pub error: bool,
 }
 
 impl Facts {
@@ -147,6 +149,7 @@ pub fn herdr_facts(
         pids: Vec::new(),
         blocked_kind: None,
         turn: None,
+        error: false,
     }
 }
 

@@ -7,6 +7,7 @@ pub mod hc;
 pub mod herdr;
 pub mod hook;
 pub mod hub;
+pub mod live;
 pub mod proto;
 pub mod push;
 pub mod redact;

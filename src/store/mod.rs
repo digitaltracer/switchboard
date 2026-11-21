@@ -58,13 +58,19 @@ macro_rules! str_enum {
     };
 }
 
+mod activity;
 mod agents;
 mod attention;
 mod devices;
+mod live;
 mod push;
+mod ship;
 
+pub use activity::{AgentEvent, ApprovalFact};
 pub use agents::{SeenAgent, SeenAgentRecord};
 pub use attention::AttentionRecord;
+pub use live::{LiveRegistration, LiveTarget};
+pub use ship::ShipButton;
 
 pub use devices::{
     AnswerProof, ApprovalProof, Challenge, ChallengePurpose, Claim, DeviceRecord, DeviceState,
@@ -237,6 +243,8 @@ str_enum!(OutboxKind, "kind" {
     Finished => "finished",
     DevicePaired => "device_paired",
     Waiting => "waiting",
+    // The lock-screen card; sent by the live loop, never queued in the outbox.
+    Live => "live",
 });
 
 /// A notification to send, recorded with the change that caused it.

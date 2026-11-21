@@ -119,11 +119,19 @@ impl Apns {
             PushEnv::Sandbox => &self.hosts.sandbox,
             PushEnv::Production => &self.hosts.production,
         };
+        let (topic, kind, priority) = match &push.live {
+            Some(l) => (
+                format!("{}.push-type.liveactivity", self.topic),
+                "liveactivity",
+                if l.urgent { "10" } else { "5" },
+            ),
+            None => (self.topic.clone(), "alert", "10"),
+        };
         Ok(Request::post(format!("https://{host}/3/device/{token}"))
             .header("authorization", format!("bearer {jwt}"))
-            .header("apns-topic", &self.topic)
-            .header("apns-push-type", "alert")
-            .header("apns-priority", "10")
+            .header("apns-topic", topic)
+            .header("apns-push-type", kind)
+            .header("apns-priority", priority)
             .header("apns-expiration", push.expires_at.to_string())
             .header("apns-collapse-id", &push.collapse_id)
             .header("content-type", "application/json")

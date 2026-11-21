@@ -37,6 +37,9 @@ impl Sender for Simctl {
     }
 
     async fn send(&self, push: &Push) -> SendOutcome {
+        if push.live.is_some() {
+            return SendOutcome::Failed("simctl can't push to a lock-screen card".into());
+        }
         let run = async {
             let mut child = tokio::process::Command::new("xcrun")
                 .args(self.args())

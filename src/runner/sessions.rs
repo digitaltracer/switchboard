@@ -636,6 +636,23 @@ impl Sessions {
                     _ => Ok(json!({ "files": [], "truncated": false })),
                 }
             }
+            Op::Summarize { prompt, model } => super::summary::summarize(&prompt, &model)
+                .await
+                .map(|s| json!({ "summary": s }))
+                .map_err(|e| err(ErrorCode::Internal, e)),
+            Op::Diff {
+                session_id,
+                path,
+                from,
+            } => {
+                let s = self.session(&session_id)?;
+                match (&s.worktree_path, &s.start_commit) {
+                    (Some(wt), Some(base)) => super::diff::diff(Path::new(wt), base, &path, from)
+                        .await
+                        .map_err(|e| err(ErrorCode::BadRequest, e)),
+                    _ => Err(err(ErrorCode::BadRequest, "this session has no worktree")),
+                }
+            }
         }
     }
 
@@ -1594,18 +1611,33 @@ async fn changes(worktree: &Path, base: &str) -> Result<Value, String> {
         .filter_map(|l| {
             let mut f = l.splitn(3, '\t');
             let (added, deleted, path) = (f.next()?, f.next()?, f.next()?);
-            Some(json!({ "path": path, "added": added.parse::<u64>().ok(), "deleted": deleted.parse::<u64>().ok() }))
+            let mut f = json!({ "path": path, "added": added.parse::<u64>().ok(), "deleted": deleted.parse::<u64>().ok() });
+            if added == "-" {
+                f["binary"] = json!(true);
+                f["size"] = json!(file_size(worktree, path));
+            }
+            Some(f)
         })
         .collect();
     let new = git(worktree, &["ls-files", "--others", "--exclude-standard"]).await?;
-    files.extend(
-        String::from_utf8_lossy(&new.stdout)
-            .lines()
-            .map(|path| json!({ "path": path, "added": null, "deleted": null })),
-    );
+    files.extend(String::from_utf8_lossy(&new.stdout).lines().map(|path| {
+        let mut f = json!({ "path": path, "added": null, "deleted": null });
+        if super::diff::looks_binary(&worktree.join(path)) {
+            f["binary"] = json!(true);
+            f["size"] = json!(file_size(worktree, path));
+        }
+        f
+    }));
     let truncated = files.len() > MAX_CHANGED_FILES;
     files.truncate(MAX_CHANGED_FILES);
     Ok(json!({ "files": files, "truncated": truncated }))
+}
+
+/// A changed file's size in the worktree; none once it's deleted.
+fn file_size(worktree: &Path, path: &str) -> Option<u64> {
+    std::fs::symlink_metadata(worktree.join(path))
+        .ok()
+        .map(|m| m.len())
 }
 
 /// The commit a fresh worktree is on; `None` when git can't say.

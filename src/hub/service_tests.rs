@@ -2773,3 +2773,54 @@ async fn a_sessions_space_comes_from_its_agent_in_the_listing() {
     );
     assert!(after.revision > before.revision, "the phone hears of it");
 }
+
+#[test]
+fn a_diff_is_masked_line_by_line_and_a_private_key_whole() {
+    let line = |kind: &str, text: &str| DiffLine {
+        kind: kind.into(),
+        old: None,
+        new: Some(1),
+        text: text.into(),
+    };
+    let mut d = FileDiff {
+        path: "src/a.rs".into(),
+        binary: false,
+        size: None,
+        added: None,
+        deleted: None,
+        hunk_count: 1,
+        hunks: vec![DiffHunk {
+            header: "@@ -1 +1 @@".into(),
+            old_start: 1,
+            new_start: 1,
+            lines: vec![
+                line("+", "const API_KEY = \"sk-ant-abcdefghijklmnopqrstuv\";"),
+                line("+", "-----BEGIN OPENSSH PRIVATE KEY-----"),
+                line("+", "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAAB"),
+                line("+", "-----END OPENSSH PRIVATE KEY-----"),
+                line(" ", "fn main() {}"),
+            ],
+            cut: false,
+        }],
+        next: None,
+        withheld: false,
+    };
+    d.mask();
+    let texts: Vec<_> = d.hunks[0].lines.iter().map(|l| l.text.as_str()).collect();
+    assert!(!texts[0].contains("sk-ant"), "{}", texts[0]);
+    assert_eq!(&texts[1..4], ["[redacted private key]"; 3]);
+    assert_eq!(texts[4], "fn main() {}");
+    for p in [
+        ".env",
+        "config/.env.local",
+        "deploy/server.pem",
+        "id_ed25519",
+        "AuthKey_ABC.p8",
+        ".netrc",
+    ] {
+        assert!(secret_file(p), "{p}");
+    }
+    for p in ["src/env.rs", "README.md", "keys.ts", "docs/pem.md"] {
+        assert!(!secret_file(p), "{p}");
+    }
+}

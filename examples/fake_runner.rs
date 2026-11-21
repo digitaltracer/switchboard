@@ -31,6 +31,61 @@ struct Fake {
     answered: AtomicBool,
     /// Sessions started in the Herdr app, which list as its agents.
     in_app: Mutex<Vec<String>>,
+    /// Each ship skill sent: the conversation's end after it, and the user and reply items.
+    shipped: Mutex<Vec<(u64, Vec<Value>)>>,
+}
+
+/// Unix time `ahead` seconds from now as the transcript writes it, `2026-11-21T09:30:00Z`.
+fn now_iso(ahead: i64) -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
+        + ahead;
+    let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    // Howard Hinnant's civil-from-days.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        rem / 3600,
+        rem % 3600 / 60,
+        rem % 60
+    )
+}
+
+/// A two-hunk diff with a long unchanged run in the middle, for the diff screen.
+fn diff(path: &str) -> Value {
+    let mut lines = vec![
+        json!({"kind": " ", "old": 1, "new": 1, "text": "use std::time::Duration;"}),
+        json!({"kind": "+", "old": null, "new": 2, "text": "use crate::clock::sleep;"}),
+        json!({"kind": " ", "old": 2, "new": 3, "text": ""}),
+        json!({"kind": "-", "old": 3, "new": null, "text": "const RETRIES: u32 = 3;"}),
+        json!({"kind": "+", "old": null, "new": 4, "text": "const RETRIES: u32 = 5;"}),
+        json!({"kind": "+", "old": null, "new": 5, "text": "const API_KEY: &str = \"[redacted]\";"}),
+    ];
+    for i in 0..12 {
+        lines.push(json!({"kind": " ", "old": 4 + i, "new": 6 + i, "text": format!("// unchanged line {}", 4 + i)}));
+    }
+    let second = vec![
+        json!({"kind": "+", "old": null, "new": 42, "text": "    let delay = 2u64.pow(attempt) * 250;"}),
+        json!({"kind": "+", "old": null, "new": 43, "text": "    sleep(Duration::from_millis(delay)).await;"}),
+        json!({"kind": " ", "old": 39, "new": 44, "text": "    } else {"}),
+        json!({"kind": "-", "old": 40, "new": null, "text": "        return Err(err);"}),
+        json!({"kind": "+", "old": null, "new": 45, "text": "        if !retryable(&err) { return Err(err); }"}),
+        json!({"kind": " ", "old": 41, "new": 46, "text": "    }"}),
+    ];
+    json!({ "path": path, "binary": false, "size": null, "added": 6, "deleted": 2, "hunk_count": 2, "next": null,
+            "hunks": [
+                { "header": "@@ -1,15 +1,17 @@", "old_start": 1, "new_start": 1, "lines": lines, "cut": false },
+                { "header": "@@ -38,4 +42,5 @@ async fn with_retry", "old_start": 38, "new_start": 42, "lines": second, "cut": false },
+            ] })
 }
 
 fn option(id: &str, label: &str, is_deny: bool, offered: bool) -> Value {
@@ -116,8 +171,18 @@ impl Handler for Fake {
             }
             Op::Transcript {
                 after: Some(end), ..
-            } => Ok(json!({ "items": [], "start": end, "end": end })),
-            Op::Transcript { .. } => Ok(json!({ "start": 0, "end": 4096, "items": [
+            } => {
+                let shipped = self.shipped.lock().unwrap();
+                let items: Vec<Value> = shipped
+                    .iter()
+                    .filter(|(e, _)| *e > end)
+                    .flat_map(|(_, i)| i.clone())
+                    .collect();
+                let last = shipped.last().map_or(end, |(e, _)| (*e).max(end));
+                Ok(json!({ "items": items, "start": end, "end": last }))
+            }
+            Op::Transcript { .. } => Ok({
+                let mut page = json!({ "start": 0, "end": 4096, "items": [
                 { "id": "u0", "kind": "user", "text": "review the retry module", "done": false, "failed": false },
                 { "id": "t0", "kind": "tool", "tool": "Read", "text": "Read crates/core/src/retry.rs", "done": true, "failed": false },
                 { "id": "a0", "kind": "assistant", "done": false, "failed": false, "text":
@@ -129,21 +194,87 @@ impl Handler for Fake {
                   "input": "{ \"file_path\": \"crates/core/src/retry.rs\" }", "output": "+6 −2", "done": true, "failed": false },
                 { "id": "t2", "kind": "tool", "tool": "Bash", "text": "Ran cargo test -p kraft-core",
                   "input": "{ \"command\": \"cargo test -p kraft-core\" }", "done": false, "failed": false },
-            ] })),
+                ] });
+                for (end, items) in self.shipped.lock().unwrap().iter() {
+                    page["items"]
+                        .as_array_mut()
+                        .unwrap()
+                        .extend(items.iter().cloned());
+                    page["end"] = json!(end);
+                }
+                page
+            }),
             Op::Changes { .. } => Ok(json!({ "files": [
                 { "path": "crates/core/src/retry.rs", "added": 6, "deleted": 2 },
                 { "path": "crates/core/tests/retry.rs", "added": 14, "deleted": 0 },
                 { "path": "notes/flaky.md", "added": null, "deleted": null },
+                { "path": "docs/rate-limit.png", "added": null, "deleted": null, "binary": true, "size": 24576 },
             ], "truncated": false })),
+            Op::Diff { path, .. } if path.ends_with(".png") => Ok(json!({
+                "path": path, "binary": true, "size": 24576, "hunk_count": 0, "hunks": [], "next": null })),
+            Op::Diff { path, .. } => Ok(diff(&path)),
+            // A ship skill: `/pr` ends with a pull request link, anything else without one.
+            Op::Prompt { session_id, text } if text.starts_with('/') || text.starts_with('$') => {
+                let reply = if text.starts_with("/pr") {
+                    "Pushed the branch and opened [Fix the flaky retry test](https://github.com/acme/kraft/pull/482) as a draft against main."
+                } else {
+                    "Committed the fix, but the push was denied by your deny patterns, so no pull request was opened."
+                };
+                {
+                    let mut shipped = self.shipped.lock().unwrap();
+                    let n = shipped.len() as u64;
+                    shipped.push((8192 + n * 1024, vec![
+                        json!({ "id": format!("su{n}"), "kind": "user", "text": text, "done": false, "failed": false }),
+                        json!({ "id": format!("sa{n}"), "kind": "assistant", "text": reply, "at": now_iso(2), "done": false, "failed": false }),
+                    ]));
+                }
+                let events = self.events.clone();
+                tokio::spawn(async move {
+                    let _ = events
+                        .send(Event::AgentStatus {
+                            session_id: session_id.clone(),
+                            agent_status: "working".into(),
+                            revision: 3,
+                        })
+                        .await;
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    let _ = events
+                        .send(Event::AgentStatus {
+                            session_id,
+                            agent_status: "done".into(),
+                            revision: 4,
+                        })
+                        .await;
+                });
+                Ok(json!({ "agent_status": "working" }))
+            }
             Op::Prompt { .. } => Ok(json!({ "agent_status": "working" })),
-            Op::Decide { .. } => Ok(json!({ "applied": true })),
+            // A decided approval lets the agent finish its turn, so the session shows ship buttons.
+            Op::Decide { session_id, .. } => {
+                let events = self.events.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    let _ = events
+                        .send(Event::AgentStatus {
+                            session_id,
+                            agent_status: "done".into(),
+                            revision: 2,
+                        })
+                        .await;
+                });
+                Ok(json!({ "applied": true }))
+            }
             Op::Stop { .. } => Ok(json!({ "worktree_removed": false })),
             Op::Delete { .. } => Ok(
                 json!({ "worktree_removed": false, "kept_because": "unmerged", "herdr_session_deleted": true }),
             ),
             Op::ListSessions => Ok(json!([])),
             Op::Skills { .. } => Ok(json!({"skills": [
+                {"name": "/pr", "description": "Create a GitHub pull request from the current branch", "source": "user"},
+                {"name": "/ship", "description": "Commit, push and open a PR in one go", "source": "user"},
                 {"name": "/commit", "description": "Create well-formatted commits", "source": "user"},
+                {"name": "/code-review", "description": "Review the current diff", "source": "plugin"},
+                {"name": "/triage-reviews", "description": "Answer a pull request's review comments", "source": "user"},
                 {"name": "/council", "description": "Several agents review a plan", "source": "user"},
                 {"name": "/compact", "description": "Summarise the conversation to free up context", "source": "builtin"}
             ]})),
@@ -243,6 +374,7 @@ async fn main() -> anyhow::Result<()> {
         events: tx,
         answered: AtomicBool::new(false),
         in_app: Mutex::new(Vec::new()),
+        shipped: Mutex::new(Vec::new()),
     };
     link::run(cfg, Arc::new(fake), rx).await;
     Ok(())

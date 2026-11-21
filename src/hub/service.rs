@@ -19,13 +19,14 @@ use crate::agents::claude::answers;
 use crate::cli::Agent;
 use crate::config::{HubConfig, ProjectConfig};
 use crate::proto::{
-    AgentActivity, AgentPromptOutcome, AgentSummary, CAP_ACTIVITY, CAP_START_BACKEND, DialogView,
-    ErrorCode, Event, Frame, Hello, Op, OwnedSession, ProtoError, SkillInfo, StartBackend,
-    StartOptions, TranscriptPage,
+    AgentActivity, AgentPromptOutcome, AgentSummary, CAP_ACTIVITY, CAP_DIFF, CAP_START_BACKEND,
+    DialogView, ErrorCode, Event, Frame, Hello, Op, OwnedSession, ProtoError, SkillInfo,
+    StartBackend, StartOptions, TranscriptPage,
 };
 use crate::redact::{redact, redact_as, redact_str};
 use crate::runner::random_id;
 use crate::runner::sessions::agent_name;
+use crate::store::ShipButton;
 use crate::store::{
     AnswerProof, ApprovalProof, ApprovalRecord, AttentionRecord, Begin, DecideOutcome, Decision,
     Delivery, Lifecycle, NewOperation, OpState, Operation, SeenAgent, SeenAgentRecord,
@@ -549,6 +550,117 @@ pub struct ChangedFile {
     /// Lines added and deleted; none for a binary or new untracked file.
     pub added: Option<u64>,
     pub deleted: Option<u64>,
+    #[serde(default)]
+    pub binary: bool,
+    /// Bytes, for a binary file still in the worktree.
+    #[serde(default)]
+    pub size: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DiffLine {
+    /// `" "`, `"+"` or `"-"`.
+    pub kind: String,
+    pub old: Option<u32>,
+    pub new: Option<u32>,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DiffHunk {
+    pub header: String,
+    pub old_start: u32,
+    pub new_start: u32,
+    pub lines: Vec<DiffLine>,
+    /// The hunk was longer than a page and is cut short.
+    #[serde(default)]
+    pub cut: bool,
+}
+
+/// One changed file's diff, a page of hunks, masked.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FileDiff {
+    pub path: String,
+    pub binary: bool,
+    pub size: Option<u64>,
+    #[serde(default)]
+    pub added: Option<u64>,
+    #[serde(default)]
+    pub deleted: Option<u64>,
+    pub hunk_count: u32,
+    pub hunks: Vec<DiffHunk>,
+    /// The first hunk of the next page.
+    pub next: Option<u32>,
+    /// The file is the kind that holds secrets, so its content isn't shown.
+    #[serde(default)]
+    pub withheld: bool,
+}
+
+impl FileDiff {
+    fn withheld(path: &str) -> Self {
+        Self {
+            path: redact_str(path),
+            binary: false,
+            size: None,
+            added: None,
+            deleted: None,
+            hunk_count: 0,
+            hunks: vec![],
+            next: None,
+            withheld: true,
+        }
+    }
+
+    /// Masks every line; a private key's lines between its BEGIN and END are masked whole, since
+    /// one line alone doesn't look like a secret.
+    pub fn mask(&mut self) {
+        self.path = redact_str(&self.path);
+        for h in &mut self.hunks {
+            h.header = redact_str(&h.header);
+            let mut in_key = false;
+            for l in &mut h.lines {
+                let key_line = l.text.contains("PRIVATE KEY-----");
+                let begins = key_line && l.text.contains("-----BEGIN");
+                let ends = key_line && l.text.contains("-----END");
+                l.text = if in_key || begins {
+                    "[redacted private key]".into()
+                } else {
+                    redact_str(&l.text)
+                };
+                in_key = (in_key || begins) && !ends;
+            }
+        }
+    }
+}
+
+pub const MAX_SHIP_BUTTONS: usize = 12;
+
+/// A skill or command name as agents list them: `pr`, `code-review`, `plugin:skill`.
+pub fn valid_skill_name(s: &str) -> bool {
+    let mut chars = s.chars();
+    chars.next().is_some_and(|c| c.is_ascii_alphanumeric())
+        && s.len() <= 64
+        && chars.all(|c| c.is_ascii_alphanumeric() || ":_.-".contains(c))
+}
+
+/// Files whose whole content is a secret, by name: env files, keys and credential stores.
+pub fn secret_file(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase();
+    ["id_rsa", "id_ed25519", "id_ecdsa", ".env"]
+        .iter()
+        .any(|p| name.starts_with(p))
+        || [
+            ".netrc",
+            ".pgpass",
+            "credentials",
+            "credentials.json",
+            ".npmrc",
+            ".pypirc",
+        ]
+        .contains(&name.as_str())
+        || [".pem", ".key", ".p8", ".p12", ".pfx", ".keystore", ".jks"]
+            .iter()
+            .any(|ext| name.ends_with(ext))
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -595,7 +707,14 @@ pub struct SessionService {
     /// Per machine, starts whose outcome is unknown; that machine takes no new start until they resolve.
     unresolved: Mutex<HashMap<String, HashSet<String>>>,
     screen_reads: tokio::sync::Semaphore,
+    /// Each agent's last state, for "while you were away"; `away::state_of` says which.
+    agent_states: Mutex<HashMap<(String, String), String>>,
+    /// The lock-screen board's memory, and the last board built.
+    board: tokio::sync::Mutex<(crate::live::Tracker, Option<crate::live::Board>)>,
 }
+
+/// A board younger than this is reused rather than rebuilt.
+const BOARD_FRESH_SECS: i64 = 3;
 
 impl SessionService {
     pub fn new(cfg: HubConfig, store: Store, clock: Clock) -> Arc<Self> {
@@ -610,6 +729,8 @@ impl SessionService {
             start_lock: tokio::sync::Mutex::new(()),
             unresolved: Mutex::default(),
             screen_reads: tokio::sync::Semaphore::new(MAX_SCREEN_READS),
+            board: tokio::sync::Mutex::default(),
+            agent_states: Mutex::default(),
         })
     }
 
@@ -631,6 +752,11 @@ impl SessionService {
 
     pub fn readiness(&self, machine: &str) -> Readiness {
         self.runners.readiness(machine)
+    }
+
+    /// Ticks whenever sessions, approvals or attention change.
+    pub fn watch_changes(&self) -> watch::Receiver<u64> {
+        self.changes.subscribe()
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<HubEvent> {
@@ -1269,6 +1395,96 @@ impl SessionService {
         Ok(r)
     }
 
+    /// Every scope's ship buttons: `*` for all projects, then projects with their own list.
+    pub async fn ship_buttons(&self) -> Result<Vec<(String, Vec<ShipButton>)>, HubError> {
+        Ok(self.store.ship_buttons().await?)
+    }
+
+    /// Replaces one scope's ship buttons; an empty list removes a project's own list, so it
+    /// shows the one for all projects again.
+    pub async fn set_ship_buttons(
+        &self,
+        caller: &Caller,
+        scope: &str,
+        buttons: Vec<ShipButton>,
+    ) -> Result<(), HubError> {
+        if scope != "*" && !self.cfg.projects.iter().any(|p| p.id == scope) {
+            return Err(HubError::BadRequest(format!("unknown project {scope}")));
+        }
+        if buttons.len() > MAX_SHIP_BUTTONS {
+            return Err(HubError::BadRequest(format!(
+                "at most {MAX_SHIP_BUTTONS} ship buttons"
+            )));
+        }
+        let mut seen = HashSet::new();
+        let mut clean = Vec::new();
+        for b in buttons {
+            let skill = b.skill.trim();
+            // Claude Code's skills go by `/name`, Codex's by `$name`; a bare name is a `/` one.
+            let skill = if skill.starts_with(['/', '$']) {
+                skill.to_owned()
+            } else {
+                format!("/{skill}")
+            };
+            let label = b.label.trim().to_owned();
+            if !valid_skill_name(&skill[1..]) {
+                return Err(HubError::BadRequest(format!(
+                    "{skill:?} is not a skill name"
+                )));
+            }
+            if label.is_empty() || label.chars().count() > 40 || label.chars().any(char::is_control)
+            {
+                return Err(HubError::BadRequest(
+                    "a label is 1 to 40 characters on one line".into(),
+                ));
+            }
+            if seen.insert(skill.clone()) {
+                clean.push(ShipButton {
+                    skill,
+                    label,
+                    after_pr: b.after_pr,
+                });
+            }
+        }
+        let detail =
+            json!({ "scope": scope, "skills": clean.iter().map(|b| &b.skill).collect::<Vec<_>>() });
+        self.store.set_ship_buttons(scope, clean).await?;
+        self.audit(&caller.actor, None, "ship_buttons_set", detail)
+            .await
+    }
+
+    /// A page of one changed file's diff, masked. Read-only; sessions Switchboard started only.
+    pub async fn diff(
+        &self,
+        session_id: &str,
+        path: &str,
+        from: u32,
+    ) -> Result<FileDiff, HubError> {
+        let s = self.session(session_id).await?;
+        if secret_file(path) {
+            return Ok(FileDiff::withheld(path));
+        }
+        if !self.runners.can(&s.machine_id, CAP_DIFF) {
+            return Err(HubError::BadRequest(
+                "this machine's runner is too old to show diffs; update Switchboard there".into(),
+            ));
+        }
+        let op = Op::Diff {
+            session_id: session_id.to_owned(),
+            path: path.to_owned(),
+            from,
+        };
+        let v = self
+            .runners
+            .call(&s.machine_id, op, CALL_TIMEOUT)
+            .await
+            .map_err(|e| runner_error(&s.machine_id, e))?;
+        let mut d: FileDiff = serde_json::from_value(v)
+            .map_err(|e| HubError::BadRequest(format!("runner diff: {e}")))?;
+        d.mask();
+        Ok(d)
+    }
+
     /// A page of the session's conversation, from its agent's own log. Untrusted text, masked.
     /// With `after` and `wait_ms`, the runner first waits for the log to grow past `after`.
     pub async fn transcript(
@@ -1777,6 +1993,7 @@ impl SessionService {
             match self.agents(&m.id).await {
                 Ok(agents) => {
                     self.record_session_spaces(&m.id, &agents).await;
+                    self.note_states(&m.id, &agents).await;
                     let agents: Vec<_> = agents
                         .into_iter()
                         .filter(|a| a.session_id.is_none() && !session_agents.contains(&a.name))
@@ -1865,6 +2082,85 @@ impl SessionService {
             answered.push(m);
         }
         (entries, answered)
+    }
+
+    /// Every agent on the connected machines as the lock-screen board needs it, names masked. A
+    /// session's undecided approval and a recorded dialog both count as needing the owner.
+    pub async fn live_inputs(&self) -> Result<Vec<crate::live::Seen>, HubError> {
+        let now = self.now();
+        let mut asked: HashMap<(String, String), i64> = HashMap::new();
+        let sessions = self.list().await?;
+        // A session goes by its label, as the app shows it.
+        let labels: HashMap<String, String> = sessions
+            .iter()
+            .map(|s| {
+                (
+                    s.id.clone(),
+                    route::label(&s.project_id, &s.id, s.name.as_deref()),
+                )
+            })
+            .collect();
+        for s in sessions {
+            let (Some(agent), Some(first)) = (
+                s.agent_name.clone(),
+                s.pending_approvals.iter().map(|a| a.created_at).min(),
+            ) else {
+                continue;
+            };
+            asked.insert((s.machine_id.clone(), agent), first);
+        }
+        for (machine, agent, at) in self.store.open_attention(now).await? {
+            let e = asked.entry((machine, agent)).or_insert(at);
+            *e = (*e).min(at);
+        }
+        let mut out = Vec::new();
+        for m in self.machines().into_iter().filter(|m| m.connected) {
+            let agents = match self.agents(&m.id).await {
+                Ok(a) => a,
+                Err(e) => {
+                    tracing::debug!(machine = %m.id, error = %e, "listing agents for the board");
+                    continue;
+                }
+            };
+            out.extend(agents.into_iter().map(|a| {
+                crate::live::Seen {
+                    needs_you_since: asked
+                        .get(&(m.id.clone(), a.name.clone()))
+                        .map(|ms| ms / 1000),
+                    label: redact_str(
+                        &a.session_id
+                            .as_ref()
+                            .and_then(|id| labels.get(id).cloned())
+                            .unwrap_or_else(|| {
+                                crate::live::agent_label(
+                                    &a.name,
+                                    a.title.as_deref(),
+                                    a.kind.as_deref(),
+                                )
+                            }),
+                    ),
+                    machine: m.id.clone(),
+                    name: redact_str(&a.name),
+                    space: a.space.as_deref().map(redact_str),
+                    status: a.agent_status,
+                    error: a.error,
+                }
+            }));
+        }
+        Ok(out)
+    }
+
+    /// The lock-screen board, masked: built at most every few seconds however many ask.
+    pub async fn board(&self) -> Result<crate::live::Board, HubError> {
+        let mut g = self.board.lock().await;
+        let now = self.now() / 1000;
+        if let Some(b) = g.1.as_ref().filter(|b| now - b.at < BOARD_FRESH_SECS) {
+            return Ok(b.clone());
+        }
+        let inputs = self.live_inputs().await?;
+        let b = g.0.observe(now, &inputs);
+        g.1 = Some(b.clone());
+        Ok(b)
     }
 
     /// Agents Switchboard didn't start, on every connected machine.
@@ -3184,6 +3480,12 @@ impl SessionService {
                 ..
             } => {
                 if let Some(s) = self.owned_by(machine, &session_id).await?
+                    && let Some(agent) = &s.agent_name
+                {
+                    self.note_state(machine, agent, Some(&s.id), &agent_status, false)
+                        .await;
+                }
+                if let Some(s) = self.owned_by(machine, &session_id).await?
                     && s.agent_status != agent_status
                 {
                     self.patch(
@@ -3390,6 +3692,8 @@ impl SessionService {
                 agent_name,
                 agent_status,
             } => {
+                self.note_state(machine, &agent_name, None, &agent_status, false)
+                    .await;
                 // An agent that moved on no longer waits; its pushes not yet sent are dropped.
                 if agent_status != "blocked" {
                     self.store
@@ -3570,6 +3874,9 @@ async fn approval_now(svc: &SessionService, id: &str) -> Result<ApprovalRecord, 
         .await?
         .ok_or_else(|| HubError::UnknownApproval(id.to_owned()))
 }
+
+#[path = "away.rs"]
+pub mod away;
 
 #[cfg(test)]
 #[path = "service_tests.rs"]

@@ -1991,3 +1991,381 @@ async fn a_herdr_app_session_lists_under_the_space_its_agent_is_in() {
         .await;
     assert_eq!(s.body["space"], "kraft", "{}", s.body);
 }
+
+#[tokio::test]
+async fn a_phone_registers_its_card_and_reads_the_masked_board() {
+    let mut r = rig().await;
+    let (device, token) = r.pair(&Phone::new()).await;
+    let t = Some(token.as_str());
+    let key = p256::SecretKey::from_slice(&[0x11; 32]).unwrap();
+    let live_key = base64::Engine::encode(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        key.public_key().to_sec1_bytes(),
+    );
+    let put = |body: Value| r.call("PUT", "/devices/self/live", t, Some(body));
+    for bad in [
+        json!({"live_key": "not a key"}),
+        json!({"live_key": "AAAA"}),
+        json!({"activity_token": "zz"}),
+    ] {
+        assert!(put(bad.clone()).await.status.is_client_error(), "{bad}");
+    }
+    let ok = put(
+        json!({"live_key": live_key, "start_token": "AB", "activity_token": "CD",
+                        "activity_started_at": 5}),
+    )
+    .await;
+    assert_eq!(ok.status, StatusCode::NO_CONTENT);
+    let reg = r
+        .svc
+        .store()
+        .live_registration(&device)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (
+            reg.start_token.as_deref(),
+            reg.activity_token.as_deref(),
+            reg.activity_started_at
+        ),
+        (Some("ab"), Some("cd"), Some(5))
+    );
+    assert_eq!(r.svc.store().live_targets().await.unwrap().len(), 1);
+    assert!(!reg.always, "while working is the default");
+    let always = put(json!({"live_key": live_key, "mode": "always"})).await;
+    assert_eq!(always.status, StatusCode::NO_CONTENT);
+    assert!(
+        r.svc
+            .store()
+            .live_registration(&device)
+            .await
+            .unwrap()
+            .unwrap()
+            .always
+    );
+    assert!(
+        put(json!({"live_key": live_key, "mode": "sometimes"}))
+            .await
+            .status
+            .is_client_error()
+    );
+
+    let call = r.call_later("GET", "/live", &token, Value::Null);
+    let req = r.req().await;
+    assert!(matches!(req.op, Op::Agents), "{:?}", req.op);
+    let mut agents = agents_reply();
+    agents[1]["name"] = json!("ghp_abcdefghijklmnopqrstuvwxyz0123456789");
+    agents[1]["agent_status"] = json!("working");
+    r.ok(req.id, agents).await;
+    let board = call.await.unwrap();
+    assert_eq!(board.status, StatusCode::OK, "{}", board.body);
+    assert_eq!(
+        board.body["waiting"][0]["name"], "claude",
+        "named as the app does"
+    );
+    assert_eq!(board.body["more"], 0);
+    let running = board.body["running"].to_string();
+    assert!(running.contains("sb-task"), "{running}");
+    assert!(
+        !running.contains("ghp_abcdef"),
+        "names are masked: {running}"
+    );
+    assert_eq!(board.body["idle"], 0);
+
+    let off = r.call("DELETE", "/devices/self/live", t, None).await;
+    assert_eq!(off.status, StatusCode::NO_CONTENT);
+    assert!(r.svc.store().live_targets().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_changed_files_diff_comes_from_the_runner_masked() {
+    let mut r = rig_advertising("", vec![crate::proto::CAP_DIFF.into()]).await;
+    let (_, token) = r.pair(&Phone::new()).await;
+    let sid = r.start(&token, "d1").await;
+    let call = r.call_later(
+        "GET",
+        &format!("/sessions/{sid}/diff?path=src/a.rs&from=2"),
+        &token,
+        Value::Null,
+    );
+    let req = r.req().await;
+    match &req.op {
+        Op::Diff {
+            session_id,
+            path,
+            from,
+        } => assert_eq!(
+            (session_id.as_str(), path.as_str(), *from),
+            (sid.as_str(), "src/a.rs", 2)
+        ),
+        other => panic!("expected a diff, got {other:?}"),
+    }
+    r.ok(
+        req.id,
+        json!({"path": "src/a.rs", "binary": false, "size": null, "added": 1, "deleted": 0, "hunk_count": 3, "next": null,
+               "hunks": [{"header": "@@ -1 +1,2 @@", "old_start": 1, "new_start": 1, "cut": false, "lines": [
+                   {"kind": " ", "old": 1, "new": 1, "text": "fn main() {}"},
+                   {"kind": "+", "old": null, "new": 2, "text": "let token = \"ghp_abcdefghijklmnopqrstuvwxyz0123456789\";"}]}]}),
+    )
+    .await;
+    let got = call.await.unwrap();
+    assert_eq!(got.status, StatusCode::OK, "{}", got.body);
+    let added = got.body["hunks"][0]["lines"][1]["text"].as_str().unwrap();
+    assert!(!added.contains("ghp_"), "{added}");
+    assert_eq!(got.body["hunks"][0]["lines"][1]["new"], 2);
+    assert_eq!(got.body["withheld"], false);
+
+    // A key file never reaches the runner.
+    let key = r
+        .call(
+            "GET",
+            &format!("/sessions/{sid}/diff?path=deploy/server.pem"),
+            Some(&token),
+            None,
+        )
+        .await;
+    assert_eq!(
+        (key.status, key.body["withheld"].as_bool()),
+        (StatusCode::OK, Some(true))
+    );
+    assert!(r.runner.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn an_older_runner_is_never_asked_for_a_diff() {
+    let mut r = rig().await;
+    let (_, token) = r.pair(&Phone::new()).await;
+    let sid = r.start(&token, "d2").await;
+    let got = r
+        .call(
+            "GET",
+            &format!("/sessions/{sid}/diff?path=src/a.rs"),
+            Some(&token),
+            None,
+        )
+        .await;
+    assert_eq!(got.status, StatusCode::BAD_REQUEST, "{}", got.body);
+    assert!(r.runner.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn ship_buttons_are_kept_on_the_hub_per_scope() {
+    let r = rig().await;
+    let (_, token) = r.pair(&Phone::new()).await;
+    let t = Some(token.as_str());
+    let empty = r.call("GET", "/ship-buttons", t, None).await;
+    assert_eq!(empty.body, json!({"all": [], "projects": []}));
+    let put = |body: Value| r.call("PUT", "/ship-buttons", t, Some(body));
+    let ok = put(json!({"scope": "*", "buttons": [
+        {"skill": "/pr", "label": "Raise PR"},
+        {"skill": "commit", "label": "Commit only"},
+        {"skill": "pr", "label": "Twice"},
+        {"skill": "$fix", "label": "Codex fix"},
+        {"skill": "triage-reviews", "label": "Triage reviews", "after_pr": true},
+    ]}))
+    .await;
+    assert_eq!(ok.status, StatusCode::NO_CONTENT, "{}", ok.body);
+    assert_eq!(
+        put(json!({"scope": "switchboard", "buttons": [{"skill": "ship", "label": "Ship"}]}))
+            .await
+            .status,
+        StatusCode::NO_CONTENT
+    );
+    let got = r.call("GET", "/ship-buttons", t, None).await;
+    assert_eq!(
+        got.body["all"],
+        json!([{"skill": "/pr", "label": "Raise PR", "after_pr": false},
+               {"skill": "/commit", "label": "Commit only", "after_pr": false},
+               {"skill": "$fix", "label": "Codex fix", "after_pr": false},
+               {"skill": "/triage-reviews", "label": "Triage reviews", "after_pr": true}]),
+        "a bare name becomes a slash command, a repeated skill is kept once"
+    );
+    assert_eq!(got.body["projects"][0]["project"], "switchboard");
+    for bad in [
+        json!({"scope": "nope", "buttons": []}),
+        json!({"scope": "*", "buttons": [{"skill": "pr; rm -rf /", "label": "x"}]}),
+        json!({"scope": "*", "buttons": [{"skill": "/", "label": "x"}]}),
+        json!({"scope": "*", "buttons": [{"skill": "pr", "label": ""}]}),
+        json!({"scope": "*", "buttons": [{"skill": "pr", "label": "two\nlines"}]}),
+    ] {
+        assert!(put(bad.clone()).await.status.is_client_error(), "{bad}");
+    }
+    assert_eq!(
+        put(json!({"scope": "switchboard", "buttons": []}))
+            .await
+            .status,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        r.call("GET", "/ship-buttons", t, None).await.body["projects"],
+        json!([])
+    );
+}
+
+#[tokio::test]
+async fn while_you_were_away_lists_what_each_agent_did_masked() {
+    let mut r = rig().await;
+    let (_, token) = r.pair(&Phone::new()).await;
+    let t = Some(token.as_str());
+    let sid = r.start(&token, "aw1").await;
+    r.approval(
+        &sid,
+        "a1",
+        "Bash",
+        json!({"command": "deploy --token=supersecretvalue"}),
+    )
+    .await;
+    let denied = r
+        .call(
+            "POST",
+            "/approvals/a1/decision",
+            t,
+            Some(json!({"decision": "deny", "request_id": "d1"})),
+        )
+        .await;
+    assert!(denied.status.is_success(), "{}", denied.body);
+    let _ = r.req().await;
+    // Two listings: an agent Switchboard didn't start goes from working to idle.
+    for status in ["working", "idle"] {
+        let call = r.call_later("GET", "/agents", &token, Value::Null);
+        let req = r.req().await;
+        let mut agents = agents_reply();
+        agents[1]["agent_status"] = json!(status);
+        r.ok(req.id, agents).await;
+        assert_eq!(call.await.unwrap().status, StatusCode::OK);
+    }
+    // A session's turn, from the runner's own status events.
+    for (status, revision) in [("working", 5), ("done", 6)] {
+        r.event(Event::AgentStatus {
+            session_id: sid.clone(),
+            agent_status: status.into(),
+            revision,
+        })
+        .await;
+    }
+    let got = r.call("GET", "/activity?since=0", t, None).await;
+    assert_eq!(got.status, StatusCode::OK, "{}", got.body);
+    let body = got.body.to_string();
+    assert!(!body.contains("supersecretvalue"), "{body}");
+    let agents = got.body["agents"].as_array().unwrap();
+    let task = agents
+        .iter()
+        .find(|a| a["agent"] == "mono1/w1:p2")
+        .expect("the listed agent");
+    let kinds: Vec<_> = task["facts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        kinds,
+        ["finished"],
+        "a first sighting records nothing, then the turn's end"
+    );
+    assert_eq!(task["state"], "idle");
+    let session = agents
+        .iter()
+        .find(|a| a["session_id"] == sid.as_str())
+        .expect("the session");
+    let kinds: Vec<_> = session["facts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["kind"].as_str().unwrap())
+        .collect();
+    for k in ["started", "asked", "denied", "finished"] {
+        assert!(kinds.contains(&k), "{k} in {kinds:?}");
+    }
+    assert_eq!(session["state"], "idle");
+    assert_eq!(got.body["summary_on"], false);
+    let later = r
+        .call(
+            "GET",
+            &format!("/activity?since={}", got.body["now"].as_i64().unwrap() + 1),
+            t,
+            None,
+        )
+        .await;
+    assert_eq!(later.body["agents"], json!([]));
+}
+
+#[tokio::test]
+async fn the_summary_is_off_until_the_owner_turns_it_on_and_runs_on_the_runner() {
+    let mut r = rig_advertising("", vec![crate::proto::CAP_SUMMARY.into()]).await;
+    let (_, token) = r.pair(&Phone::new()).await;
+    let t = Some(token.as_str());
+    assert_eq!(
+        r.call("GET", "/settings/away", t, None).await.body,
+        json!({"summary": false, "model": "haiku"})
+    );
+    let off = r
+        .call("POST", "/activity/summary", t, Some(json!({"since": 0})))
+        .await;
+    assert_eq!(off.status, StatusCode::BAD_REQUEST, "{}", off.body);
+    let bad = r
+        .call(
+            "PUT",
+            "/settings/away",
+            t,
+            Some(json!({"summary": true, "model": "haiku; rm -rf /"})),
+        )
+        .await;
+    assert!(bad.status.is_client_error());
+    let on = r
+        .call(
+            "PUT",
+            "/settings/away",
+            t,
+            Some(json!({"summary": true, "model": "haiku"})),
+        )
+        .await;
+    assert_eq!(on.status, StatusCode::NO_CONTENT);
+    let _sid = r.start(&token, "aw2").await;
+    let call = r.call_later("POST", "/activity/summary", &token, json!({"since": 0}));
+    let req = r.req().await;
+    match &req.op {
+        Op::Summarize { prompt, model } => {
+            assert_eq!(model, "haiku");
+            assert!(prompt.contains("Started as"), "{prompt}");
+        }
+        other => panic!("expected a summary, got {other:?}"),
+    }
+    r.ok(
+        req.id,
+        json!({"summary": "One task started. Its key was sk-ant-abcdefghijklmnopqrstuv."}),
+    )
+    .await;
+    let got = call.await.unwrap();
+    assert_eq!(got.status, StatusCode::OK, "{}", got.body);
+    assert!(
+        !got.body["summary"].as_str().unwrap().contains("sk-ant"),
+        "the summary is masked too"
+    );
+}
+
+#[tokio::test]
+async fn a_sessions_card_name_is_its_label_not_its_agents_internal_name() {
+    let mut r = rig().await;
+    let (_, token) = r.pair(&Phone::new()).await;
+    let sid = r.start(&token, "lbl").await;
+    let label = r
+        .call("GET", &format!("/sessions/{sid}"), Some(&token), None)
+        .await
+        .body["label"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let call = r.call_later("GET", "/live", &token, Value::Null);
+    let req = r.req().await;
+    assert!(matches!(req.op, Op::Agents), "{:?}", req.op);
+    r.ok(
+        req.id,
+        json!([{"name": "sb-dfafaaa9", "pane_id": "w9:p1", "kind": "claude", "agent_status": "working",
+                "session_id": sid, "herdr_session": "switchboard-1a2b"}]),
+    )
+    .await;
+    let board = call.await.unwrap();
+    assert_eq!(board.body["running"], json!([label]), "{}", board.body);
+}

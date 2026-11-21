@@ -12,6 +12,10 @@ pub const PROTOCOL_VERSION: u32 = 1;
 pub const MAX_FRAME_BYTES: usize = 1 << 20;
 /// A runner that answers `Op::Activity`.
 pub const CAP_ACTIVITY: &str = "activity";
+/// The runner answers `Op::Diff`.
+pub const CAP_DIFF: &str = "diff";
+/// The runner answers `Op::Summarize`.
+pub const CAP_SUMMARY: &str = "summary";
 /// A runner that hosts herdr-core agents, named `hc/<agent>`.
 pub const CAP_HC: &str = "hc";
 /// The `herdr_session` of a herdr-core agent or session.
@@ -197,6 +201,21 @@ pub enum Op {
     Changes {
         session_id: String,
     },
+    /// One changed file's unified diff since the session started, a page of hunks from `from`;
+    /// only for runners advertising `CAP_DIFF`. Read-only.
+    Diff {
+        session_id: String,
+        path: String,
+        #[serde(default)]
+        from: u32,
+    },
+    /// Summarises masked facts with `claude -p` and every tool, setting, hook, plugin and MCP
+    /// server off, in an empty folder; only for runners advertising `CAP_SUMMARY`. The owner
+    /// turns it on. Returns `{ "summary": "…" }`.
+    Summarize {
+        prompt: String,
+        model: String,
+    },
     /// An agent's conversation from its own log, as a `TranscriptPage`. With neither offset,
     /// the latest part; `after` continues from an earlier page's `end`, `before` goes back
     /// from its `start`. Claude agents only. Read-only.
@@ -234,6 +253,8 @@ impl Op {
                 | Op::StartOptions
                 | Op::ReadAgent { .. }
                 | Op::Changes { .. }
+                | Op::Diff { .. }
+                | Op::Summarize { .. }
                 | Op::Transcript { .. }
                 | Op::Skills { .. }
                 | Op::Dialog { .. }
@@ -371,6 +392,9 @@ pub struct AgentSummary {
     /// The label of the Herdr workspace it runs in. Untrusted text.
     #[serde(default)]
     pub space: Option<String>,
+    /// It stopped on an error (herdr-core only); `agent_status` says done.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub error: bool,
 }
 
 /// One agent from `Op::Activity`: the first line of the last thing it said or did, masked.

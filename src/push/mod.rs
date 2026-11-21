@@ -46,6 +46,67 @@ pub struct Push {
     pub collapse_id: String,
     /// Unix seconds after which APNs stops trying.
     pub expires_at: i64,
+    /// Set for a `live` push: the lock-screen card's update.
+    pub live: Option<LivePush>,
+}
+
+/// An update to, or start of, a phone's lock-screen card. The blob is the board sealed to the
+/// device; Android's has none, since it fetches the board when woken.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct LivePush {
+    /// `update` or `start`.
+    pub event: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blob: Option<String>,
+    /// Priority 10, for needs-you, error and all-done; otherwise 5.
+    pub urgent: bool,
+    /// Shows the generic alert: an agent newly needs the owner.
+    pub alert: bool,
+    /// Unix seconds the board was built; the phone ignores older ones.
+    pub timestamp: i64,
+    /// Unix seconds after which the card greys.
+    pub stale_at: i64,
+}
+
+impl LivePush {
+    /// Whether a relay may send it: a known event, a sealed blob of the right shape and size.
+    pub fn valid(&self) -> bool {
+        matches!(self.event.as_str(), "update" | "start" | "end")
+            && self.blob.as_deref().is_none_or(|b| {
+                !b.is_empty()
+                    && b.len() <= crate::live::MAX_BLOB_CHARS
+                    && b.bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+            })
+            && self.stale_at >= self.timestamp
+    }
+}
+
+/// The card's APNs payload. The visible text is fixed here, as for every other push, so a hub
+/// can only choose ids and ciphertext.
+pub fn live_payload(l: &LivePush) -> Value {
+    let mut aps = json!({
+        "timestamp": l.timestamp,
+        "event": l.event,
+        "content-state": { "v": crate::live::VERSION, "b": l.blob.clone().unwrap_or_default() },
+        "stale-date": l.stale_at,
+    });
+    if l.event == "start" {
+        aps["attributes-type"] = json!("AgentsActivity");
+        aps["attributes"] = json!({});
+    }
+    if l.event == "end" {
+        aps["dismissal-date"] = json!(l.timestamp);
+    }
+    // A start always carries an alert, as iOS requires; only a real one makes a sound.
+    if l.alert || l.event == "start" {
+        let (title, body) = text(OutboxKind::Live);
+        aps["alert"] = json!({ "title": title, "body": body });
+    }
+    if l.alert {
+        aps["sound"] = json!("default");
+    }
+    json!({ "aps": aps })
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -77,6 +138,7 @@ pub fn text(kind: OutboxKind) -> (&'static str, &'static str) {
             "A new device was paired with your hub. Revoke it if that wasn't you.",
         ),
         OutboxKind::Waiting => ("Agent waiting", "An agent is waiting for your answer."),
+        OutboxKind::Live => ("Switchboard", "An agent needs you"),
     }
 }
 
@@ -177,6 +239,7 @@ impl<S: Sender> Dispatcher<S> {
                 .clone()
                 .unwrap_or_else(|| d.dedupe_key.clone()),
             expires_at: (d.created_at + STALE_AFTER.as_millis() as i64) / 1000,
+            live: None,
         };
         Ok(match self.sender.send(&push).await {
             SendOutcome::Sent => DeliveryUpdate::Sent,

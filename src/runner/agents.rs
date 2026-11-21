@@ -38,6 +38,7 @@ pub fn summaries(facts: Vec<Facts>, sessions: &HashMap<String, String>) -> Vec<A
                 session_id: sessions.get(&name).cloned(),
                 herdr_session: None,
                 agent_status: status_str(a.status),
+                error: a.error,
                 name,
                 pane_id: a.target,
                 kind: a.kind,

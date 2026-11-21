@@ -451,6 +451,7 @@ pub fn listing<'a>(
                     .filter(|s| s.state == "blocked")
                     .and_then(|s| s.kind.clone()),
                 turn: Some(t.turn),
+                error: t.status.as_ref().is_some_and(|s| s.state == "error"),
             })
         })
         .collect();
