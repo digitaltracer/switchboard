@@ -9,6 +9,8 @@ import com.digitaltracer.switchboard.api.apis.MetaApi
 import com.digitaltracer.switchboard.api.apis.PairingApi
 import com.digitaltracer.switchboard.api.apis.SessionsApi
 import com.digitaltracer.switchboard.api.infrastructure.ClientError
+import com.digitaltracer.switchboard.api.models.FileDiffView
+import com.digitaltracer.switchboard.api.models.LiveRegistrationRequest
 import com.digitaltracer.switchboard.api.infrastructure.ClientException
 import com.digitaltracer.switchboard.api.infrastructure.Serializer
 import com.digitaltracer.switchboard.api.infrastructure.ServerError
@@ -331,6 +333,9 @@ class Hub private constructor(
     /** Files the session changed since it started, committed or not. */
     suspend fun changes(id: String): Changes = authed { sessions.getChanges(id) }
 
+    /** A page of one changed file's diff, from hunk [from]. */
+    suspend fun diff(id: String, path: String, from: Int = 0): FileDiffView = authed { sessions.getDiff(id, path, from) }
+
     /** [backend] is `hc` or `herdr`; null leaves it to the machine's runner. */
     suspend fun start(
         project: String, prompt: String, machine: String?, agent: String?, notify: Boolean, requestId: String,
@@ -462,6 +467,32 @@ class Hub private constructor(
 
     suspend fun setPushToken(token: String?, environment: PushEnvironment) =
         authed { devicesApi.setPushToken(PushTokenRequest(environment, token)) }
+
+    /** Turns on this phone's ongoing notification; Android sends no key, since it fetches the board. */
+    suspend fun setLive(mode: LiveShowMode) = authed {
+        devicesApi.setLive(LiveRegistrationRequest(mode = if (mode == LiveShowMode.Always) com.digitaltracer.switchboard.api.models.LiveMode.always else com.digitaltracer.switchboard.api.models.LiveMode.working))
+    }
+
+    suspend fun clearLive() = authed { devicesApi.clearLive() }
+
+    /** What agents did since [since] (Unix ms). */
+    suspend fun activity(since: Long): com.digitaltracer.switchboard.api.models.Activity = authed { agentsApi.getActivity(since) }
+
+    suspend fun activitySummary(since: Long): String =
+        authed { agentsApi.postActivitySummary(com.digitaltracer.switchboard.api.models.SummaryRequest(since)) }.summary
+
+    suspend fun awaySettings(): com.digitaltracer.switchboard.api.models.AwaySettingsView = authed { devicesApi.getAwaySettings() }
+
+    suspend fun setAwaySettings(s: com.digitaltracer.switchboard.api.models.AwaySettingsView) = authed { devicesApi.setAwaySettings(s) }
+
+    suspend fun shipButtons(): com.digitaltracer.switchboard.api.models.ShipButtons = authed { agentsApi.getShipButtons() }
+
+    /** Replaces one scope's buttons: `*` for all projects, or a project id. */
+    suspend fun setShipButtons(scope: String, buttons: List<ShipButton>) =
+        authed { agentsApi.setShipButtons(com.digitaltracer.switchboard.api.models.SetShipButtonsRequest(scope, buttons.map { it.view })) }
+
+    /** What the ongoing notification shows. */
+    suspend fun live(): LiveBoard = LiveBoard.of(authed { agentsApi.getLive() })
 
     /** Registers this phone's FCM token; FCM has no sandbox. */
     suspend fun setFcmToken(token: String?) =

@@ -25,6 +25,6 @@ data class PushTarget(
             }.getOrNull()
         }
 
-        private val KINDS = setOf("approval", "finished", "device_paired", "waiting")
+        private val KINDS = setOf("approval", "finished", "device_paired", "waiting", "live")
     }
 }
