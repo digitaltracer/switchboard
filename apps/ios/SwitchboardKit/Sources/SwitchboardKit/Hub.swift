@@ -10,9 +10,27 @@ public typealias Schemas = Components.Schemas
 public enum HubError: Error, LocalizedError, Equatable {
     case hub(code: String, message: String, operationId: String?, sessionId: String?)
     /// No answer: the request may or may not have reached the hub.
-    case unreachable(String)
+    case unreachable(String, Reach = .unknown)
     case notPaired
     case unexpected(String)
+
+    /// Which step from this phone to the hub failed.
+    public enum Reach: Sendable, Equatable {
+        /// This phone has no network.
+        case offline
+        /// The relay didn't answer.
+        case relay
+        /// The relay is up, but the hub isn't connected to it.
+        case hub
+        /// The hub is connected but didn't answer in time.
+        case slow
+        case unknown
+    }
+
+    public var reach: Reach? {
+        if case .unreachable(_, let r) = self { return r }
+        return nil
+    }
 
     public var code: String? {
         if case .hub(let code, _, _, _) = self { return code }
@@ -28,7 +46,7 @@ public enum HubError: Error, LocalizedError, Equatable {
     public var errorDescription: String? {
         switch self {
         case .hub(_, let message, _, _): return message
-        case .unreachable(let why): return "Can't reach the hub: \(why)"
+        case .unreachable(let why, _): return "Can't reach the hub: \(why)"
         case .notPaired: return "This phone isn't paired."
         case .unexpected(let why): return why
         }
@@ -208,7 +226,11 @@ public final class Hub: Sendable {
         } catch let e as ClientError {
             if let hub = e.underlyingError as? HubError { throw hub }
             // No HTTP response at all: the request may or may not have reached the hub.
-            if e.response == nil { throw HubError.unreachable(e.underlyingError.localizedDescription) }
+            if e.response == nil {
+                let offline: [URLError.Code] = [.notConnectedToInternet, .dataNotAllowed, .internationalRoamingOff]
+                let reach: HubError.Reach = (e.underlyingError as? URLError).map { offline.contains($0.code) } == true ? .offline : .unknown
+                throw HubError.unreachable(e.underlyingError.localizedDescription, reach)
+            }
             throw HubError.unexpected(String(describing: e.underlyingError))
         }
     }
