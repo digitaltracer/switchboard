@@ -109,13 +109,14 @@ struct AgentPage: View {
                     }
                 }
             if tab == .summary { header }
-            TextTabs(tabs: [(.summary, "Summary"), (.conversation, "Conversation"), (.screen, "Screen")], selection: $tab)
+            TextTabs(tabs: [(.summary, "Summary"), (.conversation, "Conversation"), (.screen, "Screen")], selection: $tab.animation(.snappy))
                 .padding(.top, tab == .summary ? 8 : 0)
-            switch tab {
-            case .summary: summary
-            case .conversation: ConversationFeed(convo: convo, speaker: kind ?? "Agent", status: status)
-            case .screen: screen
+            TabView(selection: $tab) {
+                summary.tag(AgentTab.summary)
+                ConversationFeed(convo: convo, speaker: kind ?? "Agent", status: status).tag(AgentTab.conversation)
+                screen.tag(AgentTab.screen)
             }
+            .tabViewStyle(.page(indexDisplayMode: .never))
             bottom
         }
         .inboxPage()
