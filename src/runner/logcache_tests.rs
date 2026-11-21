@@ -342,3 +342,18 @@ fn the_pending_call_goes_with_its_pane() {
     assert_eq!(c.pending_call(&key, &log).as_deref(), Some("toolu_A"));
     assert_eq!(c.parses(), 3);
 }
+
+#[test]
+fn the_process_record_wins_over_a_stale_reported_session() {
+    // Herdr's Claude hook inside a core terminal can report another pane's session.
+    let d = dirs();
+    let mine = d.claude_log(OLD);
+    d.claude_log(NEW);
+    d.record(PID, json!({"pid": PID, "sessionId": OLD}));
+    let c = d.cache();
+    let stale = Pane {
+        reported: Some(NEW.into()),
+        ..claude("t1")
+    };
+    assert_eq!(c.search(stale, vec![PID]).map(|f| f.log), Some(mine));
+}

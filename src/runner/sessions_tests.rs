@@ -169,6 +169,7 @@ fn start_req(agent: Agent) -> StartRequest {
         agent,
         prompt: "do the task".into(),
         deny_patterns: vec![],
+        backend: None,
     }
 }
 
@@ -1120,6 +1121,8 @@ async fn a_claude_session_switchboard_started_never_gets_dialog_keys() {
             start_commit: None,
             herdr_session: None,
             launched: true,
+            core_id: None,
+            terminal_identity: None,
         })
         .unwrap();
     let v = r
@@ -1172,4 +1175,996 @@ async fn an_agent_blocked_through_the_hold_is_reported_waiting_once() {
         }
     }
     assert_eq!(waiting, [("cx".to_string(), "t".to_string(), None)]);
+}
+
+/// A Herdr session whose one named agent's pane runs `foreground`.
+fn herdr_running(folder: &Path, agent: &'static str, foreground: &'static str) {
+    std::fs::create_dir_all(folder).unwrap();
+    let listener = UnixListener::bind(folder.join("herdr.sock")).unwrap();
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (read, mut write) = stream.into_split();
+            let mut line = String::new();
+            BufReader::new(read).read_line(&mut line).await.unwrap();
+            let req: Value = serde_json::from_str(&line).unwrap();
+            let result = match req["method"].as_str().unwrap() {
+                "ping" => json!({"type": "pong", "version": "0.9.1", "protocol": 22}),
+                "session.snapshot" => {
+                    let mut a = agent_info("working");
+                    a["name"] = json!(agent);
+                    a["agent"] = json!("claude");
+                    json!({"type": "session_snapshot", "snapshot": {"version": "0.9.1", "protocol": 22,
+                           "workspaces": [], "tabs": [], "panes": [], "layouts": [], "agents": [a]}})
+                }
+                "pane.process_info" => json!({"type": "pane_process_info", "process_info": {
+                    "pane_id": "w2:p1", "foreground_processes": [{"pid": 7, "name": foreground}]}}),
+                _ => json!({"type": "ok"}),
+            };
+            let resp = json!({"id": req["id"], "result": result});
+            write
+                .write_all(format!("{resp}\n").as_bytes())
+                .await
+                .unwrap();
+        }
+    });
+}
+
+#[tokio::test]
+async fn core_agents_are_listed_beside_herdr_ones_and_attached_panes_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let (r, config_dir, _) = multi_rig(dir, vec![]);
+    herdr_running(&config_dir.join("sessions/mono1"), "claude", "2.1.322");
+    // A TUI pane showing a core terminal: Herdr's Claude hook may report into it.
+    herdr_running(&config_dir.join("sessions/viewer"), "claude", "hc");
+    let fake = crate::hc::fake::FakeCore::start();
+    fake.set_doc(json!({ "spaces": [ { "id": "sp1", "name": "Switchboard",
+        "tabs": [ { "id": "tb1", "name": "fix login" } ] } ] }));
+    fake.add(json!({ "argv": ["/x/claude"], "reported": true,
+                     "status": { "state": "blocked", "app": "claude-code", "kind": "permission" },
+                     "labels": { "herdr.space": "sp1", "herdr.tab": "tb1" } }));
+    fake.add(json!({ "argv": ["/bin/zsh"] }));
+    let core = core_watch::Core::new(&fake.socket);
+    r.sessions.set_core(core.clone());
+
+    let names = |list: Vec<crate::proto::AgentSummary>| -> Vec<(String, String, Option<String>)> {
+        list.into_iter()
+            .map(|a| (a.name, a.agent_status, a.space))
+            .collect()
+    };
+    let agents = || async {
+        serde_json::from_value::<Vec<crate::proto::AgentSummary>>(
+            r.sessions.handle(Op::Agents).await.unwrap(),
+        )
+        .unwrap()
+    };
+    // The core isn't up yet: no dial has answered.
+    assert_eq!(
+        names(agents().await),
+        [
+            ("mono1/claude".into(), "working".into(), None),
+            ("viewer/claude".into(), "working".into(), None)
+        ]
+    );
+    core.up("core-a");
+    let list = agents().await;
+    assert_eq!(list[1].herdr_session.as_deref(), Some("hc"));
+    assert_eq!(list[1].pane_id, "t1");
+    assert_eq!(
+        names(list),
+        [
+            ("mono1/claude".into(), "working".into(), None),
+            (
+                "hc/fix login".into(),
+                "blocked".into(),
+                Some("Switchboard".into())
+            ),
+        ]
+    );
+}
+
+/// A runner with no Herdr session running and `fake` as its core, already up.
+fn core_rig(dir: tempfile::TempDir) -> (Rig, crate::hc::fake::FakeCore) {
+    let (r, _, _) = multi_rig(dir, vec![]);
+    let fake = crate::hc::fake::FakeCore::start();
+    let core = core_watch::Core::new(&fake.socket);
+    core.up("core-a");
+    r.sessions.set_core(core);
+    (r, fake)
+}
+
+fn claude_terminal(name: &str, state: &str) -> Value {
+    json!({ "argv": ["/x/claude"], "name": name, "reported": true, "cwd": "/w",
+            "status": { "state": state, "app": "claude-code" } })
+}
+
+#[tokio::test]
+async fn core_agents_are_read_and_prompted_by_name_and_never_forced() {
+    let dir = tempfile::tempdir().unwrap();
+    let (r, fake) = core_rig(dir);
+    let t = fake.add(claude_terminal("worker", "idle"));
+    let shell = fake.add(json!({ "argv": ["/bin/zsh"] }));
+    fake.set_screen(&t, "the screen");
+    let read = |visible: bool, lines: u32| Op::ReadAgent {
+        agent: "hc/worker".into(),
+        lines,
+        visible,
+        ansi: true,
+    };
+    let v = r.sessions.handle(read(true, 0)).await.unwrap();
+    assert_eq!(
+        (v["text"].as_str(), v["ansi"].as_str()),
+        (Some("the screen"), Some("the screen"))
+    );
+    r.sessions.handle(read(false, 30)).await.unwrap();
+    let reads: Vec<Value> = fake
+        .requests()
+        .into_iter()
+        .filter(|q| q["method"] == "terminal.read")
+        .map(|q| q["params"].clone())
+        .collect();
+    assert_eq!(reads[0], json!({ "terminal": t, "lines": 0 }));
+    assert!(reads.contains(&json!({ "terminal": t, "lines": 30 })));
+
+    let prompt = |agent: &str| Op::PromptAgent {
+        agent: agent.into(),
+        text: "fix it".into(),
+    };
+    let sent = r.sessions.handle(prompt("hc/worker")).await.unwrap();
+    assert_eq!(sent["outcome"], "sent");
+    let sends: Vec<Value> = fake
+        .requests()
+        .into_iter()
+        .filter(|q| q["method"] == "terminal.send")
+        .map(|q| q["params"].clone())
+        .collect();
+    assert_eq!(sends, [json!({ "terminal": t, "text": "fix it" })]);
+
+    fake.patch(
+        &t,
+        json!({ "status": { "state": "blocked", "app": "claude-code" } }),
+    );
+    let blocked = r.sessions.handle(prompt("hc/worker")).await.unwrap();
+    assert_eq!(
+        (blocked["outcome"].as_str(), blocked["screen"].as_str()),
+        (Some("blocked"), Some("the screen"))
+    );
+
+    fake.patch(
+        &t,
+        json!({ "status": { "state": "idle", "app": "claude-code" } }),
+    );
+    fake.script("terminal.send", crate::hc::fake::Script::Drop);
+    let lost = r.sessions.handle(prompt("hc/worker")).await.unwrap_err();
+    assert_eq!(lost.code, ErrorCode::OutcomeUnknown);
+
+    // A plain shell is never typed into, by address or otherwise.
+    let shell_prompt = r
+        .sessions
+        .handle(prompt(&format!("hc/{shell}")))
+        .await
+        .unwrap();
+    assert_eq!(shell_prompt["outcome"], "not_found");
+    assert!(
+        !fake
+            .requests()
+            .iter()
+            .any(|q| q["method"] == "terminal.send" && q["params"]["terminal"] == shell)
+    );
+}
+
+#[tokio::test]
+async fn a_core_claudes_conversation_is_found_through_its_process_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let (r, fake) = core_rig(dir);
+    let t = fake.add(claude_terminal("worker", "idle"));
+    let fg = fake.terminal(&t).unwrap()["foreground"]["pid"]
+        .as_u64()
+        .unwrap();
+    let records = r.dir.path().join("sessions");
+    std::fs::create_dir_all(&records).unwrap();
+    std::fs::write(
+        records.join(format!("{fg}.json")),
+        json!({ "pid": fg, "sessionId": CLAUDE_SESSION }).to_string(),
+    )
+    .unwrap();
+    let folder = r.dir.path().join("claude-projects/-w");
+    std::fs::create_dir_all(&folder).unwrap();
+    let line = json!({"type": "user", "uuid": "u1", "message": {"content": "on core"}});
+    std::fs::write(
+        folder.join(format!("{CLAUDE_SESSION}.jsonl")),
+        format!("{line}\n"),
+    )
+    .unwrap();
+    let page: crate::proto::TranscriptPage = serde_json::from_value(
+        r.sessions
+            .handle(Op::Transcript {
+                agent: "hc/worker".into(),
+                after: None,
+                before: None,
+                wait_ms: None,
+            })
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(page.items[0].text.as_deref(), Some("on core"));
+}
+
+fn codex_terminal(kind: &str) -> Value {
+    json!({ "argv": ["/x/codex"], "name": "cx", "reported": true, "turn": 3, "status_ms": 77,
+            "status": { "state": "blocked", "app": "codex", "kind": kind } })
+}
+
+#[tokio::test]
+async fn a_core_codex_dialog_is_answered_by_arrows_then_enter_on_its_terminal() {
+    let dir = tempfile::tempdir().unwrap();
+    let (r, fake) = core_rig(dir);
+    let t = fake.add(codex_terminal("permission"));
+    fake.queue_screens(
+        &t,
+        vec![
+            dialog_screen("permission-command", 1),
+            dialog_screen("permission-command", 1),
+            dialog_screen("permission-command", 3),
+            std::fs::read_to_string(format!(
+                "{}/tests/fixtures/dialogs/codex-0.165.0/after-deny-command.txt",
+                env!("CARGO_MANIFEST_DIR")
+            ))
+            .unwrap(),
+        ],
+    );
+    let v = r
+        .sessions
+        .handle(Op::Dialog {
+            agent: "hc/cx".into(),
+        })
+        .await
+        .unwrap();
+    let d: crate::proto::DialogView = serde_json::from_value(v["dialog"].clone()).unwrap();
+    assert!(d.answerable, "{d:?}");
+    let no = &d.options[2];
+    r.sessions
+        .handle(Op::Answer {
+            agent: "hc/cx".into(),
+            occurrence: d.occurrence.clone(),
+            option: no.id.clone(),
+            label_sha256: no.label_sha256.clone(),
+            deny_only: true,
+        })
+        .await
+        .unwrap();
+    let keys: Vec<Value> = fake
+        .requests()
+        .into_iter()
+        .filter(|q| q["method"] == "terminal.keys")
+        .map(|q| q["params"].clone())
+        .collect();
+    assert_eq!(
+        keys,
+        [
+            json!({ "terminal": t, "keys": ["down", "down"] }),
+            json!({ "terminal": t, "keys": ["enter"] })
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_dialog_the_core_calls_something_else_is_shown_read_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let (r, fake) = core_rig(dir);
+    let t = fake.add(codex_terminal("question"));
+    fake.set_screen(&t, &dialog_screen("permission-command", 1));
+    let v = r
+        .sessions
+        .handle(Op::Dialog {
+            agent: "hc/cx".into(),
+        })
+        .await
+        .unwrap();
+    let d: crate::proto::DialogView = serde_json::from_value(v["dialog"].clone()).unwrap();
+    assert_eq!(
+        (d.answerable, d.reason.as_deref()),
+        (false, Some("read_only"))
+    );
+    assert!(!fake.methods().contains(&"terminal.keys".to_owned()));
+}
+
+#[tokio::test]
+async fn a_new_process_in_a_core_terminal_is_a_new_occurrence() {
+    let dir = tempfile::tempdir().unwrap();
+    let (r, fake) = core_rig(dir);
+    let t = fake.add(codex_terminal("permission"));
+    fake.set_screen(&t, &dialog_screen("permission-command", 1));
+    let occurrence = || async {
+        r.sessions
+            .handle(Op::Dialog {
+                agent: "hc/cx".into(),
+            })
+            .await
+            .unwrap()["occurrence"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let first = occurrence().await;
+    assert_eq!(first, occurrence().await);
+    fake.patch(
+        &t,
+        json!({ "foreground": { "pid": 999, "name": "codex", "argv": ["codex"], "cwd": "/w" } }),
+    );
+    let other_process = occurrence().await;
+    fake.patch(&t, json!({ "turn": 4 }));
+    let next_turn = occurrence().await;
+    assert!(first != other_process && other_process != next_turn);
+}
+
+/// A runner whose new sessions go to the fake core, with a real git repo to start them in.
+fn core_start_rig(mode: crate::config::NewSessions) -> (Rig, crate::hc::fake::FakeCore, PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let sh = |args: &[&str]| {
+        assert!(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        );
+    };
+    sh(&["init", "-q", "-b", "main"]);
+    std::fs::write(repo.join("a.txt"), "a\n").unwrap();
+    sh(&["add", "."]);
+    sh(&[
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "user.name=t",
+        "commit",
+        "-qm",
+        "init",
+    ]);
+    let root = dir.path().to_owned();
+    let (r, fake) = core_rig(dir);
+    r.sessions.set_core_starts(CoreStarts {
+        new_sessions: mode,
+        worktrees: root.join("worktrees"),
+        home: root.clone(),
+        bins: Some(PathBuf::from("/opt/agents")),
+    });
+    (r, fake, repo)
+}
+
+fn core_req(agent: Agent, repo: &Path) -> StartRequest {
+    StartRequest {
+        repo_path: repo.to_owned(),
+        ..start_req(agent)
+    }
+}
+
+/// Stands in for the agent reporting idle once its terminal exists.
+fn report_idle(fake: &crate::hc::fake::FakeCore, app: &'static str) {
+    let handle = fake.handle();
+    tokio::spawn(async move {
+        loop {
+            if handle.patch(
+                "t1",
+                json!({ "reported": true,
+                "status": { "state": "idle", "app": app }, "status_ms": 5 }),
+            ) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    });
+}
+
+fn requests_of(fake: &crate::hc::fake::FakeCore, method: &str) -> Vec<Value> {
+    fake.requests()
+        .into_iter()
+        .filter(|q| q["method"] == method)
+        .map(|q| q["params"].clone())
+        .collect()
+}
+
+#[tokio::test]
+async fn a_codex_session_starts_on_core_in_a_git_worktree_the_app_adopts() {
+    let (r, fake, repo) = core_start_rig(crate::config::NewSessions::Hc);
+    fake.queue_screens("t1", vec![fixture("folder-access"), fixture("ready")]);
+    report_idle(&fake, "codex");
+    let started = r
+        .sessions
+        .start(core_req(Agent::Codex, &repo))
+        .await
+        .unwrap();
+    assert_eq!(started["herdr_session"], "hc");
+    assert_eq!(started["pane_id"], "t1");
+    let space = started["workspace_id"].as_str().unwrap().to_owned();
+    assert!(space.starts_with("sp") && space.len() == 34, "{space}");
+
+    let run = &requests_of(&fake, "terminal.run")[0];
+    let argv: Vec<&str> = run["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a.as_str().unwrap())
+        .collect();
+    assert_eq!(&argv[..2], ["/bin/sh", "-c"]);
+    assert!(
+        argv[2].contains("HERDR_*|CLAUDE_CODE*|CLAUDECODE") && argv[2].ends_with("exec \"$@\"")
+    );
+    assert_eq!(
+        &argv[3..6],
+        ["sb-launch", "/opt/agents/codex", "--no-daemon"]
+    );
+    let wt = r.dir.path().join("worktrees/repo/sb-s1");
+    assert_eq!(run["cwd"], wt.to_string_lossy().as_ref());
+    assert_eq!(run["name"], "sb-s1");
+    assert_eq!(
+        (run["keep"].as_bool(), run["no_parent"].as_bool()),
+        (Some(true), Some(true))
+    );
+    let labels = &run["labels"];
+    assert_eq!(labels["herdr.space"], space.as_str());
+    assert!(labels["herdr.tab"].as_str().unwrap().starts_with("tb"));
+    assert_eq!(
+        (
+            labels["herdr.seen"].as_str(),
+            labels["switchboard.session"].as_str()
+        ),
+        (Some("0"), Some("s1"))
+    );
+    assert!(wt.join("a.txt").exists(), "a git worktree");
+
+    assert_eq!(
+        requests_of(&fake, "terminal.keys"),
+        [json!({ "terminal": "t1", "keys": ["enter"] })]
+    );
+    assert_eq!(
+        requests_of(&fake, "terminal.send"),
+        [json!({ "terminal": "t1", "text": "do the task" })]
+    );
+    let s = r.sessions.get("s1").unwrap();
+    assert_eq!(
+        (
+            s.core_id.as_deref(),
+            s.terminal_identity.as_deref(),
+            s.launched
+        ),
+        (Some("core-a"), Some("core-a:t1:1001:1000001"), true)
+    );
+    assert!(s.start_commit.is_some());
+    let owned = r.sessions.owned().await;
+    assert_eq!(
+        (
+            owned[0].workspace_id.as_str(),
+            owned[0].agent_status.as_str()
+        ),
+        (space.as_str(), "idle")
+    );
+
+    // Stop: the terminal ends, and the clean, merged worktree goes.
+    let v = r
+        .sessions
+        .handle(Op::Stop {
+            session_id: "s1".into(),
+            remove_worktree_if_clean: true,
+        })
+        .await
+        .unwrap();
+    assert_eq!(v["worktree_removed"], true, "{v}");
+    assert!(!wt.exists());
+    assert_eq!(
+        requests_of(&fake, "terminal.kill"),
+        [json!({ "terminal": "t1" })]
+    );
+    assert_eq!(
+        requests_of(&fake, "terminal.rm"),
+        [json!({ "terminal": "t1" })]
+    );
+
+    // Delete then has no server of its own to delete.
+    let d = r
+        .sessions
+        .handle(Op::Delete {
+            session_id: "s1".into(),
+            herdr_session: Some("hc".into()),
+            repo_path: Some(repo.to_string_lossy().into_owned()),
+            worktree_path: Some(wt.to_string_lossy().into_owned()),
+            branch: Some("sb/s1".into()),
+        })
+        .await
+        .unwrap();
+    assert_eq!(d["herdr_session_deleted"], false);
+}
+
+#[tokio::test]
+async fn a_claude_session_on_core_waits_for_its_hook_then_idle() {
+    let (r, fake, repo) = core_start_rig(crate::config::NewSessions::Auto);
+    let sessions = r.sessions.clone();
+    let start = tokio::spawn(async move { sessions.start(core_req(Agent::Claude, &repo)).await });
+    while r.sessions.get("s1").and_then(|s| s.pane_id).is_none() {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        requests_of(&fake, "terminal.send").is_empty(),
+        "nothing before the hook"
+    );
+    r.sessions.hooks.test_mark_live("s1");
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(
+        requests_of(&fake, "terminal.send").is_empty(),
+        "nothing before idle"
+    );
+    report_idle(&fake, "claude-code");
+    start.await.unwrap().unwrap();
+    let run = &requests_of(&fake, "terminal.run")[0];
+    assert_eq!(run["argv"][4], "/opt/agents/claude");
+    assert_eq!(requests_of(&fake, "terminal.send").len(), 1);
+}
+
+#[tokio::test]
+async fn hc_with_no_core_answering_fails_and_auto_falls_back_to_herdr() {
+    let (r, fake, repo) = core_start_rig(crate::config::NewSessions::Hc);
+    drop(fake);
+    let e = r
+        .sessions
+        .start(core_req(Agent::Codex, &repo))
+        .await
+        .unwrap_err();
+    assert!(e.message.contains("new_sessions is \"hc\""), "{e:?}");
+    assert!(r.sessions.get("s1").is_none() && !r.dir.path().join("state/sessions/s1").exists());
+
+    // With `auto`, the same start goes to a Herdr session of its own.
+    let dir = tempfile::tempdir().unwrap();
+    let (r, _, _) = multi_rig(dir, vec![fixture("folder-access"), fixture("ready")]);
+    let core = core_watch::Core::new("/nonexistent/core.sock");
+    r.sessions.set_core(core);
+    r.sessions.set_core_starts(CoreStarts {
+        new_sessions: crate::config::NewSessions::Auto,
+        worktrees: "/nonexistent".into(),
+        home: "/nonexistent".into(),
+        bins: None,
+    });
+    let started = r.sessions.start(start_req(Agent::Codex)).await.unwrap();
+    assert_eq!(started["herdr_session"], "p-s1");
+}
+
+#[tokio::test]
+async fn a_core_start_that_never_gets_ready_is_undone() {
+    let (r, fake, repo) = core_start_rig(crate::config::NewSessions::Hc);
+    fake.set_screen("t1", "  something we have never seen\n");
+    let e = r
+        .sessions
+        .start(core_req(Agent::Codex, &repo))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, ErrorCode::StartupFailed, "{e:?}");
+    assert!(
+        requests_of(&fake, "terminal.send").is_empty()
+            && requests_of(&fake, "terminal.keys").is_empty()
+    );
+    assert_eq!(
+        requests_of(&fake, "terminal.kill"),
+        [json!({ "terminal": "t1" })]
+    );
+    assert!(r.sessions.get("s1").is_none());
+}
+
+#[tokio::test]
+async fn an_interrupted_core_start_is_undone_by_its_label() {
+    let (r, fake, repo) = core_start_rig(crate::config::NewSessions::Hc);
+    fake.queue_screens("t1", vec![fixture("folder-access"), fixture("ready")]);
+    report_idle(&fake, "codex");
+    r.sessions
+        .start(core_req(Agent::Codex, &repo))
+        .await
+        .unwrap();
+    // As a runner that died before saving the terminal left it.
+    let meta = r.dir.path().join("state/sessions/s1/meta.json");
+    let mut saved: Value = serde_json::from_slice(&std::fs::read(&meta).unwrap()).unwrap();
+    saved["launched"] = json!(false);
+    saved["pane_id"] = Value::Null;
+    std::fs::write(&meta, saved.to_string()).unwrap();
+    r.sessions.load().unwrap();
+    assert_eq!(r.sessions.undo_interrupted_starts().await, 1);
+    assert_eq!(
+        requests_of(&fake, "terminal.kill"),
+        [json!({ "terminal": "t1" })]
+    );
+    // A terminal without the session's label is never touched.
+    let other = fake.add(json!({ "argv": ["claude"], "labels": { "switchboard.session": "s9" } }));
+    assert!(
+        !requests_of(&fake, "terminal.kill")
+            .iter()
+            .any(|k| k["terminal"] == other)
+    );
+}
+
+/// The next exit, or `None` at the next idle status.
+async fn exit_or_idle(rx: &mut mpsc::Receiver<Event>) -> Option<String> {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match rx.recv().await {
+                Some(Event::SessionExited { session_id }) => return Some(session_id),
+                Some(Event::AgentStatus { agent_status, .. }) if agent_status == "idle" => {
+                    return None;
+                }
+                Some(_) => {}
+                None => panic!("events closed"),
+            }
+        }
+    })
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn a_core_task_whose_terminal_is_gone_or_replaced_exits() {
+    let (mut r, fake, repo) = core_start_rig(crate::config::NewSessions::Hc);
+    fake.queue_screens("t1", vec![fixture("folder-access"), fixture("ready")]);
+    report_idle(&fake, "codex");
+    r.sessions
+        .start(core_req(Agent::Codex, &repo))
+        .await
+        .unwrap();
+    let core = r.sessions.core().unwrap();
+    tokio::spawn(core_watch::follow(core.clone(), || {}, || {}));
+    tokio::spawn(super::super::watch::watch_core(
+        r.sessions.clone(),
+        core.clone(),
+    ));
+    assert_eq!(exit_or_idle(&mut r.events).await, None, "running first");
+    // The program is lost and the kept terminal gets another process in the same address.
+    fake.patch("t1", json!({ "pid": 4242 }));
+    fake.drop_subscribers();
+    assert_eq!(exit_or_idle(&mut r.events).await.as_deref(), Some("s1"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn core_tasks_exit_once_the_core_has_been_gone_a_while() {
+    let (mut r, _, _) = core_start_rig(crate::config::NewSessions::Hc);
+    let core = core_watch::Core::new("/nonexistent/core.sock");
+    std::fs::create_dir_all(r.sessions.dir("s1")).unwrap();
+    r.sessions
+        .save(&RunnerSession {
+            session_id: "s1".into(),
+            agent: Agent::Codex,
+            project_id: "p".into(),
+            repo_path: "/srv/repo".into(),
+            branch: "sb/s1".into(),
+            deny_patterns: vec![],
+            agent_name: "sb-s1".into(),
+            workspace_id: Some("sp1".into()),
+            pane_id: Some("t1".into()),
+            worktree_path: None,
+            codex_version: None,
+            start_commit: None,
+            herdr_session: Some("hc".into()),
+            launched: true,
+            core_id: Some("core-a".into()),
+            terminal_identity: Some("core-a:t1:1:1".into()),
+        })
+        .unwrap();
+    tokio::spawn(super::super::watch::watch_core(r.sessions.clone(), core));
+    let exited = tokio::time::timeout(Duration::from_secs(300), async {
+        loop {
+            if let Some(Event::SessionExited { session_id }) = r.events.recv().await {
+                return session_id;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(exited, "s1");
+}
+
+#[tokio::test]
+async fn the_app_adopted_tab_and_space_are_named_after_the_session_and_project() {
+    let (r, fake, repo) = core_start_rig(crate::config::NewSessions::Hc);
+    fake.queue_screens("t1", vec![fixture("folder-access"), fixture("ready")]);
+    report_idle(&fake, "codex");
+    r.sessions
+        .start(core_req(Agent::Codex, &repo))
+        .await
+        .unwrap();
+    let labels = requests_of(&fake, "terminal.run")[0]["labels"].clone();
+    // The app adopts the ids as a new space and tab, with fields of its own.
+    fake.set_doc(json!({ "spaces": [
+        { "id": "spOther", "name": "mine", "tabs": [] },
+        { "id": labels["herdr.space"], "color": "blue",
+          "tabs": [ { "id": labels["herdr.tab"], "root": { "content": { "terminal": "t1" } } } ] },
+    ], "app": { "kept": true } }));
+    for _ in 0..60 {
+        if fake.doc().0["spaces"][1]["tabs"][0]["name"].is_string() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let (doc, _) = fake.doc();
+    assert_eq!(doc["spaces"][1]["tabs"][0]["name"], "p-s1");
+    assert_eq!(doc["spaces"][1]["name"], "p");
+    assert_eq!(doc["spaces"][0]["name"], "mine");
+    assert_eq!(
+        (
+            doc["spaces"][1]["color"].as_str(),
+            doc["app"]["kept"].as_bool()
+        ),
+        (Some("blue"), Some(true))
+    );
+}
+
+#[tokio::test]
+async fn a_core_task_exits_when_another_core_answers() {
+    let (mut r, fake, repo) = core_start_rig(crate::config::NewSessions::Hc);
+    fake.queue_screens("t1", vec![fixture("folder-access"), fixture("ready")]);
+    report_idle(&fake, "codex");
+    r.sessions
+        .start(core_req(Agent::Codex, &repo))
+        .await
+        .unwrap();
+    let core = r.sessions.core().unwrap();
+    tokio::spawn(core_watch::follow(core.clone(), || {}, || {}));
+    tokio::spawn(super::super::watch::watch_core(
+        r.sessions.clone(),
+        core.clone(),
+    ));
+    assert_eq!(exit_or_idle(&mut r.events).await, None);
+    // Its state was wiped: same addresses, another core.
+    fake.set_core_id("core-b");
+    fake.drop_subscribers();
+    assert_eq!(exit_or_idle(&mut r.events).await.as_deref(), Some("s1"));
+    // And its terminals are never ended from the new core.
+    r.sessions
+        .handle(Op::Stop {
+            session_id: "s1".into(),
+            remove_worktree_if_clean: false,
+        })
+        .await
+        .unwrap();
+    assert!(requests_of(&fake, "terminal.kill").is_empty());
+}
+
+#[tokio::test]
+async fn a_failed_core_start_stops_no_herdr_session() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let bin = dir.path().join("herdr");
+    let calls = dir.path().join("herdr-calls");
+    std::fs::write(
+        &bin,
+        format!("#!/bin/sh\necho \"$@\" >> '{}'\n", calls.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let starter = Starter::Herdr {
+        bin,
+        xdg: None,
+        log_dir: dir.path().to_owned(),
+    };
+    let herdrs = Herdrs::multi(
+        dir.path().join("herdr"),
+        dir.path().join("nowhere.sock"),
+        starter,
+    );
+    let (tx, _events) = mpsc::channel(64);
+    let hooks = HookHub::new(tx.clone(), Duration::from_secs(5));
+    let cfg = SessionsConfig {
+        state_dir: dir.path().join("state"),
+        claude_config: dir.path().join("claude.json"),
+        claude_mode: Default::default(),
+        claude_projects: dir.path().join("claude-projects"),
+        codex_sessions: PathBuf::from("/nonexistent/codex/sessions"),
+        exe: PathBuf::from("/opt/sb/switchboard"),
+        hook_addr: "127.0.0.1:9".parse().unwrap(),
+        codex_version_cmd: vec!["echo".into(), "codex-cli 0.163.0".into()],
+        liveness_timeout: Duration::from_secs(1),
+        startup_timeout: Duration::from_secs(2),
+    };
+    let sessions = Sessions::with_herdrs(herdrs, hooks, tx, cfg);
+    let fake = crate::hc::fake::FakeCore::start();
+    let core = core_watch::Core::new(&fake.socket);
+    core.up("core-a");
+    sessions.set_core(core);
+    sessions.set_core_starts(CoreStarts {
+        new_sessions: crate::config::NewSessions::Hc,
+        worktrees: dir.path().join("worktrees"),
+        home: dir.path().to_owned(),
+        bins: Some(PathBuf::from("/opt/agents")),
+    });
+    // Not a git repo: the worktree fails after the session is recorded on core.
+    let e = sessions
+        .start(core_req(Agent::Codex, &dir.path().join("no-repo")))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, ErrorCode::Internal, "{e:?}");
+    assert!(sessions.get("s1").is_none());
+    assert!(!calls.exists(), "herdr was run");
+}
+
+/// A Claude on the fake core, blocked at a permission dialog.
+fn blocked_core_claude(fake: &crate::hc::fake::FakeCore, name: &str) -> String {
+    let t = fake.add(
+        json!({ "argv": ["/x/claude"], "name": name, "reported": true,
+        "status": { "state": "blocked", "app": "claude-code", "kind": "permission" } }),
+    );
+    fake.set_screen(
+        &t,
+        &std::fs::read_to_string(format!(
+            "{}/tests/fixtures/dialogs/core/claude-2.1.322/permission-bash.txt",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap(),
+    );
+    t
+}
+
+/// Session `s1`, a Claude Switchboard started at `pane` on core `core_id`.
+fn save_core_claude_session(r: &Rig, pane: &str, core_id: &str, identity: &str) {
+    std::fs::create_dir_all(r.sessions.dir("s1")).unwrap();
+    r.sessions
+        .save(&RunnerSession {
+            session_id: "s1".into(),
+            agent: Agent::Claude,
+            project_id: "p".into(),
+            repo_path: "/srv/repo".into(),
+            branch: "sb/s1".into(),
+            deny_patterns: vec![],
+            agent_name: "sb-s1".into(),
+            workspace_id: Some("sp1".into()),
+            pane_id: Some(pane.into()),
+            worktree_path: None,
+            codex_version: None,
+            start_commit: None,
+            herdr_session: Some("hc".into()),
+            launched: true,
+            core_id: Some(core_id.into()),
+            terminal_identity: Some(identity.into()),
+        })
+        .unwrap();
+}
+
+#[tokio::test]
+async fn an_owned_core_claude_asked_for_by_address_never_gets_dialog_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let (r, fake) = core_rig(dir);
+    let t = blocked_core_claude(&fake, "sb-s1");
+    let rec = fake.terminal(&t).unwrap();
+    let identity = format!("core-a:{t}:{}:{}", rec["pid"], rec["created_ms"]);
+    save_core_claude_session(&r, &t, "core-a", &identity);
+    let agent = format!("hc/{t}");
+    let v = r
+        .sessions
+        .handle(Op::Dialog {
+            agent: agent.clone(),
+        })
+        .await
+        .unwrap();
+    let d: crate::proto::DialogView = serde_json::from_value(v["dialog"].clone()).unwrap();
+    assert_eq!((d.answerable, d.reason.as_deref()), (false, Some("hooked")));
+    let yes = &d.options[0];
+    let e = r
+        .sessions
+        .handle(Op::Answer {
+            agent,
+            occurrence: d.occurrence.clone(),
+            option: yes.id.clone(),
+            label_sha256: yes.label_sha256.clone(),
+            deny_only: false,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, ErrorCode::DialogChanged);
+    assert!(!fake.methods().contains(&"terminal.keys".to_owned()));
+}
+
+#[tokio::test]
+async fn a_core_stop_whose_terminal_wont_end_keeps_the_worktree() {
+    let (r, fake, repo) = core_start_rig(crate::config::NewSessions::Hc);
+    fake.queue_screens("t1", vec![fixture("folder-access"), fixture("ready")]);
+    report_idle(&fake, "codex");
+    let started = r
+        .sessions
+        .start(core_req(Agent::Codex, &repo))
+        .await
+        .unwrap();
+    let wt = PathBuf::from(started["worktree_path"].as_str().unwrap());
+    fake.script("terminal.kill", crate::hc::fake::Script::Error("internal"));
+    let v = r
+        .sessions
+        .handle(Op::Stop {
+            session_id: "s1".into(),
+            remove_worktree_if_clean: true,
+        })
+        .await
+        .unwrap();
+    assert_eq!(v["worktree_removed"], false, "{v}");
+    assert_eq!(v["kept_because"], "the agent's terminal couldn't be ended");
+    assert!(wt.exists(), "clean and merged, but kept");
+    assert!(r.sessions.get("s1").is_none(), "the stop completes");
+}
+
+#[tokio::test]
+async fn a_session_from_an_earlier_core_doesnt_own_the_new_cores_terminal_at_its_address() {
+    let dir = tempfile::tempdir().unwrap();
+    let (r, fake) = core_rig(dir);
+    save_core_claude_session(&r, "t1", "core-a", "core-a:t1:1001:1000001");
+    // A replacement core numbers its terminals from t1 again.
+    fake.set_core_id("core-b");
+    r.sessions.core().unwrap().up("core-b");
+    let t = blocked_core_claude(&fake, "other");
+    assert_eq!(t, "t1");
+    let v = r
+        .sessions
+        .handle(Op::Dialog {
+            agent: "hc/t1".into(),
+        })
+        .await
+        .unwrap();
+    let d: crate::proto::DialogView = serde_json::from_value(v["dialog"].clone()).unwrap();
+    assert!(d.answerable, "not the stale session's: {d:?}");
+}
+
+#[tokio::test]
+async fn a_chosen_herdr_app_that_isnt_answering_fails_without_falling_back() {
+    let (r, fake, repo) = core_start_rig(crate::config::NewSessions::Auto);
+    drop(fake);
+    let req = StartRequest {
+        backend: Some(crate::proto::StartBackend::Hc),
+        ..core_req(Agent::Codex, &repo)
+    };
+    let e = r.sessions.start(req).await.unwrap_err();
+    assert_eq!(e.code, ErrorCode::BackendUnavailable, "{e:?}");
+    assert!(!e.message.contains("herdr-core"), "{e:?}");
+    assert!(r.sessions.get("s1").is_none() && !r.dir.path().join("state/sessions/s1").exists());
+}
+
+#[tokio::test]
+async fn a_chosen_herdr_terminal_overrides_the_runners_setting() {
+    let dir = tempfile::tempdir().unwrap();
+    let (r, _, _) = multi_rig(dir, vec![fixture("folder-access"), fixture("ready")]);
+    r.sessions.set_core_starts(CoreStarts {
+        new_sessions: crate::config::NewSessions::Hc,
+        worktrees: "/nonexistent".into(),
+        home: "/nonexistent".into(),
+        bins: None,
+    });
+    let req = StartRequest {
+        backend: Some(crate::proto::StartBackend::Herdr),
+        ..start_req(Agent::Codex)
+    };
+    let started = r.sessions.start(req).await.unwrap();
+    assert_eq!(started["herdr_session"], "p-s1");
+}
+
+#[tokio::test]
+async fn start_options_follow_the_setting_and_whether_the_core_answers() {
+    use crate::proto::StartBackend::{Hc, Herdr};
+    let (r, fake, _) = core_start_rig(crate::config::NewSessions::Auto);
+    let o = r.sessions.start_options().await;
+    assert_eq!(o.default, Hc);
+    assert!(o.backends.iter().all(|b| b.available), "{o:?}");
+    drop(fake);
+    let o = r.sessions.start_options().await;
+    assert_eq!(o.default, Herdr);
+    let hc = o.backends.iter().find(|b| b.backend == Hc).unwrap();
+    assert!(!hc.available);
+    assert_eq!(hc.reason.as_deref(), Some("not_answering"));
+
+    let dir = tempfile::tempdir().unwrap();
+    let (r, _, _) = multi_rig(dir, vec![]);
+    r.sessions.set_core_starts(CoreStarts {
+        new_sessions: crate::config::NewSessions::Hc,
+        worktrees: "/nonexistent".into(),
+        home: "/nonexistent".into(),
+        bins: None,
+    });
+    let o = r.sessions.start_options().await;
+    assert_eq!(o.default, Hc, "the setting's choice, though it would fail");
+    let hc = o.backends.iter().find(|b| b.backend == Hc).unwrap();
+    assert_eq!(hc.reason.as_deref(), Some("not_followed"));
 }

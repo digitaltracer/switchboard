@@ -23,7 +23,7 @@ use super::proto::{HubFrame, MAX_FRAME_BYTES, PushOutcome, RelayFrame, RelayPush
 use super::seal::{RequestEnvelope, ResponseEnvelope, VERSION, registration_message, relay_id};
 use crate::auth::device::verify;
 use crate::config::RelayConfig;
-use crate::push::{Push, SendOutcome, Sender, Senders, fcm, payload_for};
+use crate::push::{Push, SendOutcome, Sender, Senders, fcm, live_payload, payload_for};
 use crate::runner::random_id;
 use crate::store::{OutboxKind, PushEnv, PushProvider};
 
@@ -416,7 +416,7 @@ async fn hub_connection(relay: Arc<Relay>, socket: WebSocket) {
                 match serde_json::from_str::<HubFrame>(&text) {
                     Ok(HubFrame::Response { id, envelope }) => complete(&relay, &rid, generation, id, Ok(envelope)),
                     Ok(HubFrame::Reject { id, reason }) => complete(&relay, &rid, generation, id, Err(reason)),
-                    Ok(HubFrame::Push { id, push }) => push_for(&relay, &rid, generation, tx.clone(), id, push),
+                    Ok(HubFrame::Push { id, push }) => push_for(&relay, &rid, generation, tx.clone(), id, *push),
                     _ => tracing::debug!(relay_id = %rid, "ignoring an unexpected frame"),
                 }
             }
@@ -482,6 +482,7 @@ fn push_for(
         "finished" => Some(OutboxKind::Finished),
         "device_paired" => Some(OutboxKind::DevicePaired),
         "waiting" => Some(OutboxKind::Waiting),
+        "live" => Some(OutboxKind::Live),
         _ => None,
     };
     let env = match p.env.as_str() {
@@ -519,7 +520,9 @@ fn push_for(
                     && valid_id(Some(&p.collapse_id))
                     && valid_id(p.session_id.as_deref())
                     && valid_id(p.approval_id.as_deref())
-                    && valid_id(p.attention_id.as_deref()) =>
+                    && valid_id(p.attention_id.as_deref())
+                    && (kind == OutboxKind::Live) == p.live.is_some()
+                    && p.live.as_ref().is_none_or(|l| l.valid()) =>
             {
                 let push = Push {
                     device_id: String::new(),
@@ -530,14 +533,18 @@ fn push_for(
                     token: (!p.token.is_empty()).then(|| p.token.clone()),
                     env,
                     provider: provider.unwrap_or(PushProvider::Apns),
-                    payload: payload_for(
-                        kind,
-                        p.session_id.as_deref(),
-                        p.approval_id.as_deref(),
-                        p.attention_id.as_deref(),
-                    ),
+                    payload: match &p.live {
+                        Some(l) => live_payload(l),
+                        None => payload_for(
+                            kind,
+                            p.session_id.as_deref(),
+                            p.approval_id.as_deref(),
+                            p.attention_id.as_deref(),
+                        ),
+                    },
                     collapse_id: p.collapse_id.clone(),
                     expires_at: p.expires_at,
+                    live: p.live.clone(),
                 };
                 match sender.send(&push).await {
                     SendOutcome::Sent => reply(PushOutcome::Sent, None),

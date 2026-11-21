@@ -10,9 +10,27 @@ public typealias Schemas = Components.Schemas
 public enum HubError: Error, LocalizedError, Equatable {
     case hub(code: String, message: String, operationId: String?, sessionId: String?)
     /// No answer: the request may or may not have reached the hub.
-    case unreachable(String)
+    case unreachable(String, Reach = .unknown)
     case notPaired
     case unexpected(String)
+
+    /// Which step from this phone to the hub failed.
+    public enum Reach: Sendable, Equatable {
+        /// This phone has no network.
+        case offline
+        /// The relay didn't answer.
+        case relay
+        /// The relay is up, but the hub isn't connected to it.
+        case hub
+        /// The hub is connected but didn't answer in time.
+        case slow
+        case unknown
+    }
+
+    public var reach: Reach? {
+        if case .unreachable(_, let r) = self { return r }
+        return nil
+    }
 
     public var code: String? {
         if case .hub(let code, _, _, _) = self { return code }
@@ -28,7 +46,7 @@ public enum HubError: Error, LocalizedError, Equatable {
     public var errorDescription: String? {
         switch self {
         case .hub(_, let message, _, _): return message
-        case .unreachable(let why): return "Can't reach the hub: \(why)"
+        case .unreachable(let why, _): return "Can't reach the hub: \(why)"
         case .notPaired: return "This phone isn't paired."
         case .unexpected(let why): return why
         }
@@ -208,7 +226,11 @@ public final class Hub: Sendable {
         } catch let e as ClientError {
             if let hub = e.underlyingError as? HubError { throw hub }
             // No HTTP response at all: the request may or may not have reached the hub.
-            if e.response == nil { throw HubError.unreachable(e.underlyingError.localizedDescription) }
+            if e.response == nil {
+                let offline: [URLError.Code] = [.notConnectedToInternet, .dataNotAllowed, .internationalRoamingOff]
+                let reach: HubError.Reach = (e.underlyingError as? URLError).map { offline.contains($0.code) } == true ? .offline : .unknown
+                throw HubError.unreachable(e.underlyingError.localizedDescription, reach)
+            }
             throw HubError.unexpected(String(describing: e.underlyingError))
         }
     }
@@ -295,12 +317,25 @@ public final class Hub: Sendable {
         try await Self.unwrap { try await client.getChanges(path: .init(id: id)).ok.body.json }
     }
 
-    public func start(project: String, prompt: String, machine: String?, agent: String?, notify: Bool, requestId: String) async throws -> Schemas.StartResponse {
+    /// A page of one changed file's diff, from hunk `from`.
+    public func diff(_ id: String, path: String, from: Int = 0) async throws -> Schemas.FileDiffView {
+        try await Self.unwrap { try await client.getDiff(path: .init(id: id), query: .init(path: path, from: Int32(from))).ok.body.json }
+    }
+
+    /// `backend` is `hc` or `herdr`; nil leaves it to the machine's runner.
+    public func start(project: String, prompt: String, machine: String?, agent: String?, notify: Bool, requestId: String,
+                      backend: String? = nil) async throws -> Schemas.StartResponse {
         try await Self.unwrap {
             try await client.startSession(body: .json(.init(
-                projectId: project, prompt: prompt, machineId: machine, agent: agent, notify: notify, requestId: requestId
+                projectId: project, prompt: prompt, machineId: machine, agent: agent, notify: notify, requestId: requestId,
+                backend: backend
             ))).ok.body.json
         }
+    }
+
+    /// Where a new session on `machine` opens, and which backends can take one now.
+    public func startOptions(machine: String) async throws -> Schemas.StartOptions {
+        try await Self.unwrap { try await client.getStartOptions(path: .init(id: machine)).ok.body.json }
     }
 
     public func operation(_ requestId: String) async throws -> Schemas.OperationStatus {
@@ -428,8 +463,9 @@ public final class Hub: Sendable {
         try await Self.unwrap { try await client.getAgentDialog(query: .init(machineId: machine, agent: agent)).ok.body.json }
     }
 
-    /// Picks one offered option. The deny is sent unsigned; any other option is signed with the
-    /// approval key, which asks for Face ID or the passcode.
+    /// Picks one offered option. The deny is sent unsigned, and so is one question of a group,
+    /// which submits nothing; any other option is signed with the approval key, which asks for
+    /// Face ID or the passcode.
     public func answer(
         machine: String, agent: String, dialog: Schemas.Dialog, option: Schemas.DialogOption, reason: String, requestId: String
     ) async throws -> Schemas.DialogAnswerResponse {
@@ -437,7 +473,7 @@ public final class Hub: Sendable {
             machineId: machine, agent: agent, occurrenceId: dialog.occurrenceId, optionId: option.id,
             labelSha256: option.labelSha256, requestId: requestId
         )
-        if !option.isDeny {
+        if !option.isDeny && option.provisional != true {
             guard let pairing else { throw HubError.notPaired }
             let ch = try await Self.unwrap {
                 try await client.dialogChallenge(body: .json(.init(machineId: machine, agent: agent, occurrenceId: dialog.occurrenceId))).ok.body.json
@@ -455,6 +491,14 @@ public final class Hub: Sendable {
         return try await Self.unwrap { try await client.answerDialog(body: .json(request)).ok.body.json }
     }
 
+    /// Shows the previous question of a group again, and returns it when the hub sends it. It
+    /// submits nothing, so it is sent unsigned.
+    public func back(machine: String, agent: String, dialog: Schemas.Dialog) async throws -> Schemas.Dialog? {
+        try await Self.unwrap {
+            try await client.dialogBack(body: .json(.init(machineId: machine, agent: agent, occurrenceId: dialog.occurrenceId))).ok.body.json
+        }.dialog
+    }
+
     /// What a `waiting` push names, if it still shows.
     public func attention(_ id: String) async throws -> Schemas.Attention {
         try await Self.unwrap { try await client.getAttention(path: .init(id: id)).ok.body.json }
@@ -470,11 +514,73 @@ public final class Hub: Sendable {
         _ = try await Self.unwrap { try await client.revokeDevice(path: .init(id: deviceId)).noContent }
     }
 
+    /// Registers this phone's lock-screen card: the key boards are sealed to, and its push tokens.
+    public func setLive(key: Data, startToken: Data?, activityToken: Data?, startedAt: Date?, mode: LiveShowMode) async throws {
+        let hex = { (d: Data?) in d.map { $0.map { String(format: "%02x", $0) }.joined() } }
+        let (start, activity) = (hex(startToken), hex(activityToken))
+        _ = try await Self.unwrap {
+            try await client.setLive(body: .json(.init(
+                liveKey: key.base64URL, startToken: start, activityToken: activity,
+                activityStartedAt: startedAt.map { Int64($0.timeIntervalSince1970) },
+                mode: mode == .always ? .always : .working
+            ))).noContent
+        }
+    }
+
+    public func clearLive() async throws {
+        _ = try await Self.unwrap { try await client.clearLive().noContent }
+    }
+
+    /// What agents did since `since` (Unix ms).
+    public func activity(since: Int64) async throws -> Schemas.Activity {
+        try await Self.unwrap { try await client.getActivity(query: .init(since: since)).ok.body.json }
+    }
+
+    public func activitySummary(since: Int64) async throws -> String {
+        try await Self.unwrap { try await client.postActivitySummary(body: .json(.init(since: since))).ok.body.json }.summary
+    }
+
+    public func awaySettings() async throws -> Schemas.AwaySettingsView {
+        try await Self.unwrap { try await client.getAwaySettings().ok.body.json }
+    }
+
+    public func setAwaySettings(_ s: Schemas.AwaySettingsView) async throws {
+        _ = try await Self.unwrap { try await client.setAwaySettings(body: .json(s)).noContent }
+    }
+
+    public func shipButtons() async throws -> Schemas.ShipButtons {
+        try await Self.unwrap { try await client.getShipButtons().ok.body.json }
+    }
+
+    /// Replaces one scope's buttons: `*` for all projects, or a project id.
+    public func setShipButtons(scope: String, _ buttons: [ShipButton]) async throws {
+        _ = try await Self.unwrap {
+            try await client.setShipButtons(body: .json(.init(scope: scope, buttons: buttons.map(\.view)))).noContent
+        }
+    }
+
+    /// What the lock-screen card shows.
+    public func live() async throws -> LiveBoard {
+        let v = try await Self.unwrap { try await client.getLive().ok.body.json }
+        return LiveBoard(v)
+    }
+
     public func setPushToken(_ token: Data?, sandbox: Bool) async throws {
         let hex = token.map { $0.map { String(format: "%02x", $0) }.joined() }
         _ = try await Self.unwrap {
             try await client.setPushToken(body: .json(.init(token: hex, environment: sandbox ? .sandbox : .production))).noContent
         }
+    }
+}
+
+extension LiveBoard {
+    public init(_ v: Schemas.LiveBoardView) {
+        self.init(
+            at: Date(timeIntervalSince1970: TimeInterval(v.at)),
+            waiting: v.waiting.map { .init(name: $0.name, space: $0.space, since: Date(timeIntervalSince1970: TimeInterval($0.since)), error: $0.error) },
+            more: Int(v.more), running: v.running, runningMore: Int(v.runningMore), idle: Int(v.idle),
+            finished: v.finished, finishedAt: v.finishedAt.map { Date(timeIntervalSince1970: TimeInterval($0)) }
+        )
     }
 }
 

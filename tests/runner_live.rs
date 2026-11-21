@@ -252,6 +252,7 @@ async fn codex_body(
             agent: Agent::Codex,
             prompt: ask("decided.txt"),
             deny_patterns: vec![],
+            backend: None,
         })
         .await
         .unwrap();
@@ -337,6 +338,7 @@ async fn claude_liveness_allow_and_fail_closed_on_killed_helper() {
             agent: Agent::Claude,
             prompt: ask("allowed.txt"),
             deny_patterns: vec![],
+            backend: None,
         })
         .await;
     let outcome = std::panic::AssertUnwindSafe(async {

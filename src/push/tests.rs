@@ -82,6 +82,7 @@ impl Rig {
                 start_commit: None,
                 herdr_session: None,
                 name: None,
+                space: None,
             })
             .await
             .unwrap();
@@ -404,6 +405,7 @@ fn requests_go_to_the_devices_environment_with_apns_headers() {
         payload: json!({"aps": {}}),
         collapse_id: "a1".into(),
         expires_at: 42,
+        live: None,
     };
     let req = a.request(&push, "jwt").unwrap();
     assert_eq!(
@@ -486,6 +488,7 @@ async fn apns_sandbox_is_reachable() {
         payload: json!({"aps": {"alert": "test"}}),
         collapse_id: "t".into(),
         expires_at: 0,
+        live: None,
     };
     let outcome = a.send(&push).await;
     // A refused provider token proves the TLS and HTTP/2 path; 403 is retried.
@@ -526,6 +529,7 @@ async fn apns_key_is_accepted() {
                 payload: json!({"aps": {"alert": "test"}}),
                 collapse_id: "t".into(),
                 expires_at: 0,
+                live: None,
             })
             .await;
         println!("{env:?}: {outcome:?}");

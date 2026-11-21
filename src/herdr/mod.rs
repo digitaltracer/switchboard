@@ -107,6 +107,17 @@ pub struct Client {
     next_id: AtomicU64,
 }
 
+/// Each request has a connection of its own, so a clone's ids may repeat the original's.
+impl Clone for Client {
+    fn clone(&self) -> Self {
+        Self {
+            socket: self.socket.clone(),
+            timeout: self.timeout,
+            next_id: AtomicU64::new(self.next_id.load(Ordering::Relaxed)),
+        }
+    }
+}
+
 impl Client {
     pub fn new(socket: impl Into<PathBuf>) -> Self {
         Self {
@@ -325,6 +336,21 @@ impl Client {
         }
     }
 
+    /// The names of a pane's foreground processes.
+    pub async fn pane_foreground_names(&self, pane_id: &str) -> Result<Vec<String>> {
+        let params = PaneProcessInfoParams {
+            pane_id: pane_id.to_owned(),
+        };
+        match self.call(Method::PaneProcessInfo(params), None).await? {
+            ResponseResult::PaneProcessInfo { process_info } => Ok(process_info
+                .foreground_processes
+                .into_iter()
+                .map(|p| p.name)
+                .collect()),
+            other => unexpected("pane.process_info", other),
+        }
+    }
+
     /// A plain workspace with one shell pane, returned as its root pane.
     pub async fn workspace_create(&self, params: WorkspaceCreateParams) -> Result<PaneInfo> {
         match self.call(Method::WorkspaceCreate(params), None).await? {
@@ -480,13 +506,13 @@ fn unexpected<T>(method: &'static str, got: ResponseResult) -> Result<T> {
 
 /// Herdr agent names: `[a-z][a-z0-9_-]{0,31}`.
 /// An agent's name, or the pane id of one that has none (`w1:p2`, `w1:pE`: Herdr counts in letters
-/// as well as digits).
+/// as well as digits), or a herdr-core terminal's address on this machine (`t7`, `t1b`).
 pub fn check_agent_target(target: &str) -> Result<()> {
     let id = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric());
     let pane = target.split_once(':').is_some_and(|(w, p)| {
         w.strip_prefix('w').is_some_and(id) && p.strip_prefix('p').is_some_and(id)
     });
-    if pane {
+    if pane || target.strip_prefix('t').is_some_and(id) {
         Ok(())
     } else {
         check_agent_name(target)

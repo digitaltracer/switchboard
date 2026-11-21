@@ -20,6 +20,15 @@ pub const MIGRATIONS: &[(u32, &str)] = &[
     (8, include_str!("../../migrations/0008_attention.sql")),
     (9, include_str!("../../migrations/0009_push_provider.sql")),
     (10, include_str!("../../migrations/0010_session_name.sql")),
+    (
+        11,
+        include_str!("../../migrations/0011_seen_agent_space.sql"),
+    ),
+    (12, include_str!("../../migrations/0012_session_space.sql")),
+    (13, include_str!("../../migrations/0013_live_activity.sql")),
+    (14, include_str!("../../migrations/0014_ship_buttons.sql")),
+    (15, include_str!("../../migrations/0015_activity.sql")),
+    (16, include_str!("../../migrations/0016_live_mode.sql")),
 ];
 
 pub fn run(conn: &mut Connection, db_path: Option<&Path>) -> Result<u32, StoreError> {

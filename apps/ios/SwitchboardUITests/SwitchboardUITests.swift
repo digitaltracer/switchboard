@@ -1,6 +1,30 @@
 import XCTest
 
+/// Home is up when its mic is on screen.
+private func atHome(_ app: XCUIApplication, timeout: TimeInterval) -> Bool {
+    app.buttons["micButton"].waitForExistence(timeout: timeout)
+}
+
+/// Back out of every pushed page.
+private func goHome(_ app: XCUIApplication) {
+    for _ in 0..<6 {
+        let back = app.buttons["back"].firstMatch
+        guard back.exists, back.isHittable else { return }
+        back.tap()
+        usleep(400_000)
+    }
+}
+
 private extension XCUIElement {
+    func waitForSelected(timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if isSelected { return true }
+            usleep(200_000)
+        }
+        return isSelected
+    }
+
     func waitForEnabled(timeout: TimeInterval) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
@@ -22,7 +46,7 @@ final class SwitchboardUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment["SB_RESET"] = "1"
         app.launch()
-        XCTAssertTrue(app.navigationBars["Pair with your hub"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["pairTitle"].waitForExistence(timeout: 10))
         XCTAssertFalse(app.buttons["pairButton"].isEnabled, "no link yet")
     }
 
@@ -42,13 +66,21 @@ final class SwitchboardUITests: XCTestCase {
         XCTAssertTrue(name.waitForExistence(timeout: 10))
         app.buttons["pairButton"].tap()
         // The script answers yes at once, so the fingerprint screen may only flash by.
-        XCTAssertTrue(app.navigationBars["Agents"].waitForExistence(timeout: 60), app.debugDescription)
+        XCTAssertTrue(atHome(app, timeout: 60), app.debugDescription)
         allowNotifications(app)
         snapshot(app, "home")
 
+        // Home's tabs follow a swipe across the list.
+        app.swipeLeft()
+        XCTAssertTrue(app.buttons["Spaces"].waitForSelected(timeout: 5), "a left swipe opens Spaces")
+        app.swipeRight()
+        XCTAssertTrue(app.buttons["Now"].waitForSelected(timeout: 5), "a right swipe goes back to Now")
+
         if let project = env["SB_EXPECT_PROJECT"] {
             app.buttons["startButton"].tap()
-            XCTAssertTrue(app.navigationBars["New session"].waitForExistence(timeout: 10))
+            XCTAssertTrue(app.buttons["submitStart"].waitForExistence(timeout: 10))
+            XCTAssertTrue(app.buttons["backend-hc"].waitForExistence(timeout: 10), "where it opens")
+            snapshot(app, "new-session")
             XCTAssertTrue(app.staticTexts[project].waitForExistence(timeout: 10) || app.buttons.containing(NSPredicate(format: "label CONTAINS %@", project)).firstMatch.exists)
             app.buttons["Cancel"].tap()
 
@@ -103,9 +135,8 @@ final class SwitchboardUITests: XCTestCase {
             app.buttons["Screen"].tap()
             XCTAssertTrue(app.descendants(matching: .any)["terminal"].waitForExistence(timeout: 10))
             snapshot(app, "terminal")
-            app.navigationBars.buttons.element(boundBy: 0).tap()
-            app.navigationBars.buttons.element(boundBy: 0).tap()
-            XCTAssertTrue(app.navigationBars["Agents"].waitForExistence(timeout: 10))
+            goHome(app)
+            XCTAssertTrue(atHome(app, timeout: 10))
             snapshot(app, "home-running")
 
             // Voice: the scripted words name the project, so the hub's preview picks a start there.
@@ -125,35 +156,51 @@ final class SwitchboardUITests: XCTestCase {
         app.buttons["devicesButton"].tap()
         XCTAssertTrue(app.staticTexts["this phone"].waitForExistence(timeout: 10))
         app.buttons["Done"].tap()
-        XCTAssertTrue(app.navigationBars["Agents"].waitForExistence(timeout: 5))
+        XCTAssertTrue(atHome(app, timeout: 5))
 
-        // A Herdr session lists its agents, whoever started them.
-        let crm = app.buttons["session-crm"]
-        XCTAssertTrue(crm.waitForExistence(timeout: 15), app.debugDescription)
-        snapshot(app, "home")
-        crm.tap()
-        XCTAssertTrue(app.staticTexts["Imports › orchestrator"].waitForExistence(timeout: 10), app.debugDescription)
-        XCTAssertTrue(app.staticTexts["Review the import"].exists, "an unnamed agent goes by its title, and a numbered space is left out")
-        snapshot(app, "session")
-        app.staticTexts["Imports › orchestrator"].tap()
+        // Spaces lists the Herdr app's spaces and the Herdr terminal's workspaces alike.
+        app.buttons["Spaces"].tap()
+        let imports = app.buttons["space-crm › Imports"]
+        XCTAssertTrue(imports.waitForExistence(timeout: 15), app.debugDescription)
+        XCTAssertTrue(app.buttons["space-atlas-web"].exists, "a Herdr app space")
+        snapshot(app, "spaces")
+        imports.tap()
+        XCTAssertTrue(app.staticTexts["orchestrator"].waitForExistence(timeout: 10), app.debugDescription)
+        snapshot(app, "space")
+        app.staticTexts["orchestrator"].tap()
         XCTAssertTrue(app.descendants(matching: .any)["latest"].waitForExistence(timeout: 10), "tapping an agent opens its page")
-        // Its question shows as options; the free-text row is shown but can't be picked.
-        XCTAssertTrue(app.descendants(matching: .any)["dialog-card"].waitForExistence(timeout: 15), app.debugDescription)
+        // Its question opens as a page; the free-text row is shown but can't be picked.
+        let answer = app.buttons["answerDialog"]
+        XCTAssertTrue(answer.waitForExistence(timeout: 15), app.debugDescription)
+        snapshot(app, "agent-waiting")
+        answer.tap()
+        XCTAssertTrue(app.buttons["option-Blue"].waitForExistence(timeout: 15), app.debugDescription)
         XCTAssertTrue(app.buttons["option-Blue"].isEnabled)
         XCTAssertFalse(app.buttons["option-Type something."].isEnabled)
         snapshot(app, "agent-question")
-        app.navigationBars.buttons.firstMatch.tap()
+        goHome(app)
 
-        // The Codex agent waits at a permission dialog; its deny needs no Face ID.
+        // The Codex agent, in the numbered workspace, waits at a permission dialog; its deny needs no Face ID.
+        app.buttons["Spaces"].tap()
+        app.buttons["space-crm"].tap()
+        XCTAssertTrue(app.staticTexts["Review the import"].waitForExistence(timeout: 10), "an unnamed agent goes by its title")
         app.staticTexts["Review the import"].tap()
+        let answerCodex = app.buttons["answerDialog"]
+        XCTAssertTrue(answerCodex.waitForExistence(timeout: 15), app.debugDescription)
+        answerCodex.tap()
         let no = app.buttons["option-No, and tell Codex what to do differently (esc)"]
         XCTAssertTrue(no.waitForExistence(timeout: 15), app.debugDescription)
-        XCTAssertFalse(app.buttons["option-Yes, and don't ask again (p)"].isEnabled, "a standing approval isn't offered")
+        XCTAssertTrue(app.buttons["option-Yes, and don't ask again (p)"].isEnabled, "a standing approval is offered")
+        let confirm = app.buttons["dialog-confirm"]
+        XCTAssertFalse(confirm.isEnabled, "nothing is sent before an option is picked")
         snapshot(app, "agent-permission")
         no.tap()
+        XCTAssertTrue(no.exists, "picking an option sends nothing yet")
+        confirm.tap()
         XCTAssertTrue(no.waitForNonExistence(timeout: 20), "the answered dialog is gone")
-        app.navigationBars.buttons.firstMatch.tap()
-        app.navigationBars.buttons.firstMatch.tap()
+        snapshot(app, "agent-answered")
+        goHome(app)
+        app.buttons["Now"].tap()
 
         if env["SB_EXPECT_PROJECT"] != nil { try cloudVoice(app) }
 
@@ -189,7 +236,7 @@ final class SwitchboardUITests: XCTestCase {
         app.launchEnvironment["SB_FAKE_TRANSCRIBE"] = "In demo run the benchmarks|error:server|and compare them with main"
         app.launchEnvironment["SB_FAKE_TRANSCRIBE_MS"] = "6000"
         app.launch()
-        XCTAssertTrue(app.navigationBars["Agents"].waitForExistence(timeout: 30), app.debugDescription)
+        XCTAssertTrue(atHome(app, timeout: 30), app.debugDescription)
 
         // A saved key is never shown; removing it brings the field back.
         app.buttons["devicesButton"].tap()
@@ -238,7 +285,7 @@ final class SwitchboardUITests: XCTestCase {
         waitForExpectations(timeout: 20)
         XCTAssertTrue(send.waitForEnabled(timeout: 20), app.debugDescription)
         app.buttons["Cancel"].firstMatch.tap()
-        XCTAssertTrue(app.navigationBars["Agents"].waitForExistence(timeout: 5))
+        XCTAssertTrue(atHome(app, timeout: 5))
     }
 
     /// A screenshot kept in the result bundle, for checking the design by eye.

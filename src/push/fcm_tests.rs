@@ -100,6 +100,7 @@ pub(crate) fn android(kind: OutboxKind) -> Push {
         payload: json!({}),
         collapse_id: "waiting:att1".into(),
         expires_at: 4_000_000_000,
+        live: None,
     }
 }
 

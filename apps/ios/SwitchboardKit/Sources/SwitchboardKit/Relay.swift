@@ -118,10 +118,12 @@ public struct RelayTransport: ClientTransport {
             // An offline or slow hub, or a relay that's down, is "can't reach", so a start goes to
             // reconciling, not failed.
             if ["hub_offline", "hub_timeout"].contains(code) {
-                throw HubError.unreachable(code == "hub_offline" ? "Your hub isn't connected to the relay." : "Your hub didn't answer in time.")
+                throw code == "hub_offline"
+                    ? HubError.unreachable("Your hub isn't connected to the relay.", .hub)
+                    : HubError.unreachable("Your hub didn't answer in time.", .slow)
             }
             if decoded == nil, status >= 500 || status == 0 {
-                throw HubError.unreachable("The relay isn't answering.")
+                throw HubError.unreachable("The relay isn't answering.", .relay)
             }
             throw HubError.hub(code: code, message: decoded?.error.message ?? "The relay answered \(status).", operationId: nil, sessionId: nil)
         }

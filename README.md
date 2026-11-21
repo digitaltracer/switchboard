@@ -90,6 +90,7 @@ The iOS app builds with plain `xcodebuild`. See `apps/ios/README.md`.
 ## Security model
 
 - **Approvals fail closed.** Agent permission requests come through each CLI's own hook, not the terminal screen. Unanswered, expired or disconnected requests are denied.
+- **Herdr app.** Agents in the Herdr app (herdr-core) are listed beside Herdr's as `hc/<name>`. New sessions start there when its core answers; set `new_sessions = "herdr"` or `"hc"` under `[machines.local]` (or in `runner.toml`) to choose one always. Switchboard only dials the core and never starts or stops it.
 - **Claude's mode.** Claude Code starts in auto mode. Set `claude_permission_mode = "acceptEdits"` under a machine's `[machines.local]` (or in `runner.toml`) to have every shell command and tool call ask you instead. A project's `deny_patterns` are checked before every tool call in either mode.
 - **App approvals are signed.** They need a signature from a device key protected by Face ID or a passcode. Each front door's right to approve can be turned off in `hub.toml`.
 - **Secrets are masked.** That covers everything that leaves the machine: approvals, terminal output, notifications and WhatsApp messages. Raw tool input is never stored.

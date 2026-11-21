@@ -368,6 +368,7 @@ fn push(kind: OutboxKind) -> Push {
         payload: json!({"ignored": "the relay writes its own"}),
         collapse_id: "a1".into(),
         expires_at: 0,
+        live: None,
     }
 }
 
@@ -614,4 +615,54 @@ async fn an_android_push_is_checked_as_an_fcm_token_and_goes_through_fcm() {
     let s = RelaySender(apple_only.link.clone());
     assert!(matches!(s.send(&android).await, SendOutcome::Failed(e) if e.contains("push.fcm")));
     assert_eq!(s.send(&push(OutboxKind::Approval)).await, SendOutcome::Sent);
+}
+
+#[tokio::test]
+async fn a_card_update_goes_out_only_with_a_well_formed_sealed_blob() {
+    let r = rig_with(Some(AnySender::Log(LogSender))).await;
+    let sender = RelaySender(r.link.clone());
+    let live = crate::push::LivePush {
+        event: "update".into(),
+        blob: Some("c2VhbGVk_-".into()),
+        urgent: false,
+        alert: false,
+        timestamp: 1,
+        stale_at: 2,
+    };
+    let card = Push {
+        session_id: None,
+        approval_id: None,
+        collapse_id: "live".into(),
+        live: Some(live.clone()),
+        ..push(OutboxKind::Live)
+    };
+    assert_eq!(sender.send(&card).await, SendOutcome::Sent);
+    for bad in [
+        Push {
+            live: None,
+            ..card.clone()
+        },
+        Push {
+            live: Some(crate::push::LivePush {
+                blob: Some("{\"name\":\"x\"}".into()),
+                ..live.clone()
+            }),
+            ..card.clone()
+        },
+        Push {
+            live: Some(crate::push::LivePush {
+                event: "stop".into(),
+                ..live.clone()
+            }),
+            ..card.clone()
+        },
+        Push {
+            kind: OutboxKind::Finished,
+            ..card.clone()
+        },
+    ] {
+        assert!(
+            matches!(sender.send(&bad).await, SendOutcome::Failed(e) if e.contains("malformed"))
+        );
+    }
 }

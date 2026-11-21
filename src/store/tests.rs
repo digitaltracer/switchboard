@@ -26,6 +26,7 @@ fn session(id: &str, created_at: i64) -> SessionRecord {
         start_commit: None,
         herdr_session: None,
         name: None,
+        space: None,
     }
 }
 
@@ -474,7 +475,35 @@ fn seen(session: &str, pane: &str, kind: &str, title: Option<&str>) -> SeenAgent
         kind: Some(kind.into()),
         name: format!("{session}/{pane}"),
         title: title.map(Into::into),
+        space: None,
     }
+}
+
+#[tokio::test]
+async fn an_agent_that_ends_keeps_the_space_it_ran_in() {
+    let store = Store::open_in_memory().await.unwrap();
+    let in_space = |space: Option<&str>| SeenAgent {
+        space: space.map(Into::into),
+        ..seen("hc", "t7", "claude", None)
+    };
+    store
+        .record_agents("mac", vec![in_space(Some("switchboard"))], 1_000)
+        .await
+        .unwrap();
+    // A listing without a space keeps the one known; a new one replaces it.
+    store
+        .record_agents("mac", vec![in_space(None)], 2_000)
+        .await
+        .unwrap();
+    store
+        .record_agents("mac", vec![in_space(Some("udp-backend"))], 3_000)
+        .await
+        .unwrap();
+    store.record_agents("mac", vec![], 4_000).await.unwrap();
+    let ended = store.ended_agents(0).await.unwrap();
+    assert_eq!(ended.len(), 1);
+    assert_eq!(ended[0].space.as_deref(), Some("udp-backend"));
+    assert_eq!(ended[0].ended_at, Some(4_000));
 }
 
 #[tokio::test]

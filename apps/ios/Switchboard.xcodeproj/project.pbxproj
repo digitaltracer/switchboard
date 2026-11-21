@@ -7,10 +7,19 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		5A1B0C0D0E0F10111213140C /* SwitchboardLive.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 5A1B0C0D0E0F101112131401 /* SwitchboardLive.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		5A1B0C0D0E0F101112131410 /* SwitchboardLiveKit in Frameworks */ = {isa = PBXBuildFile; productRef = 5A1B0C0D0E0F101112131411 /* SwitchboardLiveKit */; };
 		AEB50E5286A0DAAC4D1DC64B /* SwitchboardKit in Frameworks */ = {isa = PBXBuildFile; productRef = 2E3EF26FD2D97FC510C16FB9 /* SwitchboardKit */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		5A1B0C0D0E0F10111213140D /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 9CFE7D94E4BCB58114C33ED9 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 5A1B0C0D0E0F101112131404;
+			remoteInfo = SwitchboardLive;
+		};
 		8446F4B04E7FE6D3D72DF417 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 9CFE7D94E4BCB58114C33ED9 /* Project object */;
@@ -20,13 +29,46 @@
 		};
 /* End PBXContainerItemProxy section */
 
+/* Begin PBXCopyFilesBuildPhase section */
+		5A1B0C0D0E0F10111213140B /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				5A1B0C0D0E0F10111213140C /* SwitchboardLive.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
+		5A1B0C0D0E0F101112131401 /* SwitchboardLive.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = SwitchboardLive.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		7B79F113FCCE46B30A2D8B69 /* Config.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config.xcconfig; sourceTree = "<group>"; };
 		9C0E070C1206C9E921F5EA8C /* Switchboard.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Switchboard.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B00E87C761EFDFCB23436595 /* SwitchboardUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SwitchboardUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		5A1B0C0D0E0F101112131403 /* Exceptions for "SwitchboardLive" folder in "SwitchboardLive" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+				SwitchboardLive.entitlements,
+			);
+			target = 5A1B0C0D0E0F101112131404 /* SwitchboardLive */;
+		};
+		5A1B0C0D0E0F101112131412 /* Exceptions for "SwitchboardLive" folder in "Switchboard" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				AgentsLiveActivity.swift,
+				Info.plist,
+				SwitchboardLive.entitlements,
+				SwitchboardLive.swift,
+			);
+			target = 41FC30271105F2432F2EDD42 /* Switchboard */;
+		};
 		5E0EE9E8EF751B5748EFF831 /* Exceptions for "Switchboard" folder in "Switchboard" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
@@ -37,6 +79,15 @@
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		5A1B0C0D0E0F101112131402 /* SwitchboardLive */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				5A1B0C0D0E0F101112131403 /* Exceptions for "SwitchboardLive" folder in "SwitchboardLive" target */,
+				5A1B0C0D0E0F101112131412 /* Exceptions for "SwitchboardLive" folder in "Switchboard" target */,
+			);
+			path = SwitchboardLive;
+			sourceTree = "<group>";
+		};
 		8428BA06914CA33D66E6BE70 /* SwitchboardUITests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = SwitchboardUITests;
@@ -53,6 +104,14 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		5A1B0C0D0E0F101112131406 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				5A1B0C0D0E0F101112131410 /* SwitchboardLiveKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		2F7B5AD9C04B1B95B94CE03B /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -76,6 +135,7 @@
 			children = (
 				9C0E070C1206C9E921F5EA8C /* Switchboard.app */,
 				B00E87C761EFDFCB23436595 /* SwitchboardUITests.xctest */,
+				5A1B0C0D0E0F101112131401 /* SwitchboardLive.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -86,6 +146,7 @@
 				7B79F113FCCE46B30A2D8B69 /* Config.xcconfig */,
 				B9660921D1F1CBBDB630392D /* Switchboard */,
 				8428BA06914CA33D66E6BE70 /* SwitchboardUITests */,
+				5A1B0C0D0E0F101112131402 /* SwitchboardLive */,
 				29303E8C085341770699796E /* Products */,
 			);
 			sourceTree = "<group>";
@@ -93,6 +154,29 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		5A1B0C0D0E0F101112131404 /* SwitchboardLive */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 5A1B0C0D0E0F101112131408 /* Build configuration list for PBXNativeTarget "SwitchboardLive" */;
+			buildPhases = (
+				5A1B0C0D0E0F101112131405 /* Sources */,
+				5A1B0C0D0E0F101112131406 /* Frameworks */,
+				5A1B0C0D0E0F101112131407 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				5A1B0C0D0E0F101112131402 /* SwitchboardLive */,
+			);
+			name = SwitchboardLive;
+			packageProductDependencies = (
+				5A1B0C0D0E0F101112131411 /* SwitchboardLiveKit */,
+			);
+			productName = SwitchboardLive;
+			productReference = 5A1B0C0D0E0F101112131401 /* SwitchboardLive.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 		41FC30271105F2432F2EDD42 /* Switchboard */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = E918D6B7CBCCA8466DA014B3 /* Build configuration list for PBXNativeTarget "Switchboard" */;
@@ -100,13 +184,16 @@
 				FEF8A56A86748814F363A489 /* Sources */,
 				2F7B5AD9C04B1B95B94CE03B /* Frameworks */,
 				5CD6DF43B1F6DEB1C10FDCC7 /* Resources */,
+				5A1B0C0D0E0F10111213140B /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				5A1B0C0D0E0F10111213140E /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				B9660921D1F1CBBDB630392D /* Switchboard */,
+				5A1B0C0D0E0F101112131402 /* SwitchboardLive */,
 			);
 			name = Switchboard;
 			packageProductDependencies = (
@@ -147,6 +234,9 @@
 				LastSwiftUpdateCheck = 2700;
 				LastUpgradeCheck = 2700;
 				TargetAttributes = {
+					5A1B0C0D0E0F101112131404 = {
+						CreatedOnToolsVersion = 27.0;
+					};
 					41FC30271105F2432F2EDD42 = {
 						CreatedOnToolsVersion = 27.0;
 					};
@@ -175,11 +265,19 @@
 			targets = (
 				41FC30271105F2432F2EDD42 /* Switchboard */,
 				F42105E90C04CB7AFF4B9669 /* SwitchboardUITests */,
+				5A1B0C0D0E0F101112131404 /* SwitchboardLive */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		5A1B0C0D0E0F101112131407 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		5CD6DF43B1F6DEB1C10FDCC7 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -197,6 +295,13 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		5A1B0C0D0E0F101112131405 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		96C9D3ABD0FF3B77EA4CD07F /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -214,6 +319,11 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		5A1B0C0D0E0F10111213140E /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 5A1B0C0D0E0F101112131404 /* SwitchboardLive */;
+			targetProxy = 5A1B0C0D0E0F10111213140D /* PBXContainerItemProxy */;
+		};
 		A4E64ED27B500D89D1692B74 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = 41FC30271105F2432F2EDD42 /* Switchboard */;
@@ -222,6 +332,52 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
+		5A1B0C0D0E0F101112131409 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = "$(SB_LIVE_ENTITLEMENTS)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = SwitchboardLive/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Switchboard;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(SB_BUNDLE_ID).live";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		5A1B0C0D0E0F10111213140A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = "$(SB_LIVE_ENTITLEMENTS)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = SwitchboardLive/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Switchboard;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(SB_BUNDLE_ID).live";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
 		518B74696B71FF50B0821E6F /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -233,6 +389,7 @@
 				INFOPLIST_FILE = Switchboard/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Switchboard;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Scans the pairing QR code from your hub.";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "Face ID confirms that you approve what an agent wants to run.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Lets you tell your agents what to do by voice. If you save an OpenAI key in Settings, your recordings go to OpenAI to be transcribed.";
@@ -315,6 +472,7 @@
 				INFOPLIST_FILE = Switchboard/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Switchboard;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Scans the pairing QR code from your hub.";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "Face ID confirms that you approve what an agent wants to run.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Lets you tell your agents what to do by voice. If you save an OpenAI key in Settings, your recordings go to OpenAI to be transcribed.";
@@ -356,6 +514,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		5A1B0C0D0E0F101112131408 /* Build configuration list for PBXNativeTarget "SwitchboardLive" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5A1B0C0D0E0F101112131409 /* Debug */,
+				5A1B0C0D0E0F10111213140A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		214AFC840A1AF0F58359320B /* Build configuration list for PBXNativeTarget "SwitchboardUITests" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -393,6 +560,10 @@
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		5A1B0C0D0E0F101112131411 /* SwitchboardLiveKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = SwitchboardLiveKit;
+		};
 		2E3EF26FD2D97FC510C16FB9 /* SwitchboardKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = SwitchboardKit;

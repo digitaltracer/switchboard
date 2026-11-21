@@ -10,10 +10,11 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 
-use crate::herdr::types::{
-    AgentPromptParams, AgentStatus, Event, ReadSource, SessionSnapshot, Subscription,
-};
-use crate::herdr::{Client, HerdrError, check_agent_target};
+use super::backend::{self, Facts, Read, Server, snapshot_facts};
+#[cfg(test)]
+use crate::herdr::check_agent_target;
+use crate::herdr::types::{AgentStatus, Event, SessionSnapshot, Subscription};
+use crate::herdr::{Client, HerdrError};
 use crate::proto::conn::Backoff;
 use crate::proto::{AgentPromptOutcome, AgentSummary};
 
@@ -23,80 +24,62 @@ pub async fn list(
     sessions: &HashMap<String, String>,
 ) -> Result<Vec<AgentSummary>, HerdrError> {
     let snap = herdr.session_snapshot().await?;
-    let spaces: HashMap<String, String> = snap
-        .workspaces
-        .into_iter()
-        .filter(|w| !w.label.is_empty())
-        .map(|w| (w.workspace_id, w.label))
-        .collect();
-    Ok(snap
-        .agents
+    Ok(summaries(snapshot_facts(None, snap), sessions))
+}
+
+/// The hub's view of each agent; `herdr_session` is left for the caller.
+pub fn summaries(facts: Vec<Facts>, sessions: &HashMap<String, String>) -> Vec<AgentSummary> {
+    facts
         .into_iter()
         .map(|a| {
-            let name = a.name.unwrap_or_else(|| a.pane_id.clone());
+            let name = a.local_name();
             AgentSummary {
-                space: spaces.get(&a.workspace_id).cloned(),
+                space: a.space,
                 session_id: sessions.get(&name).cloned(),
                 herdr_session: None,
-                agent_status: status_str(a.agent_status),
+                agent_status: status_str(a.status),
+                error: a.error,
                 name,
-                pane_id: a.pane_id,
-                kind: a.agent,
-                title: a.terminal_title_stripped.filter(|t| !t.is_empty()),
+                pane_id: a.target,
+                kind: a.kind,
+                title: a.title,
             }
         })
-        .collect())
+        .collect()
 }
 
 /// The last `lines`, or the visible screen; history reads are refused while at a dialog.
 pub async fn read(
-    herdr: &Client,
+    server: &Server,
     agent: &str,
     lines: u32,
     visible: bool,
-) -> Result<String, HerdrError> {
-    check_agent_target(agent)?;
-    let screen = || herdr.agent_read(agent, ReadSource::Visible, None);
-    if visible {
-        return screen().await.map(|r| r.text);
-    }
-    match herdr
-        .agent_read(agent, ReadSource::RecentUnwrapped, Some(lines))
-        .await
-    {
-        Err(e) if e.server_code() == Some("agent_not_idle") => screen().await.map(|r| r.text),
-        other => other.map(|r| r.text),
-    }
+) -> backend::Result<String> {
+    let what = if visible {
+        Read::Visible
+    } else {
+        Read::Recent(lines)
+    };
+    server.read(agent, what).await.map(|r| r.text)
 }
 
-/// The visible screen with its colours; none when Herdr can't give it.
-pub async fn screen_ansi(herdr: &Client, agent: &str) -> Option<String> {
-    check_agent_target(agent).ok()?;
-    herdr
-        .agent_read_screen_ansi(agent)
-        .await
-        .ok()
-        .map(|r| r.text)
+/// The visible screen with its colours; none when the server can't give it.
+pub async fn screen_ansi(server: &Server, agent: &str) -> Option<String> {
+    server.read_ansi(agent).await
 }
 
-/// Herdr refuses a prompt to an agent at a dialog; the screen says what it is waiting for.
+/// The server refuses a prompt to an agent at a dialog; the screen says what it is waiting for.
 pub async fn prompt(
-    herdr: &Client,
+    server: &Server,
     agent: &str,
     text: &str,
-) -> Result<AgentPromptOutcome, HerdrError> {
-    check_agent_target(agent)?;
-    let params = AgentPromptParams {
-        target: agent.to_owned(),
-        text: text.to_owned(),
-        wait: None,
-    };
-    match herdr.agent_prompt(params).await {
+) -> backend::Result<AgentPromptOutcome> {
+    match server.prompt(agent, text).await {
         Ok(_) => Ok(AgentPromptOutcome::Sent),
-        Err(e) if e.server_code() == Some("agent_blocked") => Ok(AgentPromptOutcome::Blocked {
-            screen: read(herdr, agent, 0, true).await.unwrap_or_default(),
+        Err(e) if e.is_blocked() => Ok(AgentPromptOutcome::Blocked {
+            screen: read(server, agent, 0, true).await.unwrap_or_default(),
         }),
-        Err(e) if e.server_code() == Some("agent_not_found") => Ok(AgentPromptOutcome::NotFound),
+        Err(e) if e.is_not_found() => Ok(AgentPromptOutcome::NotFound),
         Err(e) => Err(e),
     }
 }

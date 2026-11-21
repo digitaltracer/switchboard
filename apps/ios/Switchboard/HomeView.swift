@@ -1,86 +1,99 @@
 import SwiftUI
 import SwitchboardKit
 
-/// An agent Switchboard didn't start, as the navigation stack opens it.
-struct AgentRef: Hashable {
-    let machine: String
-    let name: String
-}
+enum HomeTab: Hashable { case now, spaces, projects }
 
-enum Browse: Hashable {
-    case allSessions, machines, projects
-    case machine(String)
-}
-
-/// Home: what needs you, what's running, then lists. The mic is the main way in; the keyboard
-/// is beside it.
+/// Home: the hub's state, a sentence saying what needs you, then Now, Spaces and Projects. The
+/// ask bar stays at the bottom: plus to start a session, a tap to type, the mic to speak.
 struct HomeView: View {
     @Environment(AppModel.self) private var model
     @Environment(Voice.self) private var voice
     @State private var path = NavigationPath()
-    @State private var starting = false
+    @State private var tab = HomeTab.now
+    /// The project New session opens with; set by a Projects row.
+    @State private var starting: StartRequestDraft?
     @State private var showingDevices = false
-    /// The last line each busy agent said, by `Tile.id`.
+    /// The last line each busy agent said, by its id.
     @State private var lastLines: [String: String] = [:]
     @State private var pacer = FallbackPacer()
+    /// Connecting has taken long enough to say so.
+    @State private var slow = false
 
-    private var waiting: [Schemas.Session] { model.sessions.filter { !$0.pendingApprovals.isEmpty } }
-    private var groups: [HerdrSession] { model.herdrSessions(since: HerdrSession.startOfToday()) }
-    /// Agents working or waiting for you, in any session.
-    private var busy: [Tile] {
-        groups.flatMap { g in
-            g.live.filter { $0.needsYou || $0.agentStatus == "working" }.map { Tile(agent: $0, session: g.key.name) }
+    private var spaces: [AgentSpace] { model.spaces(since: HerdrSession.startOfToday()) }
+    private var approvals: [(session: Schemas.Session, approval: Schemas.Approval)] {
+        model.sessions.flatMap { s in s.pendingApprovals.map { (s, $0) } }.sorted { $0.approval.deadline < $1.approval.deadline }
+    }
+    /// Live agents, each with the space it's in.
+    private var live: [Item] {
+        spaces.flatMap { sp in sp.live.map { Item(agent: $0, space: sp) } }
+    }
+    /// Waiting on you at a dialog or stuck, apart from approvals, which have their own cards.
+    private var waiting: [Item] {
+        live.filter { i in
+            guard i.agent.needsYou else { return false }
+            if case .task(let s) = i.agent { return s.pendingApprovals.isEmpty }
+            return true
         }
+    }
+    private var working: [Item] { live.filter { $0.agent.agentStatus == "working" } }
+    private var finished: [Item] {
+        let done = live.filter { $0.agent.agentStatus == "done" }
+        let since = HerdrSession.startOfToday()
+        let ended = spaces.flatMap { sp in
+            sp.ended.compactMap { a -> Item? in
+                if case .task(let s) = a, s.updatedAt >= since { return Item(agent: a, space: sp) }
+                return nil
+            }
+        }
+        return done + ended
     }
 
     var body: some View {
-        @Bindable var model = model
         NavigationStack(path: $path) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
-                    summary
-                    if let sent = model.lastSent, Date().timeIntervalSince(sent.at) < 600 { SentCard(sent: sent) { open($0) } }
-                    ForEach(waiting, id: \.id) { s in
-                        ForEach(s.pendingApprovals, id: \.id) { a in
-                            ApprovalCard(approval: a, session: s, open: { path.append(s.id) }) {}
-                        }
+            VStack(spacing: 0) {
+                top
+                headline
+                    .stateStyle()
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 8)
+                    .accessibilityIdentifier("headline")
+                if !model.loaded && model.unreachable {
+                    HubUnreachable(state: ConnectState(model, slow: slow))
+                } else {
+                    TextTabs(tabs: [(.now, "Now"), (.spaces, "Spaces"), (.projects, "Projects")], selection: $tab.animation(.snappy))
+                        .padding(.top, 14)
+                    TabView(selection: $tab) {
+                        page { now }.tag(HomeTab.now)
+                        page { SpacesList() }.tag(HomeTab.spaces)
+                        page { ProjectsList { starting = StartRequestDraft(project: $0) } }.tag(HomeTab.projects)
                     }
-                    if !busy.isEmpty { busyTiles }
-                    if groups.isEmpty { empty }
-                    lists
+                    .tabViewStyle(.page(indexDisplayMode: .never))
                 }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 170)
+                AskBar(placeholder: "Say or type what you want done",
+                       start: { starting = StartRequestDraft(project: nil) },
+                       type: { voice.type(to: nil) }, speak: { voice.listen(to: nil) })
             }
-            .background(Color(.systemGroupedBackground))
-            .accessibilityIdentifier("sessionsList")
-            .navigationTitle("Agents")
-            .navigationDestination(for: String.self) { SessionDetailView(sessionId: $0) }
-            .navigationDestination(for: AgentRef.self) { AgentDetailView(agent: $0) }
-            .navigationDestination(for: HerdrSession.Key.self) { HerdrSessionView(key: $0) }
-            .navigationDestination(for: ConversationRef.self) { ConversationScreen(ref: $0) }
+            .inboxPage()
+            .navigationDestination(for: String.self) { AgentPage(source: .session($0)) }
+            .navigationDestination(for: AgentRef.self) { AgentPage(source: .agent(machine: $0.machine, name: $0.name)) }
+            .navigationDestination(for: AgentPageRef.self) { AgentPage(source: $0.source, tab: $0.tab) }
+            .navigationDestination(for: DecisionRef.self) { DecisionPage(ref: $0) }
+            .navigationDestination(for: DiffRef.self) { DiffPage(ref: $0) }
+            .navigationDestination(for: AgentSpace.Key.self) { SpacePage(key: $0) }
             .navigationDestination(for: Browse.self) { b in
                 switch b {
-                case .allSessions: AllSessionsView()
-                case .machines: MachinesView()
-                case .machine(let id): AllSessionsView(machine: id)
-                case .projects: ProjectsView()
+                case .machines: MachinesPage()
+                case .machine(let id): MachineSpacesPage(machine: id)
                 }
             }
-            .overlay(alignment: .bottom) { dock }
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { starting = true } label: { Image(systemName: "plus") }
-                        .accessibilityLabel("Start a session")
-                        .accessibilityIdentifier("startButton")
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { showingDevices = true } label: { Image(systemName: "gearshape") }
-                        .accessibilityLabel("Settings")
-                        .accessibilityIdentifier("devicesButton")
-                }
+            .task(id: model.loaded) {
+                slow = false
+                guard !model.loaded else { return }
+                try? await Task.sleep(for: .seconds(8))
+                if !Task.isCancelled { slow = true }
             }
-            .refreshable { model.startPolling(); await model.refreshAgents() }
             .task(id: model.followKey) {
                 while model.followKey != nil, !Task.isCancelled {
                     await model.refreshAgents(activity: true)
@@ -93,14 +106,11 @@ struct HomeView: View {
         .animation(.spring(response: 0.3, dampingFraction: 1), value: voice.squeeze)
         .overlay(alignment: .top) {
             if let banner = model.banner {
-                Text(banner)
-                    .font(.footnote.weight(.medium))
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(.regularMaterial, in: Capsule())
+                Button { model.banner = nil } label: { Banner(text: banner) }
+                    .buttonStyle(.plain)
                     .padding(.horizontal, 16)
                     .padding(.top, 4)
-                    .onTapGesture { model.banner = nil }
+                    .shadow(color: .black.opacity(0.08), radius: 10, y: 4)
                     .transition(.move(edge: .top).combined(with: .opacity))
                     .accessibilityIdentifier("banner")
                     .task(id: banner) {
@@ -112,12 +122,12 @@ struct HomeView: View {
         .animation(.snappy, value: model.banner)
         .overlay { VoiceOverlay() }
         .sheet(isPresented: Binding(
-            get: { voice.phase == .review },
-            set: { if !$0, voice.phase == .review { voice.finish() } }
+            get: { voice.phase == .review && !voice.dictating },
+            set: { if !$0, voice.phase == .review, !voice.dictating { voice.finish() } }
         )) { SendSheet() }
-        .sheet(isPresented: $starting) {
-            StartSheet { id in
-                starting = false
+        .sheet(item: $starting) { draft in
+            StartSheet(project: draft.project) { id in
+                starting = nil
                 if let id { path.append(id) }
             }
         }
@@ -143,6 +153,11 @@ struct HomeView: View {
                 return
             }
             if model.openAttentionId == id { model.openAttentionId = nil }
+            // Its name may belong to another agent by now; that one isn't opened in its place.
+            if a.sessionId == nil, a.sameAgent == false {
+                model.banner = "The agent that asked has ended, so there's nothing to open."
+                return
+            }
             switch a.state {
             case "open": break
             case "answered": model.banner = "That question was already answered."
@@ -153,125 +168,241 @@ struct HomeView: View {
         }
     }
 
+    private var top: some View {
+        HStack(spacing: 8) {
+            HStack(spacing: 8) {
+                if model.connected {
+                    Circle().fill(Ink.ok).frame(width: 8, height: 8)
+                    Text(hubLine)
+                } else if model.unreachable {
+                    Circle().fill(Ink.warn).frame(width: 8, height: 8)
+                    Text("Can’t reach the hub · retrying")
+                } else {
+                    Circle().fill(Ink.mut).frame(width: 8, height: 8)
+                    Text("Connecting…")
+                }
+            }
+            .font(Face.geist(13, .medium, relativeTo: .footnote))
+            .foregroundStyle(Ink.sub)
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("hubState")
+            Spacer()
+            Button { showingDevices = true } label: {
+                Image(systemName: "slider.horizontal.3")
+                    .font(.system(size: 19, weight: .regular))
+                    .frame(width: 44, height: 44)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Ink.ink)
+            .accessibilityLabel("Settings")
+            .accessibilityIdentifier("devicesButton")
+        }
+        .padding(.leading, 20)
+        .padding(.trailing, 10)
+        .frame(height: 44)
+    }
+
+    /// One tab's list. Until the hub's first answer, placeholders: empty lists would read as "nothing running".
+    private func page<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                if model.loaded { content() } else { LoadingRows() }
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 14)
+            .padding(.bottom, 24)
+        }
+        .refreshable { model.startPolling(); await model.refreshAgents(activity: true) }
+    }
+
+    private var hubLine: String {
+        let m = model.machines
+        if m.count == 1 { return "\(m[0].id) · connected" }
+        if let d = m.first(where: \._default), m.count > 1 { return "\(d.id) and \(m.count - 1) more · connected" }
+        return "Connected"
+    }
+
+    private var headline: Headline {
+        if !model.loaded { return ConnectState(model, slow: slow).headline }
+        switch tab {
+        case .now:
+            let needs = approvals.count + waiting.count
+            let w = working.count
+            if needs == 0 && live.isEmpty && finished.isEmpty { return Headline("Nothing running yet.", "Say what you want done.") }
+            var first = needs == 0 ? "Nothing needs you." : "\(needs) \(needs == 1 ? "thing needs" : "things need") you."
+            if model.away != nil { first = "Welcome back. " + first }
+            let second = w == 0 ? "Nothing working." : "\(w) \(w == 1 ? "agent" : "agents") working."
+            return Headline(first, second)
+        case .spaces:
+            let all = model.spaces(since: nil)
+            let liveCount = all.filter { !$0.isEnded }.count
+            let need = all.filter { $0.glyph == .need }.count
+            if liveCount == 0 { return Headline("No spaces live.", all.isEmpty ? nil : "\(all.count) ended.") }
+            return Headline("\(liveCount) \(liveCount == 1 ? "space" : "spaces") live.", need == 0 ? "None need you." : "\(need) need\(need == 1 ? "s" : "") you.")
+        case .projects:
+            let n = model.projects.count
+            return Headline("\(n) \(n == 1 ? "project" : "projects").", "Tap one to start.")
+        }
+    }
+
+    // Now.
+
+    @ViewBuilder
+    private var now: some View {
+        if let away = model.away {
+            AwayCard(activity: away).padding(.bottom, 14)
+        }
+        if let sent = model.lastSent, Date().timeIntervalSince(sent.at) < 600 {
+            SentRow(sent: sent) { open($0) }
+        }
+        if let first = approvals.first {
+            ApprovalCard(approval: first.approval, session: first.session, open: { path.append(first.session.id) }) {}
+                .padding(.bottom, 6)
+            ForEach(Array(approvals.dropFirst().enumerated()), id: \.element.approval.id) { i, a in
+                NavigationLink(value: a.session.id) {
+                    Row(title: Self.approvalTitle(a.approval, a.session), subtitle: a.approval.inputText, subtitleMono: a.approval.kind == "permission",
+                        first: i == 0) {
+                        StatusGlyph(glyph: .need)
+                    } trailing: {
+                        WhereTag(backend: a.session.backend ?? "herdr")
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        ForEach(Array(waiting.enumerated()), id: \.element.id) { i, item in
+            needRow(item, first: i == 0 && approvals.count <= 1)
+        }
+        if !working.isEmpty {
+            SectionHead("Working", count: working.count)
+            ForEach(Array(working.enumerated()), id: \.element.id) { i, item in
+                AgentLink(agent: item.agent) {
+                    Row(title: item.label, subtitle: lastLines[item.id] ?? item.agent.title.flatMap { $0 == item.agent.nameInSpace ? nil : $0 } ?? "Working",
+                        subtitleMono: lastLines[item.id] != nil,
+                        first: i == 0) {
+                        StatusGlyph(glyph: .work)
+                    } trailing: {
+                        WhereTag(backend: item.space.backend)
+                    }
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("busy-\(item.label)")
+            }
+        }
+        if !finished.isEmpty {
+            SectionHead("Finished today", count: finished.count)
+            ForEach(Array(finished.enumerated()), id: \.element.id) { i, item in
+                AgentLink(agent: item.agent) {
+                    Row(title: item.label, subtitle: lastLines[item.id] ?? item.agent.title ?? item.agent.subtitle, first: i == 0) {
+                        StatusGlyph(glyph: item.agent.isEnded ? .end : .done)
+                    } trailing: {
+                        if case .task(let s) = item.agent, item.agent.isEnded {
+                            Text(Ago.short(s.updatedAt)).font(Face.meta).foregroundStyle(Ink.mut)
+                        } else {
+                            WhereTag(backend: item.space.backend)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        if live.isEmpty && finished.isEmpty && approvals.isEmpty {
+            empty
+        } else if approvals.isEmpty && waiting.isEmpty && working.isEmpty && finished.isEmpty {
+            StateRow(text: "\(live.count) \(live.count == 1 ? "agent is" : "agents are") idle. They're under Spaces.")
+        }
+    }
+
+    private static func approvalTitle(_ a: Schemas.Approval, _ s: Schemas.Session) -> String {
+        switch a.kind {
+        case "question": "\(s.label) has a question"
+        case "plan": "\(s.label) has a plan for you"
+        default: "\(s.label) wants to run"
+        }
+    }
+
+    @ViewBuilder
+    private func needRow(_ item: Item, first: Bool) -> some View {
+        let subtitle: String = switch item.agent {
+        case .task(let s) where s.hookFailed: "Stuck at a dialog · answer it at its terminal"
+        default: item.agent.title.flatMap { $0 == item.agent.nameInSpace ? nil : "Waiting for you · \($0)" } ?? "Waiting for you"
+        }
+        let row = Row(title: item.label, subtitle: subtitle, subtitleColor: Ink.warn, first: first) {
+            StatusGlyph(glyph: .need)
+        } trailing: {
+            WhereTag(backend: item.space.backend)
+        }
+        Group {
+            switch item.agent {
+            case .live(let a):
+                NavigationLink(value: DecisionRef(machine: a.machineId, agent: a.name, label: item.label,
+                                                  meta: [a.kind.map { $0 == "claude" ? "Claude Code" : $0.capitalized }, a.machineId].compactMap { $0 }.joined(separator: " · "))) { row }
+            case .task(let s):
+                NavigationLink(value: s.id) { row }
+            case .ended:
+                row
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("needs-\(item.label)")
+    }
+
+    @ViewBuilder
+    private var empty: some View {
+        SectionHead("Try saying")
+        Button { voice.listen(to: nil) } label: {
+            if let p = model.projects.first?.id {
+                example("“In \(p), fix the flaky retry test.”", "Starts a new task in \(p), on its own branch", first: true)
+            } else {
+                example("“Fix the flaky retry test.”", "Starts a new task, on its own branch", first: true)
+            }
+        }
+        .buttonStyle(.plain)
+        Button { voice.listen(to: nil) } label: {
+            example("“What is everyone working on?”", "Switchboard picks where it goes, and asks if unsure", first: false)
+        }
+        .buttonStyle(.plain)
+        SectionHead("Ready on this hub")
+        Button { tab = .projects } label: {
+            let p = model.projects.map(\.id)
+            Row(title: "\(p.count) \(p.count == 1 ? "project" : "projects")",
+                subtitle: p.count > 3 ? "\(p.prefix(3).joined(separator: ", ")) and \(p.count - 3) more" : p.joined(separator: ", "),
+                first: true, leading: { EmptyView() }, trailing: { Chevron() })
+        }
+        .buttonStyle(.plain)
+        NavigationLink(value: Browse.machines) {
+            let m = model.machines
+            let ready = m.filter { $0.status == "ready" }.map(\.id)
+            Row(title: "\(m.count) \(m.count == 1 ? "machine" : "machines")",
+                subtitle: ready.isEmpty ? "None ready" : "\(ready.joined(separator: " and ")) \(ready.count == 1 ? "is" : "are") ready",
+                leading: { EmptyView() }, trailing: { Chevron() })
+        }
+        .buttonStyle(.plain)
+        Hairline()
+    }
+
+    private func example(_ said: String, _ what: String, first: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(said).font(Face.geist(20, .medium)).tracking(-0.4).foregroundStyle(Ink.ink).fixedSize(horizontal: false, vertical: true)
+            Text(what).font(Face.sub).foregroundStyle(Ink.sub)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 12)
+        .overlay(alignment: .top) { if !first { Hairline() } }
+        .contentShape(Rectangle())
+    }
+
     private func open(_ t: Schemas.TargetView) {
         if let id = t.sessionId { path.append(id) } else if let name = t.agent { path.append(AgentRef(machine: t.machineId, name: name)) }
     }
 
-    private var summary: some View {
-        HStack(spacing: 7) {
-            if model.connected {
-                Circle().fill(.green).frame(width: 8, height: 8)
-                let live = groups.filter { !$0.isEnded }.count
-                let working = busy.filter { $0.agent.agentStatus == "working" }.count
-                let parts = [waiting.isEmpty ? nil : "\(waiting.count) need\(waiting.count == 1 ? "s" : "") you",
-                             "\(live) \(live == 1 ? "session" : "sessions")", "\(working) working"].compactMap { $0 }
-                Text(parts.joined(separator: " · "))
-            } else if model.unreachable {
-                Image(systemName: "wifi.exclamationmark").foregroundStyle(.orange)
-                Text("Can't reach the hub; retrying.")
-            } else {
-                Text("Connecting…")
-            }
-        }
-        .font(.subheadline)
-        .foregroundStyle(.secondary)
-        .padding(.top, -8)
-    }
-
-    private var busyTiles: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Busy now").font(.title3.bold())
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 12) {
-                    ForEach(busy) { t in
-                        AgentLink(agent: t.agent) { BusyTile(tile: t, lastLine: lastLines[t.id]) }
-                            .buttonStyle(.plain)
-                    }
-                }
-                .padding(.horizontal, 16)
-            }
-            .padding(.horizontal, -16)
-        }
-    }
-
-    private var empty: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Nothing running yet").font(.headline)
-            Text("Tap the mic and say what to do, like “In kraft, fix the flaky retry test.”")
-                .foregroundStyle(.secondary)
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-    }
-
-    private var lists: some View {
-        VStack(alignment: .leading, spacing: 24) {
-            if !groups.isEmpty {
-                InsetGroup(title: "Sessions") {
-                    let machines = Set(groups.map(\.key.machine)).count
-                    ForEach(Array(groups.enumerated()), id: \.element.key) { i, g in
-                        SessionRow(session: g, showMachine: machines > 1, first: i == 0)
-                    }
-                }
-            }
-            InsetGroup(title: "Browse") {
-                NavigationLink(value: Browse.allSessions) {
-                    ListRow(symbol: "tray.full", tint: .secondary, title: "All sessions", subtitle: nil,
-                            trailing: "\(model.herdrSessions(since: nil).count)", first: true)
-                }
-                NavigationLink(value: Browse.machines) {
-                    ListRow(symbol: "desktopcomputer", tint: .accentColor, title: "Machines", subtitle: nil, trailing: "", first: false)
-                }
-                NavigationLink(value: Browse.projects) {
-                    ListRow(symbol: "folder", tint: .accentColor, title: "Projects", subtitle: nil, trailing: "", first: false)
-                }
-            }
-        }
-        .buttonStyle(.plain)
-    }
-
-    private var dock: some View {
-        VStack(spacing: 10) {
-            Text("Tap and say what you want done").font(.footnote).foregroundStyle(.secondary)
-            HStack {
-                Button { voice.type(to: nil) } label: {
-                    Image(systemName: "keyboard")
-                        .font(.system(size: 20))
-                        .frame(width: 50, height: 50)
-                        .background(Color(.secondarySystemGroupedBackground), in: Circle())
-                        .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
-                        .foregroundStyle(Color(.label))
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Type instead")
-                .accessibilityIdentifier("typeButton")
-                Spacer()
-                MicButton(size: 72) { voice.listen(to: nil) }
-                    .accessibilityLabel("Talk to your agents")
-                    .accessibilityIdentifier("micButton")
-                Spacer()
-                Color.clear.frame(width: 50, height: 50)
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.top, 36)
-        .padding(.bottom, 8)
-        .background(alignment: .bottom) {
-            // Solid before the hint, so rows scrolling under it don't show through.
-            LinearGradient(colors: [Color(.systemGroupedBackground).opacity(0), Color(.systemGroupedBackground)],
-                           startPoint: .top, endPoint: UnitPoint(x: 0.5, y: 0.22))
-                .ignoresSafeArea()
-                .allowsHitTesting(false)
-        }
-    }
-
-    /// Each tile's line comes from the hub's activity list; where that doesn't cover its machine,
+    /// Each row's line comes from the hub's activity list; where that doesn't cover its machine,
     /// from the conversation at most every 30 s. Reading the terminal would scroll it on the Mac.
     private func loadLastLines() async {
         guard let hub = model.hub else { return }
         var reads = 0
-        for t in busy {
+        for t in working + finished.filter({ !$0.agent.isEnded }) {
             switch model.tileLines?.line(for: t.agent) ?? .unknown {
             case .known(let line):
                 lastLines[t.id] = line
@@ -292,32 +423,17 @@ struct HomeView: View {
     }
 }
 
-/// The mic, which fades into the listening panel while voice mode is on.
-struct MicButton: View {
-    @Environment(Voice.self) private var voice
-    let size: CGFloat
-    let action: () -> Void
-
-    var body: some View {
-        let listening = voice.phase == .listening || voice.phase == .transcribing
-        Button(action: action) {
-            Image(systemName: "mic.fill")
-                .font(.system(size: size * 0.38, weight: .semibold))
-                .frame(width: size, height: size)
-                .background(Color.accentColor, in: Circle())
-                .foregroundStyle(.white)
-                .shadow(color: Color.accentColor.opacity(0.35), radius: 12, y: 8)
-        }
-        .opacity(listening ? 0 : 1)
-        .scaleEffect(listening ? 0.7 : 1)
-        .animation(listening ? .easeOut(duration: 0.2) : .easeOut(duration: 0.25).delay(0.2), value: listening)
-    }
+/// What New session opens with.
+struct StartRequestDraft: Identifiable {
+    let id = UUID()
+    let project: String?
 }
 
-/// An agent working or waiting for you, and the session it's in.
-private struct Tile: Identifiable {
+/// A live agent and the space it's in.
+private struct Item: Identifiable {
     let agent: HerdrSession.Agent
-    let session: String
+    let space: AgentSpace
+    var label: String { space.label(agent) }
     var id: String {
         switch agent {
         case .task(let s): s.id
@@ -327,112 +443,22 @@ private struct Tile: Identifiable {
     }
 }
 
-private struct BusyTile: View {
-    let tile: Tile
-    let lastLine: String?
-
-    var body: some View {
-        let status = tile.agent.status
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                Circle().fill(status.color).frame(width: 7, height: 7)
-                Text(status.text)
-            }
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(status.color)
-            Text(tile.agent.shortName).font(.subheadline.weight(.semibold)).lineLimit(1)
-            Text([tile.session, tile.agent.machineId].joined(separator: " · "))
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            Spacer(minLength: 0)
-            Text(lastLine ?? " ")
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-        }
-        .padding(14)
-        .frame(width: 168, height: 150, alignment: .topLeading)
-        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .accessibilityElement(children: .combine)
-    }
-}
-
-private struct SentCard: View {
+/// The last thing sent or started from Home, shown for ten minutes.
+private struct SentRow: View {
     let sent: AppModel.Sent
     let open: (Schemas.TargetView) -> Void
 
     var body: some View {
         Button { if let t = sent.target { open(t) } } label: {
-            VStack(alignment: .leading, spacing: 10) {
-                Label(sent.started ? "Started \(sent.target?.label ?? "a session")" : "Sent to \(sent.target?.label ?? "the hub")",
-                      systemImage: "checkmark")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(Color.done)
-                Text(sent.text)
-                    .padding(.horizontal, 13)
-                    .padding(.vertical, 9)
-                    .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-                    .foregroundStyle(.white)
-                    .multilineTextAlignment(.leading)
+            Row(title: sent.started ? "Started \(sent.target?.label ?? "a session")" : "Sent to \(sent.target?.label ?? "the hub")",
+                subtitle: "“\(sent.text)”", first: true) {
+                StatusGlyph(glyph: .done)
+            } trailing: {
+                Text(Ago.short(Int64(sent.at.timeIntervalSince1970 * 1000))).font(Face.meta).foregroundStyle(Ink.mut)
             }
-            .padding(16)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
         }
         .buttonStyle(.plain)
+        .padding(.bottom, 6)
         .accessibilityIdentifier("sentCard")
-    }
-}
-
-/// A titled inset group, like a grouped list's section.
-struct InsetGroup<Content: View>: View {
-    let title: String
-    @ViewBuilder let content: Content
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .textCase(.uppercase)
-                .padding(.horizontal, 16)
-            VStack(spacing: 0) { content }
-                .background(Color(.secondarySystemGroupedBackground))
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        }
-    }
-}
-
-struct ListRow: View {
-    let symbol: String
-    let tint: Color
-    let title: String
-    let subtitle: String?
-    let trailing: String
-    let first: Bool
-
-    var body: some View {
-        HStack(spacing: 14) {
-            Image(systemName: symbol)
-                .font(.system(size: 19))
-                .foregroundStyle(tint)
-                .frame(width: 26)
-            HStack(spacing: 8) {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(title).foregroundStyle(.primary).lineLimit(1)
-                    if let subtitle { Text(subtitle).font(.subheadline).foregroundStyle(.secondary).lineLimit(1) }
-                }
-                Spacer(minLength: 0)
-                Text(trailing).foregroundStyle(.secondary).monospacedDigit()
-                Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
-            }
-            .padding(.vertical, 11)
-            .padding(.trailing, 16)
-            .overlay(alignment: .top) { if !first { Divider() } }
-        }
-        .padding(.leading, 16)
-        .frame(minHeight: 44)
-        .contentShape(Rectangle())
     }
 }

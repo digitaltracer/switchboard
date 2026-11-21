@@ -33,7 +33,7 @@ pub enum HubFrame {
     },
     Push {
         id: u64,
-        push: RelayPush,
+        push: Box<RelayPush>,
     },
 }
 
@@ -75,6 +75,9 @@ pub struct RelayPush {
     pub provider: Option<String>,
     pub collapse_id: String,
     pub expires_at: i64,
+    /// For `live`: the card's update. The relay writes its `aps` itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live: Option<crate::push::LivePush>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -91,13 +91,22 @@ async fn connect(
     machine: &str,
     sessions: Vec<OwnedSession>,
 ) -> FakeRunner {
+    connect_with(svc, machine, sessions, vec![]).await
+}
+
+async fn connect_with(
+    svc: &Arc<SessionService>,
+    machine: &str,
+    sessions: Vec<OwnedSession>,
+    capabilities: Vec<String>,
+) -> FakeRunner {
     let hello = Hello {
         machine_id: machine.into(),
         protocol_version: PROTOCOL_VERSION,
         runner_version: "test".into(),
         herdr_version: Some("0.9.1".into()),
         sessions,
-        capabilities: vec![],
+        capabilities,
     };
     let (generation, outbound) = svc.runner_connected(machine, hello).await;
     FakeRunner {
@@ -178,6 +187,7 @@ fn start_req(machine: &str, prompt: &str, request_id: Option<&str>) -> StartRequ
         agent: None,
         notify: true,
         request_id: request_id.map(str::to_owned),
+        backend: None,
     }
 }
 
@@ -1778,6 +1788,45 @@ async fn the_screen_read_forwards_to_the_runners_visible_read_and_is_masked() {
 }
 
 #[tokio::test]
+async fn an_ended_sessions_agent_is_not_read_but_its_changes_are() {
+    let r = rig().await;
+    let mut vps = connect(&r.svc, "vps", vec![]).await;
+    let sid = running(&r, &mut vps).await;
+    vps.event(Event::SessionExited {
+        session_id: sid.clone(),
+    })
+    .await;
+    assert_eq!(
+        r.svc.read_screen(&sid, false).await.unwrap_err().code(),
+        "session_not_running"
+    );
+    assert_eq!(
+        r.svc.read_history(&sid, 50).await.unwrap_err().code(),
+        "session_not_running"
+    );
+    assert_eq!(
+        r.svc
+            .transcript(&sid, Some(3), None, Some(10_000))
+            .await
+            .unwrap_err()
+            .code(),
+        "session_not_running"
+    );
+    assert_eq!(
+        r.svc.session_skills(&sid).await.unwrap_err().code(),
+        "session_not_running"
+    );
+    vps.no_req().await;
+    let (svc, s2) = (r.svc.clone(), sid.clone());
+    let task = tokio::spawn(async move { svc.changes(&s2).await });
+    let req = vps.req().await;
+    assert!(matches!(req.op, Op::Changes { .. }));
+    vps.ok(req.id, json!({"files": [], "truncated": false}))
+        .await;
+    assert!(task.await.unwrap().unwrap().files.is_empty());
+}
+
+#[tokio::test]
 async fn a_screens_colours_come_through_only_when_masking_left_it_alone() {
     let r = rig().await;
     let mut vps = connect(&r.svc, "vps", vec![]).await;
@@ -2560,4 +2609,218 @@ async fn a_waiting_agent_is_pushed_once_unless_a_hook_approval_already_was() {
     .await;
     let a = r.svc.store().get_attention(&id).await.unwrap().unwrap();
     assert_eq!(a.resolution.as_deref(), Some("gone"));
+}
+
+#[tokio::test]
+async fn an_old_waiting_push_says_whether_its_agent_is_still_the_one_that_asked() {
+    let r = rig().await;
+    let mut vps = connect(&r.svc, "vps", vec![]).await;
+    vps.event(waiting_event("w/cx", "o1", None)).await;
+    let id = outbox(&r)
+        .await
+        .into_iter()
+        .find(|(k, _)| *k == crate::store::OutboxKind::Waiting)
+        .map(|(_, key)| key.trim_start_matches("waiting:").to_owned())
+        .unwrap();
+    vps.event(Event::NamedAgentStatus {
+        agent_name: "w/cx".into(),
+        agent_status: "working".into(),
+    })
+    .await;
+    // The runner's answer about whoever holds the name now, and what that says.
+    let cases = [
+        (
+            Outcome::Ok(json!({"dialog": null, "occurrence": "o9", "terminal_id": "term_1"})),
+            Some(true),
+        ),
+        (
+            Outcome::Ok(json!({"dialog": null, "occurrence": "o9", "terminal_id": "term_2"})),
+            Some(false),
+        ),
+        (
+            Outcome::Err(ProtoError::new(ErrorCode::NotFound, "no agent")),
+            Some(false),
+        ),
+        (
+            Outcome::Ok(json!({"dialog": null, "occurrence": "o9"})),
+            None,
+        ),
+    ];
+    for (i, (reply, want)) in cases.into_iter().enumerate() {
+        let (svc, id2) = (r.svc.clone(), id.clone());
+        let task = tokio::spawn(async move { svc.attention(&id2).await });
+        let req = vps.req().await;
+        assert!(
+            matches!(req.op, Op::Dialog { ref agent } if agent == "w/cx"),
+            "case {i}"
+        );
+        vps.reply(req.id, reply).await;
+        let a = task.await.unwrap().unwrap();
+        assert_eq!((a.state.as_str(), a.same_agent), ("gone", want), "case {i}");
+    }
+}
+
+// Where a session opens.
+
+#[tokio::test]
+async fn a_chosen_backend_reaches_only_a_runner_that_can_take_it() {
+    let r = rig().await;
+    let mut mac = connect(&r.svc, "mac", vec![]).await;
+    let req = StartRequest {
+        backend: Some(StartBackend::Hc),
+        ..start_req("mac", "fix the bug", Some("rq-b1"))
+    };
+    let e = r.svc.start(&r.bot, req).await.unwrap_err();
+    assert!(
+        matches!(e, HubError::BackendUnsupported(ref m) if m == "mac"),
+        "{e:?}"
+    );
+    assert_eq!(e.code(), "backend_unavailable");
+    mac.no_req().await;
+    assert!(r.svc.list().await.unwrap().is_empty(), "nothing recorded");
+    assert!(r.svc.start_options("mac").await.unwrap().is_none());
+
+    let r = rig().await;
+    let mut mac = connect_with(&r.svc, "mac", vec![], vec![CAP_START_BACKEND.into()]).await;
+    let task = spawn_start(
+        &r,
+        StartRequest {
+            backend: Some(StartBackend::Herdr),
+            ..start_req("mac", "fix the bug", None)
+        },
+    );
+    let req = mac.req().await;
+    let Op::StartSession { backend, .. } = &req.op else {
+        panic!("{:?}", req.op);
+    };
+    assert_eq!(*backend, Some(StartBackend::Herdr));
+    mac.ok(req.id, json!({"workspace_id": "w2", "pane_id": "w2:p1"}))
+        .await;
+    task.await.unwrap().unwrap();
+
+    // No choice is the old op, whatever the runner can do.
+    let task = spawn_start(&r, start_req("mac", "another bug", None));
+    let req = mac.req().await;
+    assert!(
+        matches!(req.op, Op::StartSession { backend: None, .. }),
+        "{:?}",
+        req.op
+    );
+    mac.ok(req.id, json!({"workspace_id": "w3", "pane_id": "w3:p1"}))
+        .await;
+    task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn start_options_ask_the_machines_runner() {
+    let r = rig().await;
+    assert!(matches!(
+        r.svc.start_options("mac").await,
+        Err(HubError::MachineOffline(_))
+    ));
+    assert!(matches!(
+        r.svc.start_options("nowhere").await,
+        Err(HubError::UnknownMachine(_))
+    ));
+    let mut mac = connect_with(&r.svc, "mac", vec![], vec![CAP_START_BACKEND.into()]).await;
+    let svc = r.svc.clone();
+    let ask = tokio::spawn(async move { svc.start_options("mac").await });
+    let req = mac.req().await;
+    assert_eq!(req.op, Op::StartOptions);
+    mac.ok(
+        req.id,
+        json!({"default": "herdr", "backends": [
+            {"backend": "hc", "available": false, "reason": "not_answering"},
+            {"backend": "herdr", "available": true}]}),
+    )
+    .await;
+    let o = ask.await.unwrap().unwrap().unwrap();
+    assert_eq!(o.default, StartBackend::Herdr);
+    assert_eq!(o.backends[0].reason.as_deref(), Some("not_answering"));
+}
+
+#[tokio::test]
+async fn a_sessions_space_comes_from_its_agent_in_the_listing() {
+    let r = rig().await;
+    let mut mac = connect(&r.svc, "mac", vec![]).await;
+    let id = running(&r, &mut mac).await;
+    let before = r.svc.get(&id, None, Duration::ZERO).await.unwrap();
+    assert_eq!(before.space, None);
+    let list = |space: &str, session: &str| {
+        json!([{"name": "sb-x", "pane_id": "t3", "kind": "claude", "agent_status": "working",
+                "session_id": session, "herdr_session": "hc", "space": space}])
+    };
+    for (space, session) in [
+        ("kraft", id.as_str()),
+        ("kraft", id.as_str()),
+        ("elsewhere", "not-mine"),
+    ] {
+        let svc = r.svc.clone();
+        let ask = tokio::spawn(async move { svc.herdr_agents().await });
+        let req = mac.req().await;
+        assert_eq!(req.op, Op::Agents);
+        mac.ok(req.id, list(space, session)).await;
+        assert!(
+            ask.await.unwrap().unwrap().is_empty(),
+            "a session's agent isn't listed"
+        );
+    }
+    let after = r.svc.get(&id, None, Duration::ZERO).await.unwrap();
+    assert_eq!(after.space.as_deref(), Some("kraft"));
+    assert_eq!(
+        after.updated_at, before.updated_at,
+        "seeing it changes nothing else"
+    );
+    assert!(after.revision > before.revision, "the phone hears of it");
+}
+
+#[test]
+fn a_diff_is_masked_line_by_line_and_a_private_key_whole() {
+    let line = |kind: &str, text: &str| DiffLine {
+        kind: kind.into(),
+        old: None,
+        new: Some(1),
+        text: text.into(),
+    };
+    let mut d = FileDiff {
+        path: "src/a.rs".into(),
+        binary: false,
+        size: None,
+        added: None,
+        deleted: None,
+        hunk_count: 1,
+        hunks: vec![DiffHunk {
+            header: "@@ -1 +1 @@".into(),
+            old_start: 1,
+            new_start: 1,
+            lines: vec![
+                line("+", "const API_KEY = \"sk-ant-abcdefghijklmnopqrstuv\";"),
+                line("+", "-----BEGIN OPENSSH PRIVATE KEY-----"),
+                line("+", "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAAB"),
+                line("+", "-----END OPENSSH PRIVATE KEY-----"),
+                line(" ", "fn main() {}"),
+            ],
+            cut: false,
+        }],
+        next: None,
+        withheld: false,
+    };
+    d.mask();
+    let texts: Vec<_> = d.hunks[0].lines.iter().map(|l| l.text.as_str()).collect();
+    assert!(!texts[0].contains("sk-ant"), "{}", texts[0]);
+    assert_eq!(&texts[1..4], ["[redacted private key]"; 3]);
+    assert_eq!(texts[4], "fn main() {}");
+    for p in [
+        ".env",
+        "config/.env.local",
+        "deploy/server.pem",
+        "id_ed25519",
+        "AuthKey_ABC.p8",
+        ".netrc",
+    ] {
+        assert!(secret_file(p), "{p}");
+    }
+    for p in ["src/env.rs", "README.md", "keys.ts", "docs/pem.md"] {
+        assert!(!secret_file(p), "{p}");
+    }
 }

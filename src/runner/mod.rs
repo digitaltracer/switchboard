@@ -1,8 +1,11 @@
 //! Runner: hub WebSocket client, Herdr operations and the hook endpoint.
 
 pub mod agents;
+pub mod backend;
 pub mod codex;
+pub mod core_watch;
 pub mod dialogs;
+pub mod diff;
 pub mod herdrs;
 pub mod hooks;
 pub mod link;
@@ -11,6 +14,7 @@ pub mod logcache;
 pub mod logwatch;
 pub mod sessions;
 pub mod skills;
+pub mod summary;
 pub mod transcript;
 pub mod watch;
 
@@ -79,6 +83,7 @@ pub async fn run(config: PathBuf) -> anyhow::Result<()> {
         claude_config: cfg.claude_config.clone(),
         claude_permission_mode: cfg.claude_permission_mode,
         herdr_session: cfg.herdr_session.clone(),
+        new_sessions: cfg.new_sessions,
     })
     .await?;
     let link = link::LinkConfig {
@@ -98,6 +103,7 @@ pub struct Settings {
     pub claude_config: Option<PathBuf>,
     pub claude_permission_mode: crate::agents::claude::PermissionMode,
     pub herdr_session: Option<String>,
+    pub new_sessions: crate::config::NewSessions,
 }
 
 /// A runner that is up: its sessions, the events they raise for the hub, and the Herdr version.
@@ -181,6 +187,15 @@ pub async fn start(cfg: Settings) -> anyhow::Result<Started> {
             startup_timeout: Duration::from_secs(20),
         },
     );
+    let core = core_watch::Core::new(crate::hc::socket_from_env(&home));
+    tracing::info!(socket = %core.socket().display(), "following herdr-core");
+    sessions.set_core(core.clone());
+    sessions.set_core_starts(sessions::CoreStarts {
+        new_sessions: cfg.new_sessions,
+        worktrees: home.join(".herdr/worktrees"),
+        home: home.clone(),
+        bins: None,
+    });
     let reloaded = sessions.load().context("reloading sessions")?;
     let undone = sessions.undo_interrupted_starts().await;
     tracing::info!(reloaded, undone, %hook_addr, "hook endpoint listening");
@@ -189,6 +204,8 @@ pub async fn start(cfg: Settings) -> anyhow::Result<Started> {
         sessions.clone(),
         agents::RECONCILE,
     ));
+    tokio::spawn(watch::watch_core(sessions.clone(), core.clone()));
+    tokio::spawn(forward_core_agents(sessions.clone(), core));
     Ok(Started {
         sessions,
         events: events_rx,
@@ -244,6 +261,48 @@ pub async fn forward_all_named_agents(
             );
         }
         tokio::time::sleep(reconcile_every).await;
+    }
+}
+
+/// The core's agents' statuses, as `hc/<agent>` unless they are a task's, sent when they change.
+pub async fn forward_core_agents(sessions: Arc<Sessions>, core: Arc<core_watch::Core>) {
+    let (tx, mut rx) = mpsc::channel::<()>(1);
+    let replaced = tx.clone();
+    let (logs, socket) = (sessions.logs.clone(), core.socket().to_owned());
+    let _follower = AbortOnDrop(tokio::spawn(core_watch::follow(
+        core.clone(),
+        move || {
+            let _ = tx.try_send(());
+        },
+        move || {
+            // The same addresses now name another core's terminals.
+            logs.retain(&socket, &Default::default());
+            let _ = replaced.try_send(());
+        },
+    )));
+    let mut forward = StatusForwarder::default();
+    let mut tick = tokio::time::interval(agents::RECONCILE);
+    loop {
+        tokio::select! {
+            got = rx.recv() => if got.is_none() { return },
+            _ = tick.tick() => {}
+        }
+        if core.core_id().is_none() {
+            continue;
+        }
+        let Ok(facts) = core.agents().await else {
+            continue;
+        };
+        let tasks = sessions.all();
+        for f in facts {
+            let local = f.local_name();
+            let name = if tasks.iter().any(|s| s.agent_name == local) {
+                local
+            } else {
+                herdrs::qualified(Some(core_watch::SERVER), &local)
+            };
+            forward.forward(&sessions, name, agents::status_str(f.status));
+        }
     }
 }
 

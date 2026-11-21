@@ -28,40 +28,54 @@ struct SendSheet: View {
 
     var body: some View {
         @Bindable var voice = voice
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                if let error = voice.error {
-                    Label(error, systemImage: "mic.slash").font(.footnote).foregroundStyle(.secondary)
-                }
-                if let notice = voice.notice {
-                    Label(notice, systemImage: "iphone").font(.footnote).foregroundStyle(.secondary)
-                }
-                if voice.retrying {
-                    HStack(spacing: 8) {
-                        ProgressView()
-                        Text("Transcribing with OpenAI…").font(.footnote).foregroundStyle(.secondary)
+        VStack(spacing: 0) {
+            HStack {
+                Button("Cancel") { voice.finish() }
+                    .font(Face.geist(16, .medium))
+                    .foregroundStyle(Ink.ac)
+                    .frame(minHeight: 44)
+                Spacer()
+                Text(current.map { "To \($0.label)" } ?? "Review before sending")
+                    .font(Face.meta).foregroundStyle(Ink.mut).lineLimit(1)
+            }
+            .padding(.horizontal, 20)
+            .frame(height: 44)
+            .padding(.top, 8)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    if let error = voice.error { Banner(text: error).padding(.bottom, 12) }
+                    if let notice = voice.notice { Note(text: notice).padding(.bottom, 12) }
+                    if voice.retrying {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                            Note(text: "Transcribing with OpenAI…")
+                        }
+                        .padding(.bottom, 12)
+                        .accessibilityIdentifier("voiceRetrying")
+                    } else if voice.canRetry {
+                        Button("Retry") { voice.retry() }
+                            .buttonStyle(BigButtonStyle(kind: .outline))
+                            .padding(.bottom, 12)
+                            .accessibilityIdentifier("voiceRetry")
                     }
-                    .accessibilityIdentifier("voiceRetrying")
-                } else if voice.canRetry {
-                    Button("Retry") { voice.retry() }
-                        .buttonStyle(.bordered)
-                        .accessibilityIdentifier("voiceRetry")
-                }
-                TextField(current.map { "Message \($0.label)" } ?? "Say or type what you want done", text: $voice.text, axis: .vertical)
-                    .font(.title3)
-                    .lineLimit(2...6)
-                    .padding(14)
-                    .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                    .focused($focused)
-                    .accessibilityIdentifier("composeField")
-                if SkillSearch.isTyping(voice.text), let current { skillList(for: current) }
-                if !shown.options.isEmpty {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(preview?.message ?? "Goes to")
-                            .font(.footnote.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 4)
-                            .accessibilityIdentifier("previewMessage")
+                    TextField(current.map { "Message \($0.label)" } ?? "Say or type what you want done", text: $voice.text, axis: .vertical)
+                        .font(SkillSearch.isTyping(voice.text) ? Face.mono(22, .medium) : Face.draft)
+                        .tracking(SkillSearch.isTyping(voice.text) ? 0 : -0.44)
+                        .foregroundStyle(Ink.ink)
+                        .tint(Ink.ac)
+                        .lineLimit(1...8)
+                        .focused($focused)
+                        .accessibilityIdentifier("composeField")
+                    if !voice.text.isEmpty && !focused {
+                        Note(text: "Tap the words to correct them.").padding(.top, 10)
+                    }
+                    if SkillSearch.isTyping(voice.text), let current { skillList(for: current) }
+                    if !shown.options.isEmpty {
+                        SectionHead(title: shown.options.count == 1 ? "Goes to" : "Where should this go?") { EmptyView() }
+                            .padding(.top, 8)
+                        if let message = preview?.message {
+                            Note(text: message).padding(.bottom, 8).accessibilityIdentifier("previewMessage")
+                        }
                         VStack(spacing: 0) {
                             ForEach(Array(shown.options.enumerated()), id: \.element.id) { i, o in
                                 RouteRow(option: o, selected: o.id == chosen?.id, first: i == 0) {
@@ -76,59 +90,42 @@ struct SendSheet: View {
                                     requestId = UUID().uuidString
                                 }
                             }
+                            Hairline()
                         }
-                        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    } else if let preview, preview.outcome == "refused" {
+                        Note(text: preview.message).padding(.top, 14)
                     }
-                } else if let preview, preview.outcome == "refused" {
-                    Text(preview.message).font(.footnote).foregroundStyle(.secondary)
+                    if let note {
+                        Note(text: note, color: Ink.sub).padding(.top, 12).accessibilityIdentifier("composeNote")
+                    }
                 }
-                if let note {
-                    Text(note).font(.footnote).foregroundStyle(.secondary).accessibilityIdentifier("composeNote")
-                }
+                .padding(.horizontal, 20)
+                .padding(.top, 8)
             }
-            .padding(.horizontal, 20)
-        }
-        .scrollDismissesKeyboard(.interactively)
-        .safeAreaInset(edge: .top, spacing: 12) {
-            HStack {
-                Button("Cancel") { voice.finish() }
-                Spacer()
-                Text("Ready to send").font(.headline)
-                Spacer()
-                Button("Cancel") {}.hidden()
-            }
-            .padding(.horizontal, 20)
-            .padding(.top, 14)
-        }
-        .safeAreaInset(edge: .bottom) {
-            HStack(spacing: 10) {
-                Button { voice.listen(to: voice.context, keepText: true) } label: {
-                    Image(systemName: "mic.fill")
-                        .font(.system(size: 20, weight: .semibold))
-                        .frame(width: 50, height: 50)
-                        .background(Color(.tertiarySystemFill), in: Circle())
-                }
-                .accessibilityLabel("Keep talking")
+            .scrollDismissesKeyboard(.interactively)
+            HStack(spacing: 12) {
+                Button { voice.listen(to: voice.context, keepText: true) } label: { RoundIcon(symbol: "mic") }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Keep talking")
                 Button { Task { await send() } } label: {
-                    Group {
-                        if sending { ProgressView().tint(.white) } else { Text(chosen?.verb ?? (empty ? "Say or type something" : "Pick where this goes")) }
+                    if sending {
+                        ProgressView().tint(Ink.inv)
+                    } else {
+                        Label(chosen?.verb ?? (empty ? "Say or type something" : "Pick where this goes"), systemImage: "arrow.up")
                     }
-                    .font(.headline)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, minHeight: 50)
-                    .background(chosen == nil || empty || voice.retrying ? Color.gray : Color.accentColor, in: Capsule())
-                    .foregroundStyle(.white)
                 }
+                .buttonStyle(BigButtonStyle())
+                .clipShape(Capsule())
                 .disabled(chosen == nil || empty || sending || voice.retrying)
                 .accessibilityIdentifier("composeSend")
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 8)
-            .background(Color(.systemGroupedBackground))
         }
-        .background(Color(.systemGroupedBackground))
-        .presentationDetents([.medium, .large])
+        .background(Ink.sf.ignoresSafeArea())
+        .presentationDetents([.large])
         .presentationCornerRadius(28)
+        .presentationBackground(Ink.sf)
         .onAppear { if voice.text.isEmpty { focused = true } }
         .task(id: voice.text) { await loadPreview() }
     }
@@ -142,51 +139,52 @@ struct SendSheet: View {
         VStack(alignment: .leading, spacing: 0) {
             if let all {
                 let shown = Array(SkillSearch.filter(all, typed: voice.text).prefix(30))
+                SectionHead(title: "Skills matching \(voice.text.trimmingCharacters(in: .whitespaces))") { Text("\(shown.count)") }
+                    .padding(.top, 8)
                 if shown.isEmpty {
-                    Text("No skill matches \(voice.text).").font(.footnote).foregroundStyle(.secondary).padding(14)
+                    StateRow(text: "No skill matches \(voice.text).")
                 }
                 ForEach(Array(shown.enumerated()), id: \.element.name) { i, skill in
                     Button {
                         voice.text = skill.name + " "
                     } label: {
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack(spacing: 6) {
-                                Text(skill.name).font(.system(.callout, design: .monospaced).weight(.semibold))
-                                if skill.source != "user" {
-                                    Text(Self.sourceLabel(skill.source)).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                        HStack(spacing: 12) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(skill.name).font(Face.mono(15, .medium)).foregroundStyle(Ink.ink)
+                                if !skill.description.isEmpty {
+                                    Text(skill.description).font(Face.sub).foregroundStyle(Ink.sub).lineLimit(2)
                                 }
                             }
-                            if !skill.description.isEmpty {
-                                Text(skill.description).font(.footnote).foregroundStyle(.secondary).lineLimit(2)
-                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            Text(Self.sourceLabel(skill.source)).font(Face.meta).foregroundStyle(Ink.mut)
                         }
-                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 6)
-                        .overlay(alignment: .top) { if i > 0 { Divider().padding(.leading, 14) } }
+                        .padding(.vertical, 12)
+                        .frame(minHeight: 60)
+                        .overlay(alignment: .top) { if i > 0 { Hairline() } }
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("skill-\(skill.name)")
                 }
+                Hairline()
+                Note(text: "Tapping a skill puts its name in the message. Nothing is sent until you tap Send.").padding(.top, 12)
             } else if let skillsError {
-                Text("Couldn't list its skills: \(skillsError)").font(.footnote).foregroundStyle(.secondary).padding(14)
+                StateRow(text: "Couldn't list its skills: \(skillsError)", error: true)
             } else {
-                HStack(spacing: 8) { ProgressView(); Text("Listing its skills…").font(.footnote).foregroundStyle(.secondary) }
-                    .padding(14)
+                StateRow(text: "Listing its skills…", busy: true)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .task(id: Self.skillKey(target)) { await loadSkills(for: target) }
     }
 
     private static func sourceLabel(_ source: String) -> String {
         switch source {
-        case "repo": "THIS REPO"
-        case "plugin": "PLUGIN"
-        case "builtin": "BUILT IN"
-        default: source.uppercased()
+        case "repo": "this repo"
+        case "plugin": "plugin"
+        case "builtin": "built in"
+        case "user": "yours"
+        default: source
         }
     }
 
@@ -301,24 +299,9 @@ private struct NewTaskRow: View {
         Menu {
             ForEach(projects, id: \.self) { p in Button(p) { pick(p) } }
         } label: {
-            HStack(spacing: 12) {
-                Image(systemName: "plus")
-                    .font(.system(size: 15, weight: .semibold))
-                    .frame(width: 32, height: 32)
-                    .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("New task in…").font(.body.weight(.semibold))
-                    Text("Pick a project").font(.footnote).foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 0)
-                Image(systemName: "chevron.up.chevron.down").font(.footnote).foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 14)
-            .frame(minHeight: 56)
-            .overlay(alignment: .top) { Divider().padding(.leading, 58) }
-            .contentShape(Rectangle())
+            RadioRow(title: "New task in…", on: false) { Note(text: "Pick a project") }
         }
-        .foregroundStyle(.primary)
+        .foregroundStyle(Ink.ink)
         .accessibilityIdentifier("routeNewTask")
     }
 }
@@ -331,32 +314,11 @@ private struct RouteRow: View {
 
     var body: some View {
         Button(action: pick) {
-            HStack(spacing: 12) {
-                Image(systemName: option.isNew ? "plus" : "waveform.path.ecg")
-                    .font(.system(size: 15, weight: .semibold))
-                    .frame(width: 32, height: 32)
-                    .background(option.isNew ? Color(.tertiarySystemFill) : Color.accentColor.opacity(0.14), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                    .foregroundStyle(option.isNew ? Color.primary : Color.accentColor)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(option.title).font(.body.weight(.semibold)).lineLimit(1)
-                    Text(option.detail).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
-                }
-                Spacer(minLength: 0)
-                Image(systemName: "checkmark")
-                    .font(.system(size: 15, weight: .bold))
-                    .foregroundStyle(Color.accentColor)
-                    .opacity(selected ? 1 : 0)
+            RadioRow(title: option.title, on: selected, first: first) {
+                Text(option.detail).font(Face.sub).foregroundStyle(Ink.sub).lineLimit(1)
             }
-            .padding(.horizontal, 14)
-            .frame(minHeight: 56)
-            .background(selected ? Color.accentColor.opacity(0.06) : .clear)
-            .overlay(alignment: .top) {
-                if !first { Divider().padding(.leading, 58) }
-            }
-            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityAddTraits(selected ? .isSelected : [])
         .accessibilityIdentifier("route-\(option.id)")
     }
 }

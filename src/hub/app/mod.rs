@@ -26,7 +26,7 @@ use crate::auth::device::{
 };
 use crate::cli::Agent;
 use crate::proto::auth::bearer;
-use crate::proto::{AgentPromptOutcome, ErrorCode};
+use crate::proto::{AgentPromptOutcome, ErrorCode, StartBackend};
 use crate::store::{AnswerProof, DeviceRecord, DeviceState, PushEnv, PushProvider};
 use types::*;
 
@@ -53,10 +53,12 @@ pub fn routes(state: AppState) -> Router {
         .route("/auth/token", post(issue_token))
         .route("/projects", get(list_projects))
         .route("/machines", get(list_machines))
+        .route("/machines/{id}/start-options", get(get_start_options))
         .route("/sessions", get(list_sessions).post(start_session))
         .route("/sessions/{id}", get(get_session))
         .route("/sessions/{id}/output", get(get_output))
         .route("/sessions/{id}/changes", get(get_changes))
+        .route("/sessions/{id}/diff", get(get_diff))
         .route("/sessions/{id}/transcript", get(get_transcript))
         .route("/sessions/{id}/skills", get(get_skills))
         .route("/sessions/{id}/prompt", post(prompt_session))
@@ -69,6 +71,15 @@ pub fn routes(state: AppState) -> Router {
         .route("/devices", get(list_devices))
         .route("/devices/{id}", delete(revoke_device))
         .route("/devices/self/push", put(set_push_token))
+        .route("/devices/self/live", put(set_live).delete(clear_live))
+        .route("/live", get(get_live))
+        .route("/ship-buttons", get(get_ship_buttons).put(set_ship_buttons))
+        .route("/activity", get(get_activity))
+        .route("/activity/summary", post(post_activity_summary))
+        .route(
+            "/settings/away",
+            get(get_away_settings).put(set_away_settings),
+        )
         .layer(middleware::from_fn(check_build))
         .route("/messages", post(post_message))
         .route("/messages/preview", post(preview_message))
@@ -79,6 +90,7 @@ pub fn routes(state: AppState) -> Router {
         .route("/agents/dialog", get(get_agent_dialog))
         .route("/agents/dialog/challenge", post(dialog_challenge))
         .route("/agents/dialog/answer", post(answer_dialog))
+        .route("/agents/dialog/back", post(dialog_back))
         .route("/attention/{id}", get(get_attention))
         .route("/meta", get(get_meta));
     Router::new().nest(PREFIX, api).with_state(state)
@@ -133,7 +145,8 @@ fn status_for(code: &str) -> StatusCode {
         | "request_id_reused"
         | "answer_in_herdr"
         | "agent_blocked"
-        | "dialog_changed" => StatusCode::CONFLICT,
+        | "dialog_changed"
+        | "backend_unavailable" => StatusCode::CONFLICT,
         "rate_limited" | "busy" => StatusCode::TOO_MANY_REQUESTS,
         "machine_offline" | "reconciling" => StatusCode::SERVICE_UNAVAILABLE,
         "outcome_unknown" | "deadline_exceeded" => StatusCode::GATEWAY_TIMEOUT,
@@ -336,6 +349,21 @@ pub async fn list_machines(State(st): State<AppState>, _d: DeviceAuth) -> ApiRes
     ))
 }
 
+#[utoipa::path(get, path = "/app/v1/machines/{id}/start-options", tag = "sessions",
+    security(("device_token" = [])), params(("id" = String, Path)),
+    responses((status = 200, description = "OK", body = StartOptions), (status = 400, description = "Unknown machine", body = ApiError),
+              (status = 503, description = "Machine offline", body = ApiError)))]
+/// Where a new session on this machine opens, and whether the Herdr app or a Herdr terminal can
+/// take one now. Read-only.
+pub async fn get_start_options(
+    State(st): State<AppState>,
+    _d: DeviceAuth,
+    Path(id): Path<String>,
+) -> ApiResult<StartOptions> {
+    let o = st.svc.start_options(&id).await?;
+    Ok(Json(StartOptions::of(id, o)))
+}
+
 #[utoipa::path(get, path = "/app/v1/sessions", tag = "sessions", security(("device_token" = [])),
     params(WaitQuery),
     responses((status = 200, description = "OK", body = Sessions), (status = 401, description = "Missing or expired device token", body = ApiError)))]
@@ -355,6 +383,7 @@ pub async fn list_sessions(
 #[utoipa::path(post, path = "/app/v1/sessions", tag = "sessions", security(("device_token" = [])),
     request_body = types::StartRequest,
     responses((status = 200, description = "OK", body = StartResponse), (status = 400, description = "Bad request", body = ApiError),
+              (status = 409, description = "The chosen backend can't take a session there now", body = ApiError),
               (status = 503, description = "Machine offline or reconciling", body = ApiError), (status = 504, description = "Outcome unknown", body = ApiError)))]
 pub async fn start_session(
     State(st): State<AppState>,
@@ -370,6 +399,12 @@ pub async fn start_session(
         Some("codex") => Some(Agent::Codex),
         Some(other) => return Err(bad(&format!("unknown agent {other:?}"))),
     };
+    let backend = match req.backend.as_deref() {
+        None => None,
+        Some(b) => {
+            Some(StartBackend::parse(b).ok_or_else(|| bad(&format!("unknown backend {b:?}")))?)
+        }
+    };
     let r = st
         .svc
         .start(
@@ -381,6 +416,7 @@ pub async fn start_session(
                 agent,
                 notify: req.notify,
                 request_id: Some(req.request_id),
+                backend,
             },
         )
         .await?;
@@ -430,6 +466,7 @@ pub async fn get_session(
 #[utoipa::path(get, path = "/app/v1/sessions/{id}/output", tag = "sessions",
     security(("device_token" = [])), params(("id" = String, Path), OutputQuery),
     responses((status = 200, description = "OK", body = Output), (status = 404, description = "Not found", body = ApiError),
+              (status = 409, description = "The session has ended (`session_not_running`); its agent is no longer read", body = ApiError),
               (status = 503, description = "Machine offline or reconciling", body = ApiError)))]
 pub async fn get_output(
     State(st): State<AppState>,
@@ -464,10 +501,26 @@ pub async fn get_changes(
     Ok(Json(st.svc.changes(&id).await?.into()))
 }
 
+#[utoipa::path(get, path = "/app/v1/sessions/{id}/diff", tag = "sessions",
+    security(("device_token" = [])), params(("id" = String, Path), DiffQuery),
+    responses((status = 200, description = "OK", body = FileDiffView), (status = 400, description = "Not one of the session's changed files, or the runner is too old", body = ApiError),
+              (status = 404, description = "Not found", body = ApiError), (status = 503, description = "Machine offline", body = ApiError)))]
+/// One changed file's unified diff since the session started, a page of hunks at a time.
+/// Read-only and masked; a binary file gives its size, a secrets file nothing.
+pub async fn get_diff(
+    State(st): State<AppState>,
+    _d: DeviceAuth,
+    Path(id): Path<String>,
+    Query(q): Query<DiffQuery>,
+) -> ApiResult<FileDiffView> {
+    Ok(Json(st.svc.diff(&id, &q.path, q.from).await?.into()))
+}
+
 #[utoipa::path(get, path = "/app/v1/sessions/{id}/transcript", tag = "sessions",
     security(("device_token" = [])), params(("id" = String, Path), TranscriptQuery),
     responses((status = 200, description = "OK", body = Transcript), (status = 400, description = "Not a Claude agent", body = ApiError),
-              (status = 404, description = "Not found", body = ApiError), (status = 503, description = "Machine offline", body = ApiError)))]
+              (status = 404, description = "Not found", body = ApiError), (status = 409, description = "The session has ended (`session_not_running`); its agent is no longer read", body = ApiError),
+              (status = 503, description = "Machine offline", body = ApiError)))]
 /// The session's conversation from its agent's own log, a page at a time. Read-only.
 pub async fn get_transcript(
     State(st): State<AppState>,
@@ -486,6 +539,7 @@ pub async fn get_transcript(
 #[utoipa::path(get, path = "/app/v1/sessions/{id}/skills", tag = "sessions",
     security(("device_token" = [])), params(("id" = String, Path)),
     responses((status = 200, description = "OK", body = Skills), (status = 404, description = "Not found", body = ApiError),
+              (status = 409, description = "The session has ended (`session_not_running`); its agent is no longer read", body = ApiError),
               (status = 503, description = "Machine offline", body = ApiError)))]
 /// The skills and commands the session's agent can run, for a `/` picker. Names and one-line
 /// descriptions only, masked.
@@ -703,6 +757,7 @@ async fn follow(
                         agent: None,
                         notify: true,
                         request_id: Some(request_id.to_owned()),
+                        backend: None,
                     },
                 )
                 .await?;
@@ -825,6 +880,7 @@ pub async fn list_agents(
         .map(|(machine_id, a)| AgentView {
             machine_id,
             name: a.name,
+            backend: types::backend(a.herdr_session.as_deref()).into(),
             herdr_session: a.herdr_session,
             kind: a.kind,
             agent_status: a.agent_status,
@@ -1119,6 +1175,192 @@ pub async fn set_push_token(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[utoipa::path(put, path = "/app/v1/devices/self/live", tag = "devices",
+    security(("device_token" = [])), request_body = LiveRegistrationRequest,
+    responses((status = 204, description = "Done"), (status = 400, description = "Bad request", body = ApiError)))]
+/// Turns on this device's lock-screen card, or updates how to reach it. iOS sends its live key,
+/// to which every board is sealed, and its card's push tokens; Android sends none.
+pub async fn set_live(
+    State(st): State<AppState>,
+    d: DeviceAuth,
+    Json(req): Json<LiveRegistrationRequest>,
+) -> Result<StatusCode, AppError> {
+    use base64::Engine;
+    if let Some(k) = &req.live_key {
+        let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(k)
+            .map_err(|_| bad("the live key must be base64url"))?;
+        p256::PublicKey::from_sec1_bytes(&raw)
+            .map_err(|_| bad("the live key is not a P-256 key"))?;
+    }
+    let token = |t: &Option<String>| match t {
+        Some(t) if t.is_empty() || t.len() > 200 || !t.bytes().all(|b| b.is_ascii_hexdigit()) => {
+            Err(bad("a card token must be hex"))
+        }
+        t => Ok(t.as_ref().map(|t| t.to_ascii_lowercase())),
+    };
+    let reg = crate::store::LiveRegistration {
+        live_key: req.live_key.clone(),
+        start_token: token(&req.start_token)?,
+        activity_token: token(&req.activity_token)?,
+        activity_started_at: req.activity_started_at,
+        always: req.mode == Some(LiveMode::Always),
+    };
+    st.svc.store().set_live(&d.0.id, reg, st.svc.now()).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(delete, path = "/app/v1/devices/self/live", tag = "devices",
+    security(("device_token" = [])), responses((status = 204, description = "Done")))]
+/// Turns off this device's lock-screen card.
+pub async fn clear_live(State(st): State<AppState>, d: DeviceAuth) -> Result<StatusCode, AppError> {
+    st.svc.store().clear_live(&d.0.id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(get, path = "/app/v1/activity", tag = "agents",
+    security(("device_token" = [])), params(ActivityQuery),
+    responses((status = 200, description = "OK", body = Activity)))]
+/// What each agent did since a time: turns, dialogs, errors, approvals and sessions started, plus
+/// its last line. Masked.
+pub async fn get_activity(
+    State(st): State<AppState>,
+    _d: DeviceAuth,
+    Query(q): Query<ActivityQuery>,
+) -> ApiResult<Activity> {
+    let agents = st.svc.away(q.since).await?;
+    Ok(Json(Activity {
+        since: q.since,
+        now: st.svc.now(),
+        summary_on: st.svc.away_settings().await?.summary,
+        agents: agents
+            .into_iter()
+            .map(|a| AwayAgentView {
+                machine_id: a.machine_id,
+                agent: a.agent,
+                session_id: a.session_id,
+                state: a.state,
+                facts: a
+                    .facts
+                    .into_iter()
+                    .map(|f| AwayFactView {
+                        at: f.at,
+                        kind: f.kind,
+                        text: f.text,
+                    })
+                    .collect(),
+                last_reply: a.last_reply,
+            })
+            .collect(),
+    }))
+}
+
+#[utoipa::path(post, path = "/app/v1/activity/summary", tag = "agents",
+    security(("device_token" = [])), request_body = SummaryRequest,
+    responses((status = 200, description = "OK", body = SummaryResponse), (status = 400, description = "The summary is off, or the runner is too old", body = ApiError),
+              (status = 503, description = "Machine offline", body = ApiError)))]
+/// The same facts, summarised by `claude -p` with every tool off; only when the owner turned it on.
+pub async fn post_activity_summary(
+    State(st): State<AppState>,
+    _d: DeviceAuth,
+    Json(req): Json<SummaryRequest>,
+) -> ApiResult<SummaryResponse> {
+    Ok(Json(SummaryResponse {
+        summary: st.svc.away_summary(req.since).await?,
+    }))
+}
+
+#[utoipa::path(get, path = "/app/v1/settings/away", tag = "devices",
+    security(("device_token" = [])), responses((status = 200, description = "OK", body = AwaySettingsView)))]
+pub async fn get_away_settings(
+    State(st): State<AppState>,
+    _d: DeviceAuth,
+) -> ApiResult<AwaySettingsView> {
+    let s = st.svc.away_settings().await?;
+    Ok(Json(AwaySettingsView {
+        summary: s.summary,
+        model: s.model,
+    }))
+}
+
+#[utoipa::path(put, path = "/app/v1/settings/away", tag = "devices",
+    security(("device_token" = [])), request_body = AwaySettingsView,
+    responses((status = 204, description = "Done"), (status = 400, description = "Bad request", body = ApiError)))]
+pub async fn set_away_settings(
+    State(st): State<AppState>,
+    d: DeviceAuth,
+    Json(req): Json<AwaySettingsView>,
+) -> Result<StatusCode, AppError> {
+    let s = service::away::AwaySettings {
+        summary: req.summary,
+        model: req.model.trim().to_owned(),
+    };
+    st.svc.set_away_settings(&d.caller(), s).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(get, path = "/app/v1/ship-buttons", tag = "agents",
+    security(("device_token" = [])), responses((status = 200, description = "OK", body = ShipButtons)))]
+/// The ship buttons every paired phone shows, for all projects and per project.
+pub async fn get_ship_buttons(
+    State(st): State<AppState>,
+    _d: DeviceAuth,
+) -> ApiResult<ShipButtons> {
+    let view = |b: crate::store::ShipButton| ShipButtonView {
+        skill: b.skill,
+        label: b.label,
+        after_pr: b.after_pr,
+    };
+    let mut out = ShipButtons {
+        all: vec![],
+        projects: vec![],
+    };
+    for (scope, list) in st.svc.ship_buttons().await? {
+        let buttons = list.into_iter().map(view).collect();
+        if scope == "*" {
+            out.all = buttons;
+        } else {
+            out.projects.push(ShipScope {
+                project: scope,
+                buttons,
+            });
+        }
+    }
+    Ok(Json(out))
+}
+
+#[utoipa::path(put, path = "/app/v1/ship-buttons", tag = "agents",
+    security(("device_token" = [])), request_body = SetShipButtonsRequest,
+    responses((status = 204, description = "Done"), (status = 400, description = "Bad request", body = ApiError)))]
+/// Replaces the ship buttons for all projects, or one project's own list.
+pub async fn set_ship_buttons(
+    State(st): State<AppState>,
+    d: DeviceAuth,
+    Json(req): Json<SetShipButtonsRequest>,
+) -> Result<StatusCode, AppError> {
+    let buttons = req
+        .buttons
+        .into_iter()
+        .map(|b| crate::store::ShipButton {
+            skill: b.skill,
+            label: b.label,
+            after_pr: b.after_pr,
+        })
+        .collect();
+    st.svc
+        .set_ship_buttons(&d.caller(), &req.scope, buttons)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(get, path = "/app/v1/live", tag = "agents",
+    security(("device_token" = [])),
+    responses((status = 200, description = "OK", body = LiveBoardView)))]
+/// What the lock-screen card shows: who needs you, who is running, how many are idle. Masked.
+pub async fn get_live(State(st): State<AppState>, _d: DeviceAuth) -> ApiResult<LiveBoardView> {
+    Ok(Json(st.svc.board().await?.into()))
+}
+
 #[utoipa::path(get, path = "/app/v1/agents/dialog", tag = "agents",
     security(("device_token" = [])), params(AgentQuery),
     responses((status = 200, description = "OK", body = AgentDialog), (status = 404, description = "Not found", body = ApiError),
@@ -1135,6 +1377,27 @@ pub async fn get_agent_dialog(
         agent: q.agent,
         dialog: d.dialog.map(Into::into),
         waiting: d.blocked,
+    }))
+}
+
+#[utoipa::path(post, path = "/app/v1/agents/dialog/back", tag = "agents",
+    security(("device_token" = [])), request_body = DialogBackRequest,
+    responses((status = 200, description = "OK", body = DialogBackResponse), (status = 400, description = "There is no earlier question to show", body = ApiError),
+              (status = 409, description = "The dialog changed; read it again", body = ApiError)))]
+/// Shows the previous question of a group again, when the dialog says `can_go_back`. It submits
+/// nothing, so it needs no signature.
+pub async fn dialog_back(
+    State(st): State<AppState>,
+    d: DeviceAuth,
+    Json(req): Json<DialogBackRequest>,
+) -> ApiResult<DialogBackResponse> {
+    let dialog = st
+        .svc
+        .dialog_back(&d.caller(), &req.machine_id, &req.agent, &req.occurrence_id)
+        .await?;
+    Ok(Json(DialogBackResponse {
+        outcome: "moved".into(),
+        dialog: dialog.map(Into::into),
     }))
 }
 
@@ -1169,7 +1432,8 @@ pub async fn dialog_challenge(
     responses((status = 200, description = "OK", body = DialogAnswerResponse), (status = 400, description = "Bad request", body = ApiError),
               (status = 403, description = "Not allowed", body = ApiError), (status = 409, description = "The dialog changed or was answered; read it again", body = ApiError),
               (status = 504, description = "The Enter may have been sent; never retried", body = ApiError)))]
-/// Picks one offered option. The deny needs no signature; any other option needs the device's
+/// Picks one offered option. The deny needs no signature, and nor does a `provisional` option,
+/// which only moves to the next question of a group; any other option needs the device's
 /// signature over the answer message.
 pub async fn answer_dialog(
     State(st): State<AppState>,
@@ -1226,6 +1490,7 @@ pub async fn answer_dialog(
         outcome: r.outcome,
         operation_id: r.operation_id,
         replayed: r.replayed,
+        next: r.next.map(Into::into),
     }))
 }
 
@@ -1248,6 +1513,7 @@ pub async fn get_attention(
         agent: a.record.agent,
         session_id: a.record.session_id,
         dialog: a.dialog.map(Into::into),
+        same_agent: a.same_agent,
     }))
 }
 

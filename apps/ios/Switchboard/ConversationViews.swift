@@ -1,14 +1,6 @@
 import SwiftUI
 import SwitchboardKit
 
-/// What the navigation stack opens to show a whole conversation.
-struct ConversationRef: Hashable {
-    let source: ConversationSource
-    let title: String
-    /// Opens on the agent's screen instead of the conversation.
-    var screen = false
-}
-
 /// One agent's conversation, and its terminal, followed while a screen shows them. Pages that
 /// don't draw the terminal pass false for `drawsTerminal`, and its screen is never read.
 @MainActor
@@ -19,6 +11,8 @@ final class ConversationModel {
     private(set) var conversation = Conversation()
     /// Why there's no conversation, e.g. no log yet or an older hub; the terminal stands in.
     private(set) var unavailable: String?
+    /// The hub says the session has ended: nothing more to follow, and its screen isn't read.
+    private(set) var ended = false
     private(set) var terminal = ""
     /// The same screen with its colours, when the hub sends them.
     private(set) var terminalAnsi: String?
@@ -47,7 +41,7 @@ final class ConversationModel {
     }
 
     private func followConversation(_ model: AppModel) async {
-        await Follow.repeating(going: { model.active }) {
+        await Follow.repeating(going: { model.active && !ended }) {
             let ok = await refresh(model.hub, wait: true)
             let extra = backoff.extra(unavailable: unavailable != nil)
             if extra > .zero { try? await Task.sleep(for: extra) }
@@ -57,7 +51,7 @@ final class ConversationModel {
 
     private func followScreen(_ model: AppModel) async {
         await Follow.screens(bell: screenBell, shown: { Follow.readsScreen(draws: drawsTerminal, wanted: wantsTerminal, unavailable: unavailable != nil) },
-                             going: { model.active }) {
+                             going: { model.active && !ended }) {
             await loadTerminal(model.hub)
         }
     }
@@ -85,6 +79,8 @@ final class ConversationModel {
             unavailable = nil
             error = nil
             return true
+        } catch let e as HubError where e.code == "session_not_running" {
+            ended = true
         } catch let e as HubError where e.code == "http_404" {
             // A hub older than this app has no conversations to give.
             unavailable = "the hub needs updating"
@@ -121,6 +117,9 @@ final class ConversationModel {
             return true
         } catch let e as HubError where e.code == "busy" {
             return true
+        } catch let e as HubError where e.code == "session_not_running" {
+            ended = true
+            return false
         } catch {
             if !Task.isCancelled { terminalError = error.localizedDescription }
             return false
@@ -128,95 +127,17 @@ final class ConversationModel {
     }
 }
 
-/// The whole conversation, with the terminal a tab away.
-struct ConversationScreen: View {
+/// The whole conversation, newest at the bottom, following as it grows.
+struct ConversationFeed: View {
     @Environment(AppModel.self) private var model
-    @Environment(Voice.self) private var voice
-    let ref: ConversationRef
-    @State private var convo: ConversationModel
-    @State private var tab: Tab
+    let convo: ConversationModel
+    let speaker: String
+    /// Where the agent is now, under the last message.
+    let status: SessionStatus?
     /// Whether the conversation is scrolled to its latest message.
     @State private var atEnd = true
 
-    enum Tab: String, CaseIterable {
-        case conversation = "Conversation"
-        case terminal = "Screen"
-    }
-
-    init(ref: ConversationRef) {
-        self.ref = ref
-        _convo = State(initialValue: ConversationModel(ref.source))
-        _tab = State(initialValue: ref.screen ? .terminal : .conversation)
-    }
-
-    /// Where the message bar sends.
-    private var target: Schemas.TargetView? {
-        switch ref.source {
-        case .session(let id): model.sessions.first { $0.id == id }.map(Schemas.TargetView.session)
-        case .agent(let machine, let name): .agent(machine: machine, name: name, label: ref.title)
-        }
-    }
-
-    /// Who replies: `Claude` or `Codex`.
-    private var speaker: String {
-        switch ref.source {
-        case .session(let id): model.sessions.first { $0.id == id }?.agent.capitalized ?? "Agent"
-        case .agent(let machine, let name):
-            model.agents.first { $0.machineId == machine && $0.name == name }?.kind?.capitalized ?? "Agent"
-        }
-    }
-
     var body: some View {
-        VStack(spacing: 0) {
-            if let why = convo.unavailable {
-                // Nothing to switch between: the terminal is all there is.
-                Label("No conversation to show (\(why)), so here's the agent's screen.", systemImage: "info.circle")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                terminal
-            } else {
-                Picker("View", selection: $tab) {
-                    ForEach(Tab.allCases, id: \.self) { Text($0.rawValue) }
-                }
-                .pickerStyle(.segmented)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-                if tab == .terminal { terminal } else { feed }
-            }
-        }
-        .safeAreaInset(edge: .bottom) { messageBar }
-        .background(Color(.systemGroupedBackground))
-        .navigationTitle(ref.title)
-        .navigationBarTitleDisplayMode(.inline)
-        .onChange(of: tab, initial: true) { _, t in
-            convo.showTerminal(t == .terminal)
-        }
-        .task(id: model.followKey) { await convo.follow(model) }
-        // An agent's status line: only home refreshes agents otherwise.
-        .task(id: model.followKey) {
-            guard case .agent = ref.source else { return }
-            while model.followKey != nil, !Task.isCancelled {
-                await model.refreshAgents()
-                try? await Task.sleep(for: .seconds(5))
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var terminal: some View {
-        if convo.terminalLoaded {
-            TerminalView(text: convo.terminal, ansi: convo.terminalAnsi)
-        } else if let error = convo.terminalError {
-            Waiting(symbol: "exclamationmark.triangle", text: "Couldn't read the screen: \(error)", busy: false)
-        } else {
-            Waiting(symbol: "terminal", text: "Loading the screen…", busy: true)
-        }
-    }
-
-    private var feed: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
@@ -224,11 +145,15 @@ struct ConversationScreen: View {
                         Button {
                             Task { if let hub = model.hub { await convo.loadEarlier(hub) } }
                         } label: {
-                            if convo.loadingEarlier { ProgressView() } else { Text("Show earlier messages") }
+                            if convo.loadingEarlier { ProgressView() } else { Text("Show earlier messages").font(Face.geist(13.5, .medium)).foregroundStyle(Ink.ac) }
                         }
-                        .frame(maxWidth: .infinity)
+                        .frame(maxWidth: .infinity, minHeight: 44)
                     }
-                    if !convo.conversation.isLoaded {
+                    if convo.ended {
+                        StateRow(text: "This session has ended, so there's nothing more to show.")
+                    } else if let why = convo.unavailable {
+                        StateRow(text: "No conversation to show (\(why)). Its screen is under Screen.")
+                    } else if !convo.conversation.isLoaded {
                         if let error = convo.error {
                             Waiting(symbol: "exclamationmark.triangle", text: "Couldn't load the conversation: \(error)", busy: false)
                                 .padding(.top, 40)
@@ -240,13 +165,13 @@ struct ConversationScreen: View {
                     }
                     ForEach(Turns.entries(convo.conversation.items)) { EntryRow(entry: $0, speaker: speaker) }
                     if convo.conversation.isLoaded {
-                        if let pane { DialogCard(machine: pane.machine, agent: pane.agent, label: ref.title) }
                         if let status { StatusLine(status: status) }
-                        if let error = convo.error { Text(error).font(.footnote).foregroundStyle(.orange) }
+                        if let error = convo.error { Note(text: error, color: Ink.warn) }
                     }
                     Color.clear.frame(height: 1).id(Self.end)
                 }
-                .padding(.horizontal, 16)
+                .padding(.horizontal, 20)
+                .padding(.top, 8)
                 .padding(.bottom, 24)
             }
             .defaultScrollAnchor(.bottom)
@@ -264,14 +189,14 @@ struct ConversationScreen: View {
                         Image(systemName: "arrow.down")
                             .font(.body.weight(.semibold))
                             .frame(width: 40, height: 40)
-                            .background(Color(.secondarySystemGroupedBackground), in: Circle())
-                            .overlay(Circle().stroke(Color(.separator).opacity(0.6), lineWidth: 0.5))
-                            .shadow(color: .black.opacity(0.15), radius: 6, y: 2)
+                            .background(Ink.sf, in: Circle())
+                            .overlay(Circle().strokeBorder(Ink.line))
+                            .shadow(color: .black.opacity(0.12), radius: 6, y: 2)
                             .frame(width: 44, height: 44)
                             .contentShape(Circle())
                     }
                     .buttonStyle(.plain)
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(Ink.ink)
                     .padding(.bottom, 10)
                     .transition(.opacity.combined(with: .scale(scale: 0.8)))
                     .accessibilityLabel("Jump to the latest")
@@ -284,53 +209,6 @@ struct ConversationScreen: View {
     }
 
     private static let end = "end"
-
-    /// Opens the review sheet, where `/` lists the agent's skills.
-    private var messageBar: some View {
-        HStack(spacing: 8) {
-            Button { voice.type(to: target) } label: {
-                Text("Message, or / for skills")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
-                    .padding(.horizontal, 16)
-                    .background(Color(.secondarySystemGroupedBackground), in: Capsule())
-                    .overlay(Capsule().stroke(Color(.separator), lineWidth: 0.5))
-            }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("messageBar")
-            Button { voice.listen(to: target) } label: {
-                Image(systemName: "mic.fill")
-                    .font(.system(size: 18, weight: .semibold))
-                    .frame(width: 44, height: 44)
-                    .background(Color.accentColor, in: Circle())
-                    .foregroundStyle(.white)
-            }
-            .accessibilityLabel("Talk to \(ref.title)")
-        }
-        .padding(.horizontal, 12)
-        .padding(.top, 8)
-        .padding(.bottom, 6)
-        .background(.bar)
-        .disabled(target == nil)
-    }
-
-    /// The agent's pane, for its dialog: a session's own agent, or the Herdr agent itself.
-    private var pane: (machine: String, agent: String)? {
-        switch ref.source {
-        case .session(let id):
-            model.sessions.first { $0.id == id && $0.lifecycle == "running" }.flatMap { s in s.agentName.map { (s.machineId, $0) } }
-        case .agent(let machine, let name): (machine, name)
-        }
-    }
-
-    private var status: SessionStatus? {
-        if let target, model.awaiting[AppModel.saidKey(for: target)] != nil { return .sent }
-        return switch ref.source {
-        case .session(let id): model.sessions.first { $0.id == id }.map(SessionStatus.init)
-        case .agent(let machine, let name):
-            model.agents.first { $0.machineId == machine && $0.name == name }.map { SessionStatus(agentStatus: $0.agentStatus) }
-        }
-    }
 }
 
 /// A Markdown table as a grid: each column's width in proportion to its longest cell, long cells
@@ -353,16 +231,16 @@ struct TableView: View {
             if !table.header.isEmpty {
                 WeightedRow(weights: table.weights) {
                     ForEach(Array(table.header.enumerated()), id: \.offset) { _, cell in
-                        Text(MarkdownText.inline(cell)).font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
+                        Text(MarkdownText.inline(cell)).font(Face.geist(13, .semibold)).foregroundStyle(Ink.mut)
                     }
                 }
                 .padding(.vertical, 6)
             }
             ForEach(Array(table.rows.enumerated()), id: \.offset) { i, row in
-                if i > 0 || !table.header.isEmpty { Divider() }
+                if i > 0 || !table.header.isEmpty { Hairline() }
                 WeightedRow(weights: table.weights) {
                     ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
-                        Text(MarkdownText.inline(cell)).font(.subheadline)
+                        Text(MarkdownText.inline(cell)).font(Face.sub)
                     }
                 }
                 .padding(.vertical, 6)
@@ -402,52 +280,8 @@ struct WeightedRow: Layout {
 
 /// What the agent last said and what its work since your last message came to, for a session
 /// or agent page.
-struct SummaryCard: View {
-    let convo: ConversationModel
-    /// Where "Read all" goes.
-    let conversation: ConversationRef
-
-    var body: some View {
-        let latest = Turns.latest(convo.conversation.items)
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Latest reply").font(.caption.weight(.semibold)).foregroundStyle(.secondary).textCase(.uppercase)
-                Spacer()
-                if let at = latest.at.flatMap(Turns.time) { Text(at).font(.caption).foregroundStyle(.secondary) }
-            }
-            if let why = convo.unavailable {
-                Label("No conversation to show (\(why)).", systemImage: "info.circle")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            } else if !convo.conversation.isLoaded {
-                ConversationSkeleton(rows: 1)
-            } else if let reply = latest.reply?.text {
-                Clamped(height: 286) { MarkdownText(text: reply) }
-            } else {
-                Text("Nothing said yet.").font(.subheadline).foregroundStyle(.secondary)
-            }
-            HStack {
-                if !latest.tags.isEmpty { TagRow(tags: latest.tags) }
-                Spacer(minLength: 12)
-                if latest.reply != nil {
-                    NavigationLink(value: conversation) {
-                        Text("Read all").font(.subheadline.weight(.semibold)).frame(minHeight: 44)
-                    }
-                    .accessibilityIdentifier("readAll")
-                }
-            }
-        }
-        .padding(.horizontal, 14)
-        .padding(.top, 14)
-        .padding(.bottom, 4)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .accessibilityIdentifier("latest")
-    }
-}
-
 /// At most `height` tall; cut-off content fades out.
-private struct Clamped<Content: View>: View {
+struct Clamped<Content: View>: View {
     let height: CGFloat
     @ViewBuilder let content: Content
     @State private var full: CGFloat = 0
@@ -468,7 +302,7 @@ private struct Clamped<Content: View>: View {
 }
 
 /// Keeps `atEnd` up to date where iOS can say where the scroll view is; elsewhere it stays true.
-private struct TracksEnd: ViewModifier {
+struct TracksEnd: ViewModifier {
     @Binding var atEnd: Bool
 
     func body(content: Content) -> some View {
@@ -481,32 +315,6 @@ private struct TracksEnd: ViewModifier {
         } else {
             content
         }
-    }
-}
-
-/// The two ways into an agent: its conversation and its screen.
-struct ConversationLinks: View {
-    let source: ConversationSource
-    let title: String
-    let hasConversation: Bool
-
-    var body: some View {
-        VStack(spacing: 0) {
-            if hasConversation {
-                NavigationLink(value: ConversationRef(source: source, title: title)) {
-                    ListRow(symbol: "bubble.left.and.bubble.right", tint: .accentColor, title: "Conversation",
-                            subtitle: nil, trailing: "", first: true)
-                }
-                .accessibilityIdentifier("openConversation")
-            }
-            NavigationLink(value: ConversationRef(source: source, title: title, screen: true)) {
-                ListRow(symbol: "terminal", tint: .accentColor, title: "Screen",
-                        subtitle: nil, trailing: "", first: !hasConversation)
-            }
-            .accessibilityIdentifier("openScreen")
-        }
-        .buttonStyle(.plain)
-        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 }
 
@@ -528,7 +336,7 @@ struct ConversationSkeleton: View {
                 RoundedRectangle(cornerRadius: 12).frame(height: 38)
             }
         }
-        .foregroundStyle(Color(.systemFill))
+        .foregroundStyle(Ink.fill)
         .opacity(dim ? 0.45 : 1)
         .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: dim)
         .onAppear { dim = true }
@@ -545,8 +353,8 @@ struct Waiting: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            if busy { ProgressView() } else { Image(systemName: symbol).font(.title2).foregroundStyle(.secondary) }
-            Text(text).font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            if busy { ProgressView() } else { Image(systemName: symbol).font(.title2).foregroundStyle(Ink.mut) }
+            Text(text).font(Face.sub).foregroundStyle(Ink.mut).multilineTextAlignment(.center)
         }
         .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -563,9 +371,10 @@ struct EntryRow: View {
         case .user(let item), .note(let item): ItemRow(item: item)
         case .reply(let item):
             VStack(alignment: .leading, spacing: 6) {
-                Text([speaker, item.at.flatMap(Turns.time)].compactMap { $0 }.joined(separator: " · "))
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                Text([speaker, item.at.flatMap(Turns.time)].compactMap { $0 }.joined(separator: " · ").uppercased())
+                    .font(Face.section)
+                    .tracking(0.84)
+                    .foregroundStyle(Ink.mut)
                 MarkdownText(text: item.text ?? "")
             }
             .padding(.top, 4)
@@ -583,26 +392,25 @@ struct WorkRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button { withAnimation(.snappy) { expanded.toggle() } } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                        .font(.caption2.weight(.semibold))
-                        .frame(width: 14)
-                    if work.running { ProgressView().controlSize(.mini) }
+                HStack(spacing: 8) {
+                    if work.running { StatusGlyph(glyph: .work, size: 14) } else { Chevron(down: expanded).frame(width: 14) }
                     Text(line).lineLimit(1)
                     Spacer(minLength: 0)
                 }
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .frame(minHeight: 36)
+                .font(Face.sub)
+                .foregroundStyle(work.running ? Ink.ac : Ink.sub)
+                .frame(minHeight: 44)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityHint(expanded ? "Hides the steps" : "Shows the \(work.items.count) steps")
             if expanded {
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 10) {
                     ForEach(work.items, id: \.id) { ItemRow(item: $0) }
                 }
-                .padding(.leading, 20)
+                .padding(.leading, 16)
+                .overlay(alignment: .leading) { Rectangle().fill(Ink.line).frame(width: 1.5) }
+                .padding(.leading, 8)
                 .padding(.top, 2)
                 .padding(.bottom, 6)
             }
@@ -615,10 +423,10 @@ struct WorkRow: View {
         for tag in work.tags {
             out += AttributedString(" · ")
             var t = AttributedString(tag.text)
-            if tag.tone == .good { t.foregroundColor = .done } else if tag.tone == .bad { t.foregroundColor = .red }
+            if tag.tone == .good { t.foregroundColor = Ink.ok } else if tag.tone == .bad { t.foregroundColor = Ink.bad }
             out += t
-            if let added = tag.added { var a = AttributedString(" +\(added)"); a.foregroundColor = .done; out += a }
-            if let removed = tag.removed, removed > 0 { var r = AttributedString(" −\(removed)"); r.foregroundColor = .red; out += r }
+            if let added = tag.added { var a = AttributedString(" +\(added)"); a.foregroundColor = Ink.ok; out += a }
+            if let removed = tag.removed, removed > 0 { var r = AttributedString(" −\(removed)"); r.foregroundColor = Ink.bad; out += r }
         }
         return out
     }
@@ -643,23 +451,15 @@ struct TagChip: View {
     var body: some View {
         HStack(spacing: 3) {
             Text(tag.text)
-            if let added = tag.added { Text("+\(added)").foregroundStyle(Color.done) }
-            if let removed = tag.removed, removed > 0 { Text("−\(removed)").foregroundStyle(.red) }
+            if let added = tag.added { Text("+\(added)").foregroundStyle(Ink.ok) }
+            if let removed = tag.removed, removed > 0 { Text("−\(removed)").foregroundStyle(Ink.bad) }
         }
-        .font(.caption)
+        .font(Face.geist(13, .medium, relativeTo: .footnote))
         .lineLimit(1)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 3)
-        .background(background, in: Capsule())
-        .foregroundStyle(tag.tone == .good ? Color.done : tag.tone == .bad ? Color.red : Color.primary)
-    }
-
-    private var background: Color {
-        switch tag.tone {
-        case .good: Color.done.opacity(0.14)
-        case .bad: Color.red.opacity(0.12)
-        case .plain: Color(.tertiarySystemFill)
-        }
+        .padding(.horizontal, 10)
+        .frame(height: 28)
+        .background(Ink.fill, in: Capsule())
+        .foregroundStyle(tag.tone == .good ? Ink.ok : tag.tone == .bad ? Ink.bad : Ink.sub)
     }
 }
 
@@ -671,25 +471,15 @@ struct ItemRow: View {
     var body: some View {
         switch item.kind {
         case "user":
-            Text(item.text ?? "")
-                .font(.system(size: 15))
-                .lineSpacing(3)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(Color.accentColor, in: UnevenRoundedRectangle(
-                    topLeadingRadius: 18, bottomLeadingRadius: 18, bottomTrailingRadius: 4, topTrailingRadius: 18, style: .continuous))
-                .foregroundStyle(.white)
-                .frame(maxWidth: .infinity, alignment: .trailing)
-                .padding(.leading, 56)
-                .textSelection(.enabled)
+            MeBubble(text: item.text ?? "")
         case "assistant":
             MarkdownText(text: item.text ?? "")
         case "tool":
             tool
         default:
             Text(item.text ?? "")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(Face.meta)
+                .foregroundStyle(Ink.mut)
                 .frame(maxWidth: .infinity)
                 .multilineTextAlignment(.center)
         }
@@ -701,18 +491,18 @@ struct ItemRow: View {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Image(systemName: Self.icon(item.tool ?? ""))
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Ink.mut)
                         .frame(width: 18)
                     Text(item.text ?? item.tool ?? "Tool")
-                        .font(.subheadline)
-                        .foregroundStyle(.primary)
+                        .font(Face.sub)
+                        .foregroundStyle(Ink.sub)
                         .lineLimit(expanded ? nil : 2)
                         .multilineTextAlignment(.leading)
                     Spacer(minLength: 4)
                     if !item.done {
                         ProgressView().controlSize(.mini)
                     } else if item.failed {
-                        Image(systemName: "xmark.circle.fill").foregroundStyle(.red).font(.footnote)
+                        Image(systemName: "xmark.circle.fill").foregroundStyle(Ink.bad).font(.footnote)
                     }
                 }
                 .contentShape(Rectangle())
@@ -724,9 +514,6 @@ struct ItemRow: View {
                 if let output = item.output { CodeBox(title: item.failed ? "Failed" : "Result", text: output.isEmpty ? "(nothing)" : output) }
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     static func icon(_ tool: String) -> String {
@@ -752,11 +539,11 @@ struct CodeBox: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary).textCase(.uppercase)
+            Text(title.uppercased()).font(Face.section).tracking(0.84).foregroundStyle(Ink.mut)
             ScrollView(.horizontal, showsIndicators: false) {
                 Text(text)
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(Color(white: 0.9))
+                    .font(Face.mono(12))
+                    .foregroundStyle(Ink.codeText)
                     .fixedSize(horizontal: true, vertical: false)
                     .padding(10)
                     .textSelection(.enabled)
@@ -772,13 +559,13 @@ struct StatusLine: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            if status.text == "Working" || status.text == "Sent" { ProgressView().controlSize(.small) } else { Image(systemName: status.symbol) }
+            StatusGlyph(glyph: status.glyph, size: 14)
             Text(status.text)
+            Spacer(minLength: 0)
         }
-        .font(.footnote.weight(.medium))
+        .font(Face.geist(13.5, .medium, relativeTo: .footnote))
         .foregroundStyle(status.color)
-        .frame(maxWidth: .infinity)
-        .padding(.top, 4)
+        .frame(minHeight: 44)
     }
 }
 
@@ -791,13 +578,13 @@ struct TerminalView: View {
     var body: some View {
         Group {
             if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Text("The screen is blank.").font(.subheadline).foregroundStyle(Color(white: 0.6))
+                Text("The screen is blank.").font(Face.sub).foregroundStyle(Ink.codeDim)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ZoomableText(text: text, ansi: ansi)
             }
         }
-        .background(Color.codeBackground)
+        .background(Ink.term)
         .accessibilityIdentifier("terminal")
     }
 }
@@ -929,27 +716,27 @@ struct MarkdownText: View {
     let text: String
     var tone: ReplyTone = .answer
     // Smaller than the system body, so a phone line holds ~55 characters; it still follows Dynamic Type.
-    @ScaledMetric(relativeTo: .subheadline) private var answerSize: CGFloat = 15
-    @ScaledMetric(relativeTo: .subheadline) private var progressSize: CGFloat = 14
+    @ScaledMetric(relativeTo: .body) private var answerSize: CGFloat = 16
+    @ScaledMetric(relativeTo: .subheadline) private var progressSize: CGFloat = 14.5
     @ScaledMetric(relativeTo: .headline) private var headingSize: CGFloat = 16
     @ScaledMetric(relativeTo: .footnote) private var sectionSize: CGFloat = 13
 
     var body: some View {
         let answer = tone == .answer
         let size = answer ? answerSize : progressSize
-        let color = answer ? Color.replyText : Color.secondary
+        let color = answer ? Color.replyText : Ink.sub
         VStack(alignment: .leading, spacing: 0) {
             ForEach(Array(Markdown.blocks(text).enumerated()), id: \.offset) { i, block in
                 Group {
                     switch block {
                     case .paragraph(let t):
-                        Text(Self.inline(t, size: size, strong: answer ? .primary : nil)).foregroundStyle(color)
+                        Text(Self.inline(t, size: size, strong: answer ? Ink.ink : nil)).foregroundStyle(color)
                     case .heading(let level, let h):
                         if answer && level <= 2 {
-                            Text(Self.inline(h, size: headingSize)).font(.system(size: headingSize, weight: .semibold)).lineSpacing(2)
+                            Text(Self.inline(h, size: headingSize)).font(Face.fixed(headingSize, .semibold)).lineSpacing(2)
                         } else {
                             Text(Self.inline(h.uppercased(), size: sectionSize))
-                                .font(.system(size: sectionSize, weight: .semibold)).tracking(0.4).foregroundStyle(.secondary)
+                                .font(Face.fixed(sectionSize, .medium)).tracking(0.8).foregroundStyle(Ink.mut)
                         }
                     case .list(let items):
                         VStack(alignment: .leading, spacing: 4) {
@@ -957,9 +744,9 @@ struct MarkdownText: View {
                                 let bullet = item.marker == "•"
                                 HStack(alignment: .firstTextBaseline, spacing: 0) {
                                     Text(bullet && item.level > 0 ? "◦" : item.marker)
-                                        .foregroundStyle(.secondary)
+                                        .foregroundStyle(Ink.mut)
                                         .frame(width: bullet ? 14 : 22, alignment: .leading)
-                                    Text(Self.inline(item.text, size: size, strong: answer ? .primary : nil))
+                                    Text(Self.inline(item.text, size: size, strong: answer ? Ink.ink : nil))
                                         .foregroundStyle(item.level > 0 && answer ? Color.replyDim : color)
                                         .frame(maxWidth: .infinity, alignment: .leading)
                                 }
@@ -969,11 +756,11 @@ struct MarkdownText: View {
                     case .code(let c): CodeBox(title: "", text: c)
                     case .table(let t):
                         if let table = MarkdownTable.parse(t) { TableView(table: table) } else { Text(t).foregroundStyle(color) }
-                    case .rule: Divider().padding(.vertical, 4)
+                    case .rule: Hairline().padding(.vertical, 4)
                     }
                 }
-                .font(.system(size: size))
-                .lineSpacing(answer ? 4 : 3)
+                .font(Face.fixed(size))
+                .lineSpacing(answer ? 5 : 3)
                 .padding(.top, i == 0 ? 0 : Self.isHeading(block) ? 14 : 8)
             }
         }
@@ -988,17 +775,17 @@ struct MarkdownText: View {
 
     /// Bold brighter, code smaller and monospaced on a quiet tint, links in the accent.
     /// `strong`: bold's colour; nil keeps the text's own, as in a note.
-    static func inline(_ s: String, size: CGFloat = 15, strong: Color? = .primary) -> AttributedString {
+    static func inline(_ s: String, size: CGFloat = 15, strong: Color? = Ink.ink) -> AttributedString {
         var out = (try? AttributedString(markdown: s, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(s)
         var code: [Range<AttributedString.Index>] = []
         for run in out.runs {
             guard let intent = run.inlinePresentationIntent else { continue }
             if intent.contains(.code) {
-                out[run.range].font = .system(size: size - 2, design: .monospaced)
+                out[run.range].font = Face.fixed(size - 2, mono: true)
                 out[run.range].backgroundColor = .codeFill
                 code.append(run.range)
             } else if intent.contains(.stronglyEmphasized) {
-                out[run.range].font = .system(size: size, weight: .semibold)
+                out[run.range].font = Face.fixed(size, .semibold)
                 if let strong { out[run.range].foregroundColor = strong }
             }
         }

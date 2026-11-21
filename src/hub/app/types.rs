@@ -165,6 +165,61 @@ impl Machine {
     }
 }
 
+/// Where a new session on one machine opens, and what the New session screen may choose.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct StartOptions {
+    pub machine_id: String,
+    /// `hc` (the Herdr app) or `herdr` (a Herdr terminal session): where a start with no
+    /// `backend` opens now. Absent when the machine's runner is too old to say.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    pub default: Option<String>,
+    /// One entry per backend, `hc` first.
+    pub backends: Vec<BackendOption>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct BackendOption {
+    /// `hc` or `herdr`.
+    pub backend: String,
+    pub available: bool,
+    /// Why it can't be chosen: `not_answering` (the Herdr app isn't open there), `not_followed`
+    /// (its runner follows no Herdr app) or `runner_too_old` (its runner can't be told).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    pub reason: Option<String>,
+}
+
+impl StartOptions {
+    pub fn of(machine_id: String, o: Option<crate::proto::StartOptions>) -> Self {
+        let Some(o) = o else {
+            let too_old = |b: &str| BackendOption {
+                backend: b.into(),
+                available: false,
+                reason: Some("runner_too_old".into()),
+            };
+            return Self {
+                machine_id,
+                default: None,
+                backends: vec![too_old("hc"), too_old("herdr")],
+            };
+        };
+        Self {
+            machine_id,
+            default: Some(o.default.as_str().into()),
+            backends: o
+                .backends
+                .into_iter()
+                .map(|b| BackendOption {
+                    backend: b.backend.as_str().into(),
+                    available: b.available,
+                    reason: b.reason,
+                })
+                .collect(),
+        }
+    }
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 pub struct Approval {
     pub id: String,
@@ -296,6 +351,14 @@ pub struct Session {
     /// The Herdr session it runs in; `herdr session attach <name>` opens it on the machine.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub herdr_session: Option<String>,
+    /// `herdr` for a Herdr TUI session, `hc` for one in the Herdr app. Older hubs leave it out.
+    #[schema(required = false)]
+    pub backend: String,
+    /// The Herdr app space, or Herdr workspace, its agent was last seen in, as in `AgentView`.
+    /// Untrusted text. Absent until the hub has seen it, and from older hubs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    pub space: Option<String>,
     pub pending_approvals: Vec<Approval>,
 }
 
@@ -321,7 +384,9 @@ impl From<SessionView> for Session {
             muted: s.muted,
             notifies: s.notifies,
             start_commit: s.start_commit,
+            backend: backend(s.herdr_session.as_deref()).into(),
             herdr_session: s.herdr_session,
+            space: s.space,
         }
     }
 }
@@ -356,6 +421,11 @@ pub struct StartRequest {
     pub notify: bool,
     /// Required: a lost response can be looked up, or retried, by this id.
     pub request_id: String,
+    /// Where it opens on the machine: `hc` for the Herdr app, `herdr` for a Herdr terminal
+    /// session. Omitted, the machine's runner chooses as it always has. A choice the machine
+    /// can't serve fails with `backend_unavailable`; it never falls back or moves machine.
+    #[serde(default)]
+    pub backend: Option<String>,
 }
 
 fn yes() -> bool {
@@ -465,6 +535,195 @@ pub struct ChangedFile {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(nullable = false)]
     pub deleted: Option<u64>,
+    /// A binary file: its diff shows its size only. Absent means false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub binary: bool,
+    /// Bytes, for a binary file still in the worktree.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    pub size: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct ActivityQuery {
+    /// Unix ms: when this phone last had the app open.
+    pub since: i64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AwayFactView {
+    /// Unix ms.
+    pub at: i64,
+    /// `started`, `working`, `finished`, `waiting`, `error`, `asked`, `allowed` or `denied`.
+    pub kind: String,
+    /// Masked.
+    pub text: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AwayAgentView {
+    pub machine_id: String,
+    /// Its Herdr name.
+    pub agent: String,
+    pub session_id: Option<String>,
+    /// Now: `waiting`, `error`, `working` or `idle`, when the hub has seen it.
+    pub state: Option<String>,
+    /// Oldest first.
+    pub facts: Vec<AwayFactView>,
+    /// The first line of the last thing it said, masked.
+    pub last_reply: Option<String>,
+}
+
+/// What agents did since a time, from facts the hub records; no model involved.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct Activity {
+    pub since: i64,
+    /// Unix ms, the hub's clock.
+    pub now: i64,
+    /// Who needs you first, then the most recent.
+    pub agents: Vec<AwayAgentView>,
+    /// The owner turned on the `claude -p` summary.
+    pub summary_on: bool,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct SummaryRequest {
+    pub since: i64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SummaryResponse {
+    /// Masked.
+    pub summary: String,
+}
+
+/// "While you were away" choices, kept on the hub.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct AwaySettingsView {
+    /// Summarise with `claude -p` on the owner's Claude account, every tool off. Off by default.
+    pub summary: bool,
+    /// The model it uses, e.g. `haiku`.
+    pub model: String,
+}
+
+/// A button on a finished agent that asks it to run one of its own skills.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ShipButtonView {
+    /// As the agent runs it: `/pr` for Claude Code, `$pr` for a Codex skill. A bare name gets `/`.
+    pub skill: String,
+    pub label: String,
+    /// Shown only once the agent's reply names a pull request.
+    #[serde(default)]
+    pub after_pr: bool,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ShipScope {
+    pub project: String,
+    pub buttons: Vec<ShipButtonView>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ShipButtons {
+    /// For every project without its own list. The first that isn't after-PR is the main one.
+    pub all: Vec<ShipButtonView>,
+    /// Projects with their own list, which replaces `all` there.
+    pub projects: Vec<ShipScope>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct SetShipButtonsRequest {
+    /// `*` for all projects, or a project id.
+    pub scope: String,
+    /// In order; an empty list removes a project's own list.
+    pub buttons: Vec<ShipButtonView>,
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct DiffQuery {
+    /// A path from the session's Changes, as listed.
+    pub path: String,
+    /// The first hunk to return: 0, or an earlier page's `next`.
+    #[serde(default)]
+    pub from: u32,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DiffLineView {
+    /// `" "` unchanged, `"+"` added or `"-"` deleted.
+    pub kind: String,
+    /// Its number in the old file; absent for an added line.
+    pub old: Option<u32>,
+    /// Its number in the new file; absent for a deleted line.
+    pub new: Option<u32>,
+    /// Masked.
+    pub text: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DiffHunkView {
+    /// The `@@ -a,b +c,d @@` line, masked.
+    pub header: String,
+    pub old_start: u32,
+    pub new_start: u32,
+    /// With up to 25 unchanged lines around each change; the app folds long runs.
+    pub lines: Vec<DiffLineView>,
+    /// The hunk was too long for one page and is cut short.
+    pub cut: bool,
+}
+
+/// A page of one changed file's unified diff since the session started. Read-only, masked.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct FileDiffView {
+    pub path: String,
+    pub binary: bool,
+    /// Bytes, for a binary file.
+    pub size: Option<u64>,
+    pub added: Option<u64>,
+    pub deleted: Option<u64>,
+    pub hunk_count: u32,
+    pub hunks: Vec<DiffHunkView>,
+    /// Pass as `from` for the next page; absent on the last.
+    pub next: Option<u32>,
+    /// The file is the kind that holds secrets (an env file or a key), so nothing of it is shown.
+    pub withheld: bool,
+}
+
+impl From<crate::hub::service::FileDiff> for FileDiffView {
+    fn from(d: crate::hub::service::FileDiff) -> Self {
+        Self {
+            path: d.path,
+            binary: d.binary,
+            size: d.size,
+            added: d.added,
+            deleted: d.deleted,
+            hunk_count: d.hunk_count,
+            hunks: d
+                .hunks
+                .into_iter()
+                .map(|h| DiffHunkView {
+                    header: h.header,
+                    old_start: h.old_start,
+                    new_start: h.new_start,
+                    lines: h
+                        .lines
+                        .into_iter()
+                        .map(|l| DiffLineView {
+                            kind: l.kind,
+                            old: l.old,
+                            new: l.new,
+                            text: l.text,
+                        })
+                        .collect(),
+                    cut: h.cut,
+                })
+                .collect(),
+            next: d.next,
+            withheld: d.withheld,
+        }
+    }
 }
 
 /// Part of an agent's conversation, read from its own log; Claude agents only. Untrusted text,
@@ -621,6 +880,8 @@ impl From<ChangesResult> for Changes {
                     path: f.path,
                     added: f.added,
                     deleted: f.deleted,
+                    binary: f.binary,
+                    size: f.size,
                 })
                 .collect(),
             truncated: c.truncated,
@@ -796,6 +1057,19 @@ pub struct AgentView {
     /// The label of the Herdr workspace (space) it runs in. Untrusted text.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub space: Option<String>,
+    /// `herdr` for a Herdr TUI agent, `hc` for one in the Herdr app, named `hc/<agent>`. Older
+    /// hubs leave it out.
+    #[schema(required = false)]
+    pub backend: String,
+}
+
+/// Which Herdr hosts an agent, from the session it runs in.
+pub fn backend(herdr_session: Option<&str>) -> &'static str {
+    if herdr_session == Some(crate::proto::CORE_SERVER) {
+        "hc"
+    } else {
+        "herdr"
+    }
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -859,6 +1133,11 @@ pub struct EndedAgent {
     /// Its last terminal title. Untrusted text.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// The Herdr workspace or Herdr app space it last ran in, as in `AgentView`. Untrusted
+    /// text. Absent for one that ended before spaces were recorded, and from older hubs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    pub space: Option<String>,
     /// When the hub first saw it, in milliseconds.
     pub started_at: i64,
     pub ended_at: i64,
@@ -872,6 +1151,7 @@ impl From<SeenAgentRecord> for EndedAgent {
             herdr_session: a.herdr_session,
             kind: a.kind,
             title: a.title,
+            space: a.space,
             started_at: a.first_seen,
             ended_at: a.ended_at.unwrap_or(a.last_seen),
         }
@@ -1080,6 +1360,88 @@ pub struct PushTokenRequest {
     pub provider: Option<PushProviderKind>,
 }
 
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct LiveRegistrationRequest {
+    /// iOS: the P-256 key-agreement key boards are sealed to, SEC1 uncompressed, base64url.
+    #[serde(default)]
+    pub live_key: Option<String>,
+    /// iOS 17.2 and later: the push-to-start token, as hex.
+    #[serde(default)]
+    pub start_token: Option<String>,
+    /// iOS: the running card's update token, as hex; null when no card is running.
+    #[serde(default)]
+    pub activity_token: Option<String>,
+    /// Unix seconds the running card started.
+    #[serde(default)]
+    pub activity_started_at: Option<i64>,
+    /// When the card shows; `working` when absent.
+    #[serde(default)]
+    #[schema(nullable = false)]
+    pub mode: Option<LiveMode>,
+}
+
+/// When a phone's lock-screen card shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum LiveMode {
+    /// While something works or waits; it ends fifteen minutes after everything is idle.
+    Working,
+    /// Always, with "All quiet" when nothing runs. iOS renews it before its eight-hour limit.
+    Always,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct LiveWaitingView {
+    /// The agent's Herdr name.
+    pub name: String,
+    pub space: Option<String>,
+    /// Unix seconds it has waited since.
+    pub since: i64,
+    /// It stopped on an error rather than asking.
+    pub error: bool,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct LiveBoardView {
+    /// Unix seconds the board was built.
+    pub at: i64,
+    /// Longest wait first, at most two.
+    pub waiting: Vec<LiveWaitingView>,
+    /// How many more wait.
+    pub more: u32,
+    pub running: Vec<String>,
+    /// Running agents beyond the named ones.
+    pub running_more: u32,
+    pub idle: u32,
+    /// An agent that finished within the last minute.
+    pub finished: Option<String>,
+    pub finished_at: Option<i64>,
+}
+
+impl From<crate::live::Board> for LiveBoardView {
+    fn from(b: crate::live::Board) -> Self {
+        Self {
+            at: b.at,
+            waiting: b
+                .waiting
+                .into_iter()
+                .map(|w| LiveWaitingView {
+                    name: w.name,
+                    space: w.space,
+                    since: w.since,
+                    error: w.error,
+                })
+                .collect(),
+            more: b.more,
+            running: b.running,
+            running_more: b.running_more,
+            idle: b.idle,
+            finished: b.finished,
+            finished_at: b.finished_at,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum PushProviderKind {
@@ -1111,6 +1473,26 @@ pub struct Dialog {
     /// `hook_pending`, `hook_failed`, `not_blocked` or `answered`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// When the agent asked several questions together: one per question, in order, to show as
+    /// tabs. Claude's ends with its `Submit` tab. Empty otherwise, and absent from older hubs.
+    #[serde(default)]
+    pub steps: Vec<DialogStep>,
+    /// The group's previous question can be shown again, with `/agents/dialog/back`. Absent
+    /// from older hubs.
+    #[serde(default)]
+    pub can_go_back: bool,
+}
+
+/// One question of a group asked together.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DialogStep {
+    /// The agent's short name for the question, or its number.
+    pub label: String,
+    /// It has an answer already. Codex doesn't say, so its steps are never marked.
+    pub answered: bool,
+    /// The dialog shows this one now. Claude marks its open tab only in colour, so there it is
+    /// the first unanswered question, and no step is marked when that can't be told.
+    pub current: bool,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -1123,6 +1505,10 @@ pub struct DialogOption {
     pub is_deny: bool,
     /// It may be chosen from the phone; the others are shown for context.
     pub offered: bool,
+    /// It answers one question of a group and submits nothing, so it needs no signature either.
+    /// The choice that submits the group is signed. Absent from older hubs.
+    #[serde(default)]
+    pub provisional: bool,
 }
 
 impl From<DialogView> for Dialog {
@@ -1143,12 +1529,23 @@ impl From<DialogView> for Dialog {
                     label_sha256: o.label_sha256,
                     is_deny: o.is_deny,
                     offered: o.offered,
+                    provisional: o.provisional,
                 })
                 .collect(),
             selected: d.selected,
             occurrence_id: d.occurrence,
             answerable: d.answerable,
             reason: d.reason,
+            steps: d
+                .steps
+                .into_iter()
+                .map(|s| DialogStep {
+                    label: s.label,
+                    answered: s.answered,
+                    current: s.current,
+                })
+                .collect(),
+            can_go_back: d.back,
         }
     }
 }
@@ -1208,6 +1605,25 @@ pub struct DialogAnswerRequest {
     pub message_version: Option<u32>,
 }
 
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct DialogBackRequest {
+    pub machine_id: String,
+    pub agent: String,
+    /// The dialog being shown, so a stale tap moves nothing.
+    pub occurrence_id: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DialogBackResponse {
+    /// `moved`: the previous question shows.
+    pub outcome: String,
+    /// The dialog now showing, which saves reading it again. Absent when the hub's runner didn't
+    /// say; read the dialog then.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    pub dialog: Option<Dialog>,
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 pub struct DialogAnswerResponse {
     /// `answered`: the dialog closed after the Enter.
@@ -1215,6 +1631,11 @@ pub struct DialogAnswerResponse {
     pub operation_id: String,
     /// Already answered with this request id; nothing was sent again.
     pub replayed: bool,
+    /// The dialog the screen shows after the answer, such as the next question of a group, which
+    /// saves reading it again. Absent when nothing shows, on a replay, and from older hubs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    pub next: Option<Dialog>,
 }
 
 /// What a `waiting` push named.
@@ -1231,4 +1652,9 @@ pub struct Attention {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(nullable = false)]
     pub dialog: Option<Dialog>,
+    /// Whether the agent now under `agent` is the one that asked. False once it ended or another
+    /// agent took the name, so a client shouldn't open it; left out when the hub can't tell.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    pub same_agent: Option<bool>,
 }

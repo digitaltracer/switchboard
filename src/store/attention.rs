@@ -61,6 +61,41 @@ pub(super) fn insert(c: &rusqlite::Connection, a: &AttentionRecord) -> Result<At
 }
 
 impl Store {
+    /// Dialogs recorded since `since`: machine, agent, session and when.
+    pub async fn attention_since(
+        &self,
+        since: i64,
+    ) -> Result<Vec<(String, String, Option<String>, i64)>> {
+        self.call(move |c| {
+            let mut stmt = c.prepare(
+                "SELECT machine_id, agent, session_id, created_at FROM attention
+                 WHERE created_at >= ?1 ORDER BY created_at",
+            )?;
+            let rows = stmt
+                .query_map([since], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    /// Each agent's oldest unresolved, unexpired dialog: machine, agent and when it was recorded.
+    pub async fn open_attention(&self, now: i64) -> Result<Vec<(String, String, i64)>> {
+        self.call(move |c| {
+            let mut stmt = c.prepare(
+                "SELECT machine_id, agent, MIN(created_at) FROM attention
+                 WHERE resolved_at IS NULL AND expires_at > ?1 GROUP BY machine_id, agent",
+            )?;
+            let rows = stmt
+                .query_map([now], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        })
+        .await
+    }
+
     /// Records an attention unless one exists for its agent and occurrence; returns the one kept.
     pub async fn insert_attention(&self, a: AttentionRecord) -> Result<AttentionRecord> {
         self.call(move |c| {

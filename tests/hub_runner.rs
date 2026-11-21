@@ -346,6 +346,7 @@ impl World {
                     agent: Some(Agent::Claude),
                     notify: true,
                     request_id: Some(request_id.into()),
+                    backend: None,
                 },
             )
             .await
@@ -554,6 +555,7 @@ async fn connection_dropped_mid_start_reconciles_without_a_second_agent() {
                 agent: None,
                 notify: true,
                 request_id: Some("rq-2".into()),
+                backend: None,
             },
         )
         .await

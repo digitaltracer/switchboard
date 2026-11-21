@@ -58,13 +58,19 @@ macro_rules! str_enum {
     };
 }
 
+mod activity;
 mod agents;
 mod attention;
 mod devices;
+mod live;
 mod push;
+mod ship;
 
+pub use activity::{AgentEvent, ApprovalFact};
 pub use agents::{SeenAgent, SeenAgentRecord};
 pub use attention::AttentionRecord;
+pub use live::{LiveRegistration, LiveTarget};
+pub use ship::ShipButton;
 
 pub use devices::{
     AnswerProof, ApprovalProof, Challenge, ChallengePurpose, Claim, DeviceRecord, DeviceState,
@@ -129,6 +135,8 @@ pub struct SessionRecord {
     pub herdr_session: Option<String>,
     /// The owner's name for it, given when it was started; `None` shows `<project>-<id>`.
     pub name: Option<String>,
+    /// The space its agent was last seen in; recorded from agent listings, never at insert.
+    pub space: Option<String>,
 }
 
 /// Fields to change on a session; `None` leaves a field as it is. Every update bumps the revision.
@@ -235,6 +243,8 @@ str_enum!(OutboxKind, "kind" {
     Finished => "finished",
     DevicePaired => "device_paired",
     Waiting => "waiting",
+    // The lock-screen card; sent by the live loop, never queued in the outbox.
+    Live => "live",
 });
 
 /// A notification to send, recorded with the change that caused it.
@@ -623,6 +633,33 @@ impl Store {
         self.call(
             |c| Ok(c.query_row("SELECT value FROM revisions WHERE id = 1", [], |r| r.get(0))?),
         )
+        .await
+    }
+
+    /// Records the space a session's agent is in; true when it changed, which bumps the revision
+    /// but leaves `updated_at`, since nothing happened to the session.
+    pub async fn set_session_space(&self, machine: &str, id: &str, space: &str) -> Result<bool> {
+        let (machine, id, space) = (machine.to_owned(), id.to_owned(), space.to_owned());
+        self.call(move |c| {
+            let tx = c.transaction()?;
+            let same: Option<bool> = tx
+                .query_row(
+                    "SELECT space IS ?2 FROM sessions WHERE id = ?1 AND machine_id = ?3",
+                    params![id, space, machine],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if same != Some(false) {
+                return Ok(false);
+            }
+            let revision = bump(&tx)?;
+            tx.execute(
+                "UPDATE sessions SET space = ?2, revision = ?3 WHERE id = ?1",
+                params![id, space, revision],
+            )?;
+            tx.commit()?;
+            Ok(true)
+        })
         .await
     }
 
@@ -1352,6 +1389,7 @@ fn raw_session(r: &Row<'_>) -> rusqlite::Result<RawSession> {
             start_commit: r.get("start_commit")?,
             herdr_session: r.get("herdr_session")?,
             name: r.get("name")?,
+            space: r.get("space")?,
         },
         r.get("lifecycle")?,
     ))

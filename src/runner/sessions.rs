@@ -12,8 +12,10 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 
 use super::agents;
+use super::backend::{self, Facts, Read, Server};
 use super::codex::{CodexPane, clear_startup, excerpt};
-use super::dialogs::{self, Answered, HerdrPane, PaneLocks};
+use super::core_watch::{self, Core};
+use super::dialogs::{self, Answered, PaneLocks, ServerPane};
 use super::herdrs::{Herdrs, qualified, split_qualified};
 use super::hooks::{DecideError, HookHub};
 use super::logcache::{self, LogCache};
@@ -22,11 +24,12 @@ use super::{skills, transcript};
 use crate::agents::{claude, codex, hook_command};
 use crate::cli::Agent;
 use crate::herdr::types::{
-    AgentInfo, AgentPromptParams, AgentStartParams, AgentStatus, ReadSource, WorktreeCreateParams,
+    AgentPromptParams, AgentStartParams, AgentStatus, ReadSource, WorktreeCreateParams,
 };
 use crate::herdr::{Client, HerdrError};
 use crate::hook::wire::SecretFile;
 use crate::proto::{ErrorCode, Event, Op, OwnedSession, ProtoError};
+pub use core_start::{CoreStarts, LAUNCHER, SESSION_LABEL};
 
 const AGENT_START_TIMEOUT_MS: u64 = 60_000;
 const PANE_BUSY_RETRY: Duration = Duration::from_millis(500);
@@ -59,6 +62,12 @@ pub struct RunnerSession {
     /// False until the agent has started; a runner that finds a false one undoes the start.
     #[serde(default = "launched_before_this_field")]
     pub launched: bool,
+    /// The herdr-core a session in the Herdr app started on.
+    #[serde(default)]
+    pub core_id: Option<String>,
+    /// Its terminal's identity there, `core:address:pid:created_ms`.
+    #[serde(default)]
+    pub terminal_identity: Option<String>,
 }
 
 /// Tasks saved before `launched` existed were saved only after a complete start.
@@ -102,6 +111,9 @@ pub struct Sessions {
     answered: Arc<Answered>,
     /// Occurrences already reported as waiting.
     waited: Mutex<std::collections::VecDeque<String>>,
+    /// This machine's herdr-core, when the runner follows one.
+    core: std::sync::OnceLock<Arc<Core>>,
+    core_starts: std::sync::OnceLock<CoreStarts>,
 }
 
 /// How long an agent stays blocked before its owner's phones are told it's waiting.
@@ -113,13 +125,17 @@ fn err(code: ErrorCode, message: impl Into<String>) -> ProtoError {
 }
 
 fn herdr_err(e: HerdrError) -> ProtoError {
+    backend_err(e.into())
+}
+
+fn backend_err(e: backend::Error) -> ProtoError {
     let code = if e.outcome_unknown() {
         ErrorCode::OutcomeUnknown
-    } else if e.server_code() == Some("agent_blocked") {
+    } else if e.is_blocked() {
         ErrorCode::AgentBlocked
-    } else if e.server_code() == Some("agent_not_found") {
+    } else if e.is_not_found() {
         ErrorCode::NotFound
-    } else if matches!(e, HerdrError::InvalidArgument(_)) {
+    } else if e.is_invalid_argument() {
         ErrorCode::BadRequest
     } else {
         ErrorCode::Herdr
@@ -180,8 +196,19 @@ impl Sessions {
             pane_locks: PaneLocks::default(),
             answered: Answered::load(cfg.state_dir.join("dialog-answers.json")),
             waited: Mutex::default(),
+            core: std::sync::OnceLock::new(),
+            core_starts: std::sync::OnceLock::new(),
             cfg,
         })
+    }
+
+    /// Follows `core` too; set once, at start.
+    pub fn set_core(&self, core: Arc<Core>) {
+        let _ = self.core.set(core);
+    }
+
+    pub(crate) fn core(&self) -> Option<Arc<Core>> {
+        self.core.get().cloned()
     }
 
     /// The Herdr server a task runs in.
@@ -189,16 +216,83 @@ impl Sessions {
         self.herdrs.client(s.herdr_session.as_deref())
     }
 
+    /// The server a task runs in.
+    pub(crate) fn server_for(&self, s: &RunnerSession) -> Server {
+        match (s.herdr_session.as_deref(), self.core()) {
+            (Some(core_watch::SERVER), Some(core)) => Server::Core(core),
+            _ => Server::herdr(s.herdr_session.clone(), self.herdr_for(s)),
+        }
+    }
+
+    /// What a task's own prompts and reads go to: its terminal's address on core, else its name.
+    pub(crate) fn target_for(s: &RunnerSession) -> &str {
+        match (core_start::is_core(s), &s.pane_id) {
+            (true, Some(address)) => address,
+            _ => &s.agent_name,
+        }
+    }
+
+    /// Every server that answers: the running Herdr sessions, then the core when it's up.
+    async fn servers(&self) -> Vec<Server> {
+        let mut out: Vec<Server> = self
+            .herdrs
+            .running()
+            .await
+            .into_iter()
+            .map(|(name, client)| Server::herdr(name, client))
+            .collect();
+        if let Some(core) = self.core().filter(|c| c.core_id().is_some()) {
+            out.push(Server::Core(core));
+        }
+        out
+    }
+
+    /// A TUI pane showing a core terminal (`hc attach`) is listed once, from the core.
+    async fn attached_to_core(&self, server: &Server, facts: &Facts) -> bool {
+        let Some(client) = server.as_herdr() else {
+            return false;
+        };
+        if self.core().is_none_or(|c| c.core_id().is_none()) {
+            return false;
+        }
+        client
+            .pane_foreground_names(&facts.target)
+            .await
+            .is_ok_and(|names| {
+                names
+                    .iter()
+                    .any(|n| matches!(n.rsplit('/').next(), Some("hc" | "herdr-core")))
+            })
+    }
+
+    /// The server's agents without TUI panes that only show a core terminal.
+    async fn listed(&self, server: &Server) -> backend::Result<Vec<Facts>> {
+        let mut out = Vec::new();
+        for f in server.agents().await? {
+            if !self.attached_to_core(server, &f).await {
+                out.push(f);
+            }
+        }
+        Ok(out)
+    }
+
     /// Where a named agent lives: `<session>/<agent>`, a task's own agent, or the legacy server.
-    fn resolve_agent<'a>(&self, name: &'a str) -> (Client, &'a str, Option<RunnerSession>) {
+    fn resolve_agent<'a>(&self, name: &'a str) -> (Server, &'a str, Option<RunnerSession>) {
         let (session, agent) = split_qualified(name);
         let owned = self.all().into_iter().find(|s| {
             s.agent_name == agent && (session.is_none() || s.herdr_session.as_deref() == session)
         });
         match (session, &owned) {
-            (Some(s), _) => (self.herdrs.client(Some(s)), agent, owned),
-            (None, Some(o)) => (self.herdr_for(o), agent, owned.clone()),
-            (None, None) => (self.herdrs.client(None), agent, None),
+            (Some(core_watch::SERVER), _) if let Some(core) = self.core() => {
+                (Server::Core(core), agent, owned)
+            }
+            (Some(s), _) => (
+                Server::herdr(Some(s.to_owned()), self.herdrs.client(Some(s))),
+                agent,
+                owned,
+            ),
+            (None, Some(o)) => (self.server_for(o), agent, owned.clone()),
+            (None, None) => (Server::herdr(None, self.herdrs.client(None)), agent, None),
         }
     }
 
@@ -210,15 +304,16 @@ impl Sessions {
             .map(|s| (s.agent_name, s.session_id))
             .collect();
         let mut out = Vec::new();
-        for (server, client) in self.herdrs.running().await {
-            let Ok(list) = agents::list(&client, &names).await else {
+        for server in self.servers().await {
+            let Ok(facts) = self.listed(&server).await else {
                 continue;
             };
-            for mut a in list {
+            let name = server.name().map(str::to_owned);
+            for mut a in agents::summaries(facts, &names) {
                 if a.session_id.is_none() {
-                    a.name = qualified(server.as_deref(), &a.name);
+                    a.name = qualified(name.as_deref(), &a.name);
                 }
-                a.herdr_session = server.clone();
+                a.herdr_session = name.clone();
                 out.push(a);
             }
         }
@@ -231,14 +326,15 @@ impl Sessions {
         let tasks = self.all();
         let mut out = Vec::new();
         let mut logs = std::collections::HashSet::new();
-        for (server, client) in self.herdrs.running().await {
-            let Ok(snap) = client.session_snapshot().await else {
+        for srv in self.servers().await {
+            let Ok(facts) = self.listed(&srv).await else {
                 continue;
             };
-            let panes = snap.agents.iter().map(|a| a.pane_id.clone()).collect();
-            self.logs.retain(client.socket(), &panes);
-            for info in snap.agents {
-                let local = info.name.clone().unwrap_or_else(|| info.pane_id.clone());
+            let server = srv.name().map(str::to_owned);
+            let panes = facts.iter().map(|a| a.target.clone()).collect();
+            self.logs.retain(srv.socket(), &panes);
+            for info in facts {
+                let local = info.local_name();
                 let task = tasks.iter().find(|s| s.agent_name == local);
                 let name = match task {
                     Some(_) => local.clone(),
@@ -247,8 +343,8 @@ impl Sessions {
                 let owned = task
                     .filter(|s| server.is_none() || s.herdr_session == server)
                     .cloned();
-                let line = match info.agent.as_deref() {
-                    Some("claude" | "codex") => match self.log_for(&client, owned, info).await {
+                let line = match info.kind.as_deref() {
+                    Some("claude" | "codex") => match self.log_for(&srv, owned, info).await {
                         Ok(found) => {
                             logs.insert(found.log.clone());
                             let cache = self.logs.clone();
@@ -422,6 +518,7 @@ impl Sessions {
                 agent,
                 prompt,
                 deny_patterns,
+                backend,
             } => {
                 self.start(StartRequest {
                     session_id,
@@ -431,6 +528,7 @@ impl Sessions {
                     agent,
                     prompt,
                     deny_patterns,
+                    backend,
                 })
                 .await
             }
@@ -458,6 +556,7 @@ impl Sessions {
                 };
                 self.answer(&agent, &req).await
             }
+            Op::Back { agent, occurrence } => self.back(&agent, &occurrence).await,
             Op::Stop {
                 session_id,
                 remove_worktree_if_clean,
@@ -475,6 +574,9 @@ impl Sessions {
             Op::ListSessions => Ok(serde_json::to_value(self.owned().await).expect("serializes")),
             Op::Agents => Ok(serde_json::to_value(self.all_agents().await?).expect("serializes")),
             Op::Activity => Ok(serde_json::to_value(self.activity().await).expect("serializes")),
+            Op::StartOptions => {
+                Ok(serde_json::to_value(self.start_options().await).expect("serializes"))
+            }
             Op::ReadAgent {
                 agent,
                 lines,
@@ -486,21 +588,21 @@ impl Sessions {
                 } else {
                     lines
                 };
-                let (herdr, agent, _) = self.resolve_agent(&agent);
-                let text = agents::read(&herdr, agent, lines, visible)
+                let (server, agent, _) = self.resolve_agent(&agent);
+                let text = agents::read(&server, agent, lines, visible)
                     .await
-                    .map_err(herdr_err)?;
+                    .map_err(backend_err)?;
                 let mut out = json!({ "text": text, "untrusted": true });
                 if visible
                     && ansi
-                    && let Some(screen) = agents::screen_ansi(&herdr, agent).await
+                    && let Some(screen) = agents::screen_ansi(&server, agent).await
                 {
                     out["ansi"] = Value::String(screen);
                 }
                 Ok(out)
             }
             Op::PromptAgent { agent, text } => {
-                let (herdr, name, owned) = self.resolve_agent(&agent);
+                let (server, name, owned) = self.resolve_agent(&agent);
                 // A session's prompts go through its own op, which the hub records and audits.
                 if owned.is_some() {
                     return Err(err(
@@ -508,15 +610,14 @@ impl Sessions {
                         format!("{agent} is a Switchboard session; prompt the session"),
                     ));
                 }
-                let pane = herdr.agent_get(name).await.ok().map(|a| a.pane_id);
-                let server = split_qualified(&agent).0;
+                let pane = server.agent(name).await.ok().map(|a| a.target);
                 let _lock = match &pane {
-                    Some(p) => Some(self.pane_locks.lock(server, p).await),
+                    Some(p) => Some(self.pane_locks.lock(server.name(), p).await),
                     None => None,
                 };
-                let outcome = agents::prompt(&herdr, name, &text)
+                let outcome = agents::prompt(&server, name, &text)
                     .await
-                    .map_err(herdr_err)?;
+                    .map_err(backend_err)?;
                 Ok(serde_json::to_value(outcome).expect("serializes"))
             }
             Op::Transcript {
@@ -533,6 +634,23 @@ impl Sessions {
                         .await
                         .map_err(|e| err(ErrorCode::Internal, e)),
                     _ => Ok(json!({ "files": [], "truncated": false })),
+                }
+            }
+            Op::Summarize { prompt, model } => super::summary::summarize(&prompt, &model)
+                .await
+                .map(|s| json!({ "summary": s }))
+                .map_err(|e| err(ErrorCode::Internal, e)),
+            Op::Diff {
+                session_id,
+                path,
+                from,
+            } => {
+                let s = self.session(&session_id)?;
+                match (&s.worktree_path, &s.start_commit) {
+                    (Some(wt), Some(base)) => super::diff::diff(Path::new(wt), base, &path, from)
+                        .await
+                        .map_err(|e| err(ErrorCode::BadRequest, e)),
+                    _ => Err(err(ErrorCode::BadRequest, "this session has no worktree")),
                 }
             }
         }
@@ -601,25 +719,24 @@ impl Sessions {
     /// An agent's log: a Claude agent's found through the Claude running in its pane, else the
     /// session id Herdr reports; a Codex agent's through its folder.
     async fn find_log(&self, agent: &str) -> Result<Found, ProtoError> {
-        let (herdr, name, owned) = self.resolve_agent(agent);
-        let snap = herdr.session_snapshot().await.map_err(herdr_err)?;
-        let panes = snap.agents.iter().map(|a| a.pane_id.clone()).collect();
-        self.logs.retain(herdr.socket(), &panes);
-        let info = snap
-            .agents
+        let (server, name, owned) = self.resolve_agent(agent);
+        let facts = server.agents().await.map_err(backend_err)?;
+        let panes = facts.iter().map(|a| a.target.clone()).collect();
+        self.logs.retain(server.socket(), &panes);
+        let info = facts
             .into_iter()
-            .find(|a| a.name.as_deref() == Some(name) || a.pane_id == name)
+            .find(|a| a.is(name))
             .ok_or_else(|| err(ErrorCode::NotFound, format!("no agent {agent:?}")))?;
-        self.log_for(&herdr, owned, info).await
+        self.log_for(&server, owned, info).await
     }
 
-    /// The log of the agent Herdr describes as `info`: the cached one while it still holds,
+    /// The log of the agent its server describes as `info`: the cached one while it still holds,
     /// else a full search. Pids are read only for a search.
     async fn log_for(
         &self,
-        herdr: &Client,
+        server: &Server,
         owned: Option<RunnerSession>,
-        info: AgentInfo,
+        info: Facts,
     ) -> Result<Found, ProtoError> {
         let none = || {
             err(
@@ -627,15 +744,15 @@ impl Sessions {
                 "no conversation log for this agent yet",
             )
         };
-        let (kind, cwd) = match info.agent.as_deref() {
-            Some("claude") => ("claude", info.cwd),
+        let (kind, cwd) = match info.kind.as_deref() {
+            Some("claude") => ("claude", info.cwd.clone()),
             // A session's own worktree, else wherever Herdr says the agent runs.
             Some("codex") => (
                 "codex",
                 Some(
                     owned
                         .and_then(|s| s.worktree_path)
-                        .or(info.cwd)
+                        .or(info.cwd.clone())
                         .ok_or_else(none)?,
                 ),
             ),
@@ -647,11 +764,11 @@ impl Sessions {
             }
         };
         let pane = logcache::Pane {
-            server: herdr.socket().to_owned(),
-            pane_id: info.pane_id,
-            terminal_id: info.terminal_id,
+            server: server.socket().to_owned(),
+            pane_id: info.target.clone(),
+            terminal_id: info.identity.clone(),
             kind: kind.to_owned(),
-            reported: info.agent_session.map(|s| s.value),
+            reported: info.reported_session.clone(),
             cwd,
         };
         let blocking = |f: Box<dyn FnOnce() -> Option<Found> + Send>| async move {
@@ -664,10 +781,7 @@ impl Sessions {
             return Ok(found);
         }
         let pids = match kind {
-            "claude" => herdr
-                .pane_foreground_pids(&pane.pane_id)
-                .await
-                .unwrap_or_default(),
+            "claude" => server.pids(&info).await.unwrap_or_default(),
             _ => Vec::new(),
         };
         let logs = self.logs.clone();
@@ -678,15 +792,16 @@ impl Sessions {
 
     /// The skills and commands an agent can run, from its machine's and its repo's folders.
     async fn skills(&self, agent: &str) -> Result<Value, ProtoError> {
-        let (herdr, name, owned) = self.resolve_agent(agent);
-        let snap = herdr.session_snapshot().await.map_err(herdr_err)?;
-        let info = snap
-            .agents
+        let (server, name, owned) = self.resolve_agent(agent);
+        let info = server
+            .agents()
+            .await
+            .map_err(backend_err)?
             .into_iter()
-            .find(|a| a.name.as_deref() == Some(name) || a.pane_id == name)
+            .find(|a| a.is(name))
             .ok_or_else(|| err(ErrorCode::NotFound, format!("no agent {agent:?}")))?;
         let cwd = owned.and_then(|s| s.worktree_path).or(info.cwd);
-        let kind = info.agent.unwrap_or_default();
+        let kind = info.kind.unwrap_or_default();
         let claude_dir = self.cfg.claude_projects.parent().map(Path::to_owned);
         let codex_home = self.cfg.codex_sessions.parent().map(Path::to_owned);
         let list = tokio::task::spawn_blocking(move || match kind.as_str() {
@@ -702,29 +817,37 @@ impl Sessions {
         Ok(json!({ "skills": list }))
     }
 
-    /// An agent's pane for the dialog path: its Herdr server and pane, and the session it
-    /// belongs to, if any.
+    /// An agent's pane for the dialog path: its server and pane, and the session it belongs to,
+    /// if any.
     async fn dialog_pane(&self, agent: &str) -> Result<DialogPane, ProtoError> {
-        let (herdr, name, owned) = self.resolve_agent(agent);
-        let info = herdr.agent_get(name).await.map_err(herdr_err)?;
-        let server = split_qualified(agent)
-            .0
-            .map(str::to_owned)
-            .or_else(|| owned.as_ref().and_then(|s| s.herdr_session.clone()));
-        let pane_id = info.pane_id.clone();
-        // The agent just fetched is what the log is checked against; no second Herdr call.
+        let (srv, name, owned) = self.resolve_agent(agent);
+        let info = srv.agent(name).await.map_err(backend_err)?;
+        let server = srv.name().map(str::to_owned);
+        let pane_id = info.target.clone();
+        // The pane decides whose it is, however it was asked for; on core, only the same process.
+        let owned = self
+            .all()
+            .into_iter()
+            .find(|s| {
+                s.herdr_session == server
+                    && s.pane_id.as_ref() == Some(&pane_id)
+                    && (!core_start::is_core(s) || s.terminal_identity == info.identity)
+            })
+            .or(owned);
+        // The agent just fetched is what the log is checked against; no second server call.
         let log = self
-            .log_for(&herdr, owned.clone(), info)
+            .log_for(&srv, owned.clone(), info)
             .await
             .ok()
             .map(|f| f.log);
         Ok(DialogPane {
-            io: HerdrPane {
-                key: (herdr.socket().to_owned(), pane_id.clone()),
+            io: ServerPane {
+                key: (srv.socket().to_owned(), pane_id.clone()),
                 logs: self.logs.clone(),
-                herdr,
+                server: srv,
                 target: name.to_owned(),
                 log,
+                said: Default::default(),
             },
             pane_id,
             server,
@@ -754,7 +877,8 @@ impl Sessions {
         let refuse = || self.key_refusal(p.owned.as_ref());
         let view = dialogs::view(&seen, &refuse, &self.answered);
         Ok(
-            json!({ "dialog": view, "occurrence": seen.occurrence, "blocked": seen.process.blocked }),
+            json!({ "dialog": view, "occurrence": seen.occurrence, "blocked": seen.process.blocked,
+                    "terminal_id": seen.process.terminal_id }),
         )
     }
 
@@ -765,13 +889,35 @@ impl Sessions {
         let result = dialogs::answer(&p.io, &refuse, &self.answered, req).await;
         let detail = json!({
             "agent": agent, "occurrence": req.occurrence, "option": req.option,
-            "outcome": match &result { Ok(()) => "answered".to_owned(), Err(e) => code_name(e.code) },
+            "outcome": match &result { Ok(_) => "answered".to_owned(), Err(e) => code_name(e.code) },
         });
         tracing::info!(%detail, "dialog answer");
         if let Some(s) = &p.owned {
             self.audit(&s.session_id, "dialog_answer", detail);
         }
-        result.map(|()| json!({ "answered": true }))
+        // The dialog now showing goes back with the answer, so a group's next question needs no
+        // second read.
+        result.map(|after| {
+            json!({ "answered": true, "dialog": dialogs::view(&after, &refuse, &self.answered) })
+        })
+    }
+
+    async fn back(&self, agent: &str, occurrence: &str) -> Result<Value, ProtoError> {
+        let p = self.dialog_pane(agent).await?;
+        let _lock = self.pane_locks.lock(p.server.as_deref(), &p.pane_id).await;
+        let refuse = || self.key_refusal(p.owned.as_ref());
+        let result = dialogs::back(&p.io, &refuse, &self.answered, occurrence).await;
+        let detail = json!({
+            "agent": agent, "occurrence": occurrence,
+            "outcome": match &result { Ok(_) => "moved".to_owned(), Err(e) => code_name(e.code) },
+        });
+        tracing::info!(%detail, "dialog back");
+        if let Some(s) = &p.owned {
+            self.audit(&s.session_id, "dialog_back", detail);
+        }
+        result.map(|after| {
+            json!({ "moved": true, "dialog": dialogs::view(&after, &refuse, &self.answered) })
+        })
     }
 
     /// Once `agent` has just become blocked: if it is still blocked by the same state after the
@@ -873,6 +1019,7 @@ impl Sessions {
             Agent::Codex => Some(self.codex_version().await?),
             Agent::Claude => None,
         };
+        let on_core = self.choose_core(req.backend).await?;
 
         let dir = self.dir(&req.session_id);
         create_private_dir(&dir)
@@ -937,7 +1084,12 @@ impl Sessions {
             start_commit: None,
             herdr_session: None,
             launched: false,
+            core_id: None,
+            terminal_identity: None,
         };
+        if let Some(core) = on_core {
+            return self.start_on_core(session, core, args, req.prompt).await;
+        }
         // Each task gets a Herdr session of its own, named after the project.
         let name = self.herdrs.free_name(&herdr_base, &req.session_id);
         match self.herdrs.create(&name).await {
@@ -1086,16 +1238,14 @@ impl Sessions {
     async fn wait_interactive(&self, s: &RunnerSession) -> Result<(), ProtoError> {
         let deadline = Instant::now() + self.cfg.startup_timeout;
         loop {
-            let snap = self
-                .herdr_for(s)
-                .session_snapshot()
+            let ready = self
+                .server_for(s)
+                .agents()
                 .await
-                .map_err(herdr_err)?;
-            let ready = snap
-                .agents
+                .map_err(backend_err)?
                 .iter()
-                .find(|a| Some(&a.pane_id) == s.pane_id.as_ref())
-                .is_some_and(|a| a.interactive_ready && !a.launch_pending);
+                .find(|a| Some(&a.target) == s.pane_id.as_ref())
+                .is_some_and(|a| a.ready);
             if ready {
                 return Ok(());
             }
@@ -1112,12 +1262,15 @@ impl Sessions {
     /// Closes the workspace of a failed start; the worktree and branch are kept.
     async fn abort(&self, s: &RunnerSession, e: &ProtoError) {
         self.hooks.unregister(&s.session_id);
-        if let Some(ws) = &s.workspace_id
+        if core_start::is_core(s) {
+            self.end_core_terminal(s).await;
+        } else if let Some(ws) = &s.workspace_id
             && let Err(close) = self.herdr_for(s).workspace_close(ws).await
         {
             tracing::warn!(error = %close, "closing workspace of failed start");
         }
         if let Some(name) = &s.herdr_session
+            && !core_start::is_core(s)
             && let Err(stop) = self.herdrs.stop(name).await
         {
             tracing::warn!(error = %stop, "stopping the Herdr session of a failed start");
@@ -1141,44 +1294,31 @@ impl Sessions {
             Some(pane) => Some(self.pane_locks.lock(s.herdr_session.as_deref(), pane).await),
             None => None,
         };
-        let agent = self
-            .herdr_for(&s)
-            .agent_prompt(AgentPromptParams {
-                target: s.agent_name.clone(),
-                text: text.to_owned(),
-                wait: None,
-            })
+        let status = self
+            .server_for(&s)
+            .prompt(Self::target_for(&s), text)
             .await
-            .map_err(herdr_err)?;
+            .map_err(backend_err)?;
         self.audit(
             session_id,
             "prompt",
             json!({ "chars": text.chars().count() }),
         );
-        Ok(json!({ "agent_status": agent.agent_status }))
+        Ok(json!({ "agent_status": status }))
     }
 
     async fn read(&self, session_id: &str, lines: u32) -> Result<Value, ProtoError> {
         let s = self.session(session_id)?;
-        let lines = Some(if lines == 0 {
+        let lines = if lines == 0 {
             DEFAULT_READ_LINES
         } else {
             lines
-        });
-        let herdr = self.herdr_for(&s);
-        // Herdr refuses history reads while an agent sits at a dialog.
-        let read = match herdr
-            .agent_read(&s.agent_name, ReadSource::RecentUnwrapped, lines)
+        };
+        let read = self
+            .server_for(&s)
+            .read(Self::target_for(&s), Read::Recent(lines))
             .await
-        {
-            Err(e) if e.server_code() == Some("agent_not_idle") => {
-                herdr
-                    .agent_read(&s.agent_name, ReadSource::Visible, None)
-                    .await
-            }
-            other => other,
-        }
-        .map_err(herdr_err)?;
+            .map_err(backend_err)?;
         Ok(
             json!({ "text": read.text, "revision": read.revision, "truncated": read.truncated, "untrusted": true }),
         )
@@ -1217,7 +1357,9 @@ impl Sessions {
         self.hooks.unregister(session_id);
         let mut removed = false;
         let mut kept_because = None;
-        if let (Some(ws), Some(path)) = (&s.workspace_id, &s.worktree_path) {
+        if core_start::is_core(&s) {
+            (removed, kept_because) = self.stop_core(&s, remove_if_clean).await;
+        } else if let (Some(ws), Some(path)) = (&s.workspace_id, &s.worktree_path) {
             if remove_if_clean {
                 match worktree_clean_and_merged(Path::new(path), &s.repo_path, &s.branch).await {
                     // A failed removal keeps the worktree; the stop itself still completes.
@@ -1234,6 +1376,7 @@ impl Sessions {
         }
         // The task's own Herdr session stops too; it stays listed, with its worktree kept.
         if let Some(name) = &s.herdr_session
+            && !core_start::is_core(&s)
             && let Err(e) = self.herdrs.stop(name).await
         {
             tracing::warn!(error = %e, herdr_session = name, "stopping the task's Herdr session");
@@ -1280,6 +1423,8 @@ impl Sessions {
             }
         };
         let herdr_session_deleted = match &herdr_session {
+            // A session in the Herdr app has no server of its own.
+            Some(name) if name == core_watch::SERVER => false,
             Some(name) => {
                 self.herdrs.delete(name).await.map_err(|e| {
                     err(
@@ -1307,8 +1452,8 @@ impl Sessions {
         let mut snaps = HashMap::new();
         for s in self.all() {
             if !snaps.contains_key(&s.herdr_session) {
-                let snap = self.herdr_for(&s).session_snapshot().await.ok();
-                snaps.insert(s.herdr_session.clone(), snap);
+                let facts = self.server_for(&s).agents().await.ok();
+                snaps.insert(s.herdr_session.clone(), facts);
             }
         }
         self.all()
@@ -1317,12 +1462,8 @@ impl Sessions {
                 let status = snaps
                     .get(&s.herdr_session)
                     .and_then(Option::as_ref)
-                    .and_then(|snap| {
-                        snap.agents
-                            .iter()
-                            .find(|a| Some(&a.pane_id) == s.pane_id.as_ref())
-                    })
-                    .map_or(AgentStatus::Unknown, |a| a.agent_status);
+                    .and_then(|facts| facts.iter().find(|a| Some(&a.target) == s.pane_id.as_ref()))
+                    .map_or(AgentStatus::Unknown, |a| a.status);
                 let hook_failed = self
                     .hooks
                     .state(&s.session_id)
@@ -1340,7 +1481,7 @@ impl Sessions {
 }
 
 struct DialogPane {
-    io: HerdrPane,
+    io: ServerPane,
     pane_id: String,
     server: Option<String>,
     owned: Option<RunnerSession>,
@@ -1362,6 +1503,8 @@ pub struct StartRequest {
     pub agent: Agent,
     pub prompt: String,
     pub deny_patterns: Vec<String>,
+    /// Overrides `new_sessions` for this start.
+    pub backend: Option<crate::proto::StartBackend>,
 }
 
 fn started_json(s: &RunnerSession) -> Value {
@@ -1468,18 +1611,33 @@ async fn changes(worktree: &Path, base: &str) -> Result<Value, String> {
         .filter_map(|l| {
             let mut f = l.splitn(3, '\t');
             let (added, deleted, path) = (f.next()?, f.next()?, f.next()?);
-            Some(json!({ "path": path, "added": added.parse::<u64>().ok(), "deleted": deleted.parse::<u64>().ok() }))
+            let mut f = json!({ "path": path, "added": added.parse::<u64>().ok(), "deleted": deleted.parse::<u64>().ok() });
+            if added == "-" {
+                f["binary"] = json!(true);
+                f["size"] = json!(file_size(worktree, path));
+            }
+            Some(f)
         })
         .collect();
     let new = git(worktree, &["ls-files", "--others", "--exclude-standard"]).await?;
-    files.extend(
-        String::from_utf8_lossy(&new.stdout)
-            .lines()
-            .map(|path| json!({ "path": path, "added": null, "deleted": null })),
-    );
+    files.extend(String::from_utf8_lossy(&new.stdout).lines().map(|path| {
+        let mut f = json!({ "path": path, "added": null, "deleted": null });
+        if super::diff::looks_binary(&worktree.join(path)) {
+            f["binary"] = json!(true);
+            f["size"] = json!(file_size(worktree, path));
+        }
+        f
+    }));
     let truncated = files.len() > MAX_CHANGED_FILES;
     files.truncate(MAX_CHANGED_FILES);
     Ok(json!({ "files": files, "truncated": truncated }))
+}
+
+/// A changed file's size in the worktree; none once it's deleted.
+fn file_size(worktree: &Path, path: &str) -> Option<u64> {
+    std::fs::symlink_metadata(worktree.join(path))
+        .ok()
+        .map(|m| m.len())
 }
 
 /// The commit a fresh worktree is on; `None` when git can't say.
@@ -1509,6 +1667,9 @@ fn repo_root(dir: &Path) -> PathBuf {
         .unwrap_or(dir)
         .to_owned()
 }
+
+#[path = "core_sessions.rs"]
+mod core_start;
 
 #[cfg(test)]
 #[path = "sessions_tests.rs"]

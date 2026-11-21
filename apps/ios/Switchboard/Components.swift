@@ -3,76 +3,66 @@ import SwitchboardKit
 import UIKit
 
 extension Color {
-    /// Text tints that keep 4.5:1 on light backgrounds and use the system colour in dark mode.
-    static let needs = adaptive(light: UIColor(red: 0.70, green: 0.31, blue: 0, alpha: 1), dark: .systemOrange)
-    static let working = adaptive(light: UIColor(red: 0, green: 0.35, blue: 0.69, alpha: 1), dark: .systemBlue)
-    static let done = adaptive(light: UIColor(red: 0.12, green: 0.49, blue: 0.20, alpha: 1), dark: .systemGreen)
-    static let codeBackground = Color(red: 0.11, green: 0.11, blue: 0.12)
-    /// An agent's reply: a touch softer than labels, for long reading.
-    static let replyText = adaptive(light: UIColor(red: 0.12, green: 0.12, blue: 0.13, alpha: 1), dark: UIColor(red: 0.90, green: 0.90, blue: 0.92, alpha: 1))
+    static let needs = Ink.warn
+    static let working = Ink.ac
+    static let done = Ink.ok
+    static let codeBackground = Ink.code
+    /// An agent's reply.
+    static let replyText = Ink.ink
     /// Nested list items, one step back from a reply's text.
-    static let replyDim = adaptive(light: UIColor(red: 0.28, green: 0.28, blue: 0.29, alpha: 1), dark: UIColor(red: 0.78, green: 0.78, blue: 0.80, alpha: 1))
+    static let replyDim = Ink.sub
     /// Behind inline code.
-    static let codeFill = adaptive(light: UIColor(red: 0.89, green: 0.89, blue: 0.91, alpha: 1), dark: UIColor(red: 0.20, green: 0.20, blue: 0.21, alpha: 1))
-
-    private static func adaptive(light: UIColor, dark: UIColor) -> Color {
-        Color(UIColor { $0.userInterfaceStyle == .dark ? dark : light })
-    }
+    static let codeFill = Ink.fill
 }
 
-/// How a session's state reads at a glance.
+/// How a session's or agent's state reads at a glance: its word and its glyph.
 struct SessionStatus {
     let text: String
-    let color: Color
-    let symbol: String
+    let glyph: Glyph
 
     init(_ s: Schemas.Session) {
         if s.hookFailed {
-            self.init("Stuck", .red, "exclamationmark.triangle")
+            self.init("Stuck", .need)
         } else if !s.pendingApprovals.isEmpty {
-            self.init("Needs you", .needs, "checkmark.shield")
+            self.init("Needs you", .need)
         } else if s.lifecycle == "starting" {
-            self.init("Starting", .secondary, "hourglass")
+            self.init("Starting", .work)
         } else if s.lifecycle != "running" {
-            self.init(s.lifecycle.capitalized, s.lifecycle == "failed" ? .red : .secondary, "stop.circle")
+            self.init(s.lifecycle.capitalized, .end)
         } else if s.machineStatus != "ready" {
-            self.init("\(s.machineId) \(s.machineStatus)", .secondary, "wifi.slash")
+            self.init("\(s.machineId) \(s.machineStatus)", .idle)
         } else {
             self.init(agentStatus: s.agentStatus)
         }
     }
 
-    static let ended = SessionStatus("Ended", .secondary, "moon.zzz")
+    static let ended = SessionStatus("Ended", .end)
     /// A message just went, and the agent hasn't been seen to pick it up yet.
-    static let sent = SessionStatus("Sent", .working, "paperplane")
+    static let sent = SessionStatus("Sent", .work)
 
     init(agentStatus: String) {
         switch agentStatus {
-        case "working": self.init("Working", .working, "waveform.path.ecg")
-        case "blocked": self.init("Blocked", .needs, "pause.circle")
-        case "idle": self.init("Idle", .done, "checkmark.circle")
-        case "done": self.init("Done", .done, "checkmark.circle")
-        default: self.init(agentStatus.capitalized, .secondary, "circle.dashed")
+        case "working": self.init("Working", .work)
+        case "blocked": self.init("Needs you", .need)
+        case "idle": self.init("Idle", .idle)
+        case "done": self.init("Done", .done)
+        case "ended": self.init("Ended", .end)
+        default: self.init(agentStatus.capitalized, .idle)
         }
     }
 
-    private init(_ text: String, _ color: Color, _ symbol: String) {
+    private init(_ text: String, _ glyph: Glyph) {
         self.text = text
-        self.color = color
-        self.symbol = symbol
+        self.glyph = glyph
     }
-}
 
-struct StatusPill: View {
-    let status: SessionStatus
-
-    var body: some View {
-        Text(status.text)
-            .font(.footnote.weight(.semibold))
-            .padding(.horizontal, 9)
-            .frame(height: 24)
-            .background(status.color.opacity(0.14), in: Capsule())
-            .foregroundStyle(status.color)
+    var color: Color {
+        switch glyph {
+        case .need: Ink.warn
+        case .work: Ink.ac
+        case .done: Ink.ok
+        case .idle, .end: Ink.sub
+        }
     }
 }
 
@@ -87,10 +77,23 @@ enum Ago {
         default: return "\(s / 86400)d"
         }
     }
+
+    /// "just now", "12m ago", "6 days ago".
+    static func long(_ ms: Int64, now: Date = Date()) -> String {
+        let s = max(0, Int(now.timeIntervalSince1970) - Int(ms / 1000))
+        switch s {
+        case ..<60: return "just now"
+        case ..<3600: return "\(s / 60)m ago"
+        case ..<86400: return "\(s / 3600)h ago"
+        case ..<172_800: return "yesterday"
+        default: return "\(s / 86400) days ago"
+        }
+    }
 }
 
 /// A pending approval as a card, with its countdown. A permission or plan is approved with Face
 /// ID or denied; a question is answered by picking its options, then sending them with Face ID.
+/// Unanswered at zero, the hub denies it.
 struct ApprovalCard: View {
     @Environment(AppModel.self) private var model
     let approval: Schemas.Approval
@@ -103,80 +106,75 @@ struct ApprovalCard: View {
     @State private var picked: [Int: Set<String>] = [:]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Button { open?() } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: approval.kind == "permission" ? "checkmark.shield" : "questionmark.bubble")
-                        .font(.system(size: 19, weight: .semibold))
-                        .frame(width: 40, height: 40)
-                        .background(Color.needs.opacity(0.14), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-                        .foregroundStyle(Color.needs)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(title).font(.headline).foregroundStyle(.primary).multilineTextAlignment(.leading)
-                        TimelineView(.periodic(from: .now, by: 1)) { _ in
-                            Text("Denied automatically in \(Countdown.text(deadline: approval.deadline, now: Countdown.nowMs()))")
-                                .font(.footnote)
-                                .monospacedDigit()
-                                .foregroundStyle(Color.needs)
-                        }
-                    }
-                    Spacer(minLength: 0)
-                    if open != nil { Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary) }
+        CardBox {
+            HStack(spacing: 10) {
+                StatusGlyph(glyph: .need)
+                Button { open?() } label: {
+                    Text(title)
+                        .font(Face.title)
+                        .foregroundStyle(Ink.ink)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .buttonStyle(.plain)
+                .disabled(open == nil)
             }
-            .buttonStyle(.plain)
-            .disabled(open == nil)
             switch approval.kind {
             case "question":
                 ForEach(Array(approval.questionOptions.enumerated()), id: \.offset) { i, q in
-                    OptionList(
-                        prompt: q.question,
-                        options: q.options.map { OptionItem(id: $0.id, label: $0.label, detail: $0.description) },
-                        selected: picked[i] ?? [],
-                        disabled: busy
-                    ) { o in pick(o.id, in: i, multi: q.multiSelect) }
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(q.question).font(Face.say).foregroundStyle(Ink.ink).fixedSize(horizontal: false, vertical: true)
+                        if q.multiSelect { Note(text: "Pick any that apply.").padding(.top, 4) }
+                        OptionList(
+                            options: q.options.map { OptionItem(id: $0.id, label: $0.label, detail: $0.description) },
+                            selected: picked[i] ?? [],
+                            multi: q.multiSelect,
+                            disabled: busy
+                        ) { o in pick(o.id, in: i, multi: q.multiSelect) }
+                    }
                 }
             case "plan":
-                Text(approval.plan ?? "").font(.callout)
-            default:
-                Text(approval.inputText)
-                    .font(.system(.callout, design: .monospaced))
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 12)
-                    .background(Color.codeBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .textSelection(.enabled)
-            }
-            if let result { Text(result).font(.footnote).foregroundStyle(.secondary) }
-            HStack(spacing: 10) {
-                Button { Task { await deny() } } label: {
-                    Text("Deny").frame(maxWidth: .infinity, minHeight: 50)
-                        .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                        .foregroundStyle(.primary)
+                ScrollView {
+                    MarkdownText(text: approval.plan ?? "").frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .accessibilityIdentifier("deny-\(approval.id)")
+                .frame(maxHeight: 260)
+            default:
+                CodeBlock(text: approval.inputText, wraps: approval.inputText.count > 60)
+            }
+            TimelineView(.periodic(from: .now, by: 1)) { _ in
+                VStack(alignment: .leading, spacing: 8) {
+                    CountdownBar(created: approval.createdAt, deadline: approval.deadline)
+                    Text("Denies itself in \(Countdown.text(deadline: approval.deadline, now: Countdown.nowMs()))")
+                        .font(Face.mono(13, .medium))
+                        .foregroundStyle(Ink.warn)
+                        .monospacedDigit()
+                }
+            }
+            if let result { Note(text: result, color: Ink.sub) }
+            HStack(spacing: 10) {
+                Button { Task { await deny() } } label: { Text("Deny") }
+                    .buttonStyle(BigButtonStyle(kind: .outline))
+                    .frame(maxWidth: .infinity)
+                    .accessibilityIdentifier("deny-\(approval.id)")
                 if approval.kind != "question" || answered {
                     Button { Task { await approve() } } label: {
-                        Label(approval.kind == "question" ? "Send" : "Approve", systemImage: "faceid").frame(maxWidth: .infinity, minHeight: 50)
-                            .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                            .foregroundStyle(.white)
+                        Label(approval.kind == "question" ? "Send" : "Approve", systemImage: "faceid")
                     }
+                    .buttonStyle(BigButtonStyle())
+                    .frame(maxWidth: .infinity)
                     .accessibilityIdentifier("approve-\(approval.id)")
                 }
             }
-            .font(.headline)
-            .buttonStyle(.plain)
             .disabled(busy)
         }
-        .padding(16)
-        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("approval-\(approval.id)")
     }
 
     private var title: String {
         switch approval.kind {
-        case "question": return "\(session.label) has a question"
-        case "plan": return "\(session.label) has a plan for you"
+        case "question": return open == nil ? "It has a question" : "\(session.label) has a question"
+        case "plan": return open == nil ? "Its plan, for you to approve" : "\(session.label) has a plan for you"
         default: return open == nil ? "Run this?" : "\(session.label) wants to run"
         }
     }
@@ -229,64 +227,109 @@ struct ApprovalCard: View {
     }
 }
 
+/// The time left on an approval, as a thin bar that empties.
+struct CountdownBar: View {
+    let created: Int64
+    let deadline: Int64
+
+    var body: some View {
+        let total = max(1, deadline - created)
+        let left = min(1, max(0, Double(deadline - Countdown.nowMs()) / Double(total)))
+        GeometryReader { g in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Ink.fill)
+                Capsule().fill(Ink.warn).frame(width: g.size.width * left)
+            }
+        }
+        .frame(height: 3)
+        .accessibilityHidden(true)
+    }
+}
+
 /// What this phone last said there, kept on the phone.
 struct SaidBubble: View {
     let said: AppModel.Said
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 4) {
-            Text(said.text)
-                .padding(.horizontal, 13)
-                .padding(.vertical, 9)
-                .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-                .foregroundStyle(.white)
+            MeBubble(text: said.text)
             Text("You said · \(said.at.formatted(.relative(presentation: .named)))")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(Face.meta)
+                .foregroundStyle(Ink.mut)
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
     }
 }
 
-/// Changed files, laid out like attachments.
-struct ChangesGrid: View {
-    let changes: Schemas.Changes
+/// The owner's own words, in a dark bubble on the right.
+struct MeBubble: View {
+    let text: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(changes.files.count == 1 ? "1 changed file" : "\(changes.files.count)\(changes.truncated ? "+" : "") changed files")
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .textCase(.uppercase)
-            LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible())], spacing: 10) {
-                ForEach(changes.files, id: \.path) { f in
-                    HStack(spacing: 10) {
-                        Image(systemName: "doc.text")
-                            .font(.system(size: 22))
-                            .foregroundStyle(.secondary)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text((f.path as NSString).lastPathComponent)
-                                .font(.subheadline.weight(.semibold))
-                                .lineLimit(1)
-                            if f.added == nil && f.deleted == nil {
-                                Text("new").font(.footnote).foregroundStyle(Color.done)
-                            } else {
-                                HStack(spacing: 4) {
-                                    Text("+\(f.added ?? 0)").foregroundStyle(Color.done)
-                                    Text("−\(f.deleted ?? 0)").foregroundStyle(.red)
-                                }
-                                .font(.footnote.monospacedDigit())
-                            }
-                        }
-                        Spacer(minLength: 0)
+        Text(text)
+            .font(Face.geist(15.5, relativeTo: .body))
+            .foregroundStyle(Ink.inv)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(Ink.ink, in: UnevenRoundedRectangle(
+                topLeadingRadius: 18, bottomLeadingRadius: 18, bottomTrailingRadius: 4, topTrailingRadius: 18, style: .continuous))
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .padding(.leading, 48)
+            .textSelection(.enabled)
+    }
+}
+
+/// Changed files as rows: the path, then what changed. For a session, each opens its diff.
+struct ChangesList: View {
+    let changes: Schemas.Changes
+    var sessionId: String?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ForEach(Array(changes.files.enumerated()), id: \.element.path) { i, f in
+                if let sessionId {
+                    NavigationLink(value: DiffRef(sessionId: sessionId, paths: changes.files.map(\.path), index: i)) {
+                        row(i, f, chevron: true)
                     }
-                    .padding(12)
-                    .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .accessibilityElement(children: .combine)
-                    .accessibilityLabel(f.path)
-                    .accessibilityIdentifier(f.path)
+                    .buttonStyle(.plain)
+                } else {
+                    row(i, f, chevron: false)
                 }
             }
         }
+    }
+
+    private func row(_ i: Int, _ f: Schemas.ChangedFile, chevron: Bool) -> some View {
+        HStack(spacing: 12) {
+            Text(f.path)
+                .font(Face.mono(12.5))
+                .foregroundStyle(Ink.ink)
+                .lineLimit(1)
+                .truncationMode(.head)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if f.binary == true {
+                Text("binary\(f.size.map { " · \(fileSize($0))" } ?? "")").font(Face.mono(12.5)).foregroundStyle(Ink.mut)
+            } else if f.added == nil && f.deleted == nil {
+                Text("new").font(Face.mono(12.5)).foregroundStyle(Ink.ok)
+            } else {
+                HStack(spacing: 4) {
+                    Text("+\(f.added ?? 0)").foregroundStyle(Ink.ok)
+                    Text("−\(f.deleted ?? 0)").foregroundStyle(Ink.bad)
+                }
+                .font(Face.mono(12.5))
+            }
+            if chevron { Chevron() }
+        }
+        .padding(.vertical, 8)
+        .frame(minHeight: 44)
+        .contentShape(Rectangle())
+        .overlay(alignment: .top) { if i > 0 { Hairline() } }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(f.path)
+        .accessibilityIdentifier(f.path)
+    }
+
+    var title: String {
+        changes.files.count == 1 ? "1 changed file" : "\(changes.files.count)\(changes.truncated ? "+" : "") changed files"
     }
 }

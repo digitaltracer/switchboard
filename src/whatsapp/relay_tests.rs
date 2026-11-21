@@ -85,6 +85,7 @@ impl Script {
             herdr_session: None,
             title: None,
             space: None,
+            error: false,
         });
     }
 

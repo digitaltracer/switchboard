@@ -12,6 +12,58 @@ pub const PROTOCOL_VERSION: u32 = 1;
 pub const MAX_FRAME_BYTES: usize = 1 << 20;
 /// A runner that answers `Op::Activity`.
 pub const CAP_ACTIVITY: &str = "activity";
+/// The runner answers `Op::Diff`.
+pub const CAP_DIFF: &str = "diff";
+/// The runner answers `Op::Summarize`.
+pub const CAP_SUMMARY: &str = "summary";
+/// A runner that hosts herdr-core agents, named `hc/<agent>`.
+pub const CAP_HC: &str = "hc";
+/// The `herdr_session` of a herdr-core agent or session.
+pub const CORE_SERVER: &str = "hc";
+/// A runner that takes `backend` on `Op::StartSession` and answers `Op::StartOptions`.
+pub const CAP_START_BACKEND: &str = "start_backend";
+
+/// Where one session starts: a Herdr TUI session of its own, or the Herdr app (herdr-core).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StartBackend {
+    Herdr,
+    Hc,
+}
+
+impl StartBackend {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            StartBackend::Herdr => "herdr",
+            StartBackend::Hc => "hc",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "herdr" => Some(StartBackend::Herdr),
+            "hc" => Some(StartBackend::Hc),
+            _ => None,
+        }
+    }
+}
+
+/// `Op::StartOptions`'s answer: where a start with no backend would go, and what can be chosen.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StartOptions {
+    pub default: StartBackend,
+    pub backends: Vec<BackendOption>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackendOption {
+    pub backend: StartBackend,
+    pub available: bool,
+    /// Why it isn't available: `not_answering` (no herdr-core answers) or `not_followed` (this
+    /// runner follows no herdr-core).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -70,6 +122,10 @@ pub enum Op {
         agent: Agent,
         prompt: String,
         deny_patterns: Vec<String>,
+        /// Overrides the runner's `new_sessions` for this start; only sent to runners advertising
+        /// `CAP_START_BACKEND`. A backend the runner can't serve fails the start.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        backend: Option<StartBackend>,
     },
     Prompt {
         session_id: String,
@@ -93,6 +149,11 @@ pub enum Op {
         label_sha256: String,
         #[serde(default)]
         deny_only: bool,
+    },
+    /// Shows the previous question of a group again, by one left arrow. It submits nothing.
+    Back {
+        agent: String,
+        occurrence: String,
     },
     Read {
         session_id: String,
@@ -119,6 +180,9 @@ pub enum Op {
     /// Every agent's last line, as `AgentActivity`s; only for runners advertising
     /// `CAP_ACTIVITY`. Read-only.
     Activity,
+    /// Where a new session would start, as `StartOptions`; only for runners advertising
+    /// `CAP_START_BACKEND`. Read-only.
+    StartOptions,
     /// Reads any named agent; `visible` is the current screen, which shows a dialog. `ansi` adds
     /// that screen with its colours; older runners leave it out.
     ReadAgent {
@@ -136,6 +200,21 @@ pub enum Op {
     /// Files the session's worktree changed since it started. Read-only.
     Changes {
         session_id: String,
+    },
+    /// One changed file's unified diff since the session started, a page of hunks from `from`;
+    /// only for runners advertising `CAP_DIFF`. Read-only.
+    Diff {
+        session_id: String,
+        path: String,
+        #[serde(default)]
+        from: u32,
+    },
+    /// Summarises masked facts with `claude -p` and every tool, setting, hook, plugin and MCP
+    /// server off, in an empty folder; only for runners advertising `CAP_SUMMARY`. The owner
+    /// turns it on. Returns `{ "summary": "…" }`.
+    Summarize {
+        prompt: String,
+        model: String,
     },
     /// An agent's conversation from its own log, as a `TranscriptPage`. With neither offset,
     /// the latest part; `after` continues from an earlier page's `end`, `before` goes back
@@ -171,12 +250,35 @@ impl Op {
                 | Op::ListSessions
                 | Op::Agents
                 | Op::Activity
+                | Op::StartOptions
                 | Op::ReadAgent { .. }
                 | Op::Changes { .. }
+                | Op::Diff { .. }
+                | Op::Summarize { .. }
                 | Op::Transcript { .. }
                 | Op::Skills { .. }
                 | Op::Dialog { .. }
         )
+    }
+
+    /// The agent an agent op names, if any.
+    pub fn agent(&self) -> Option<&str> {
+        match self {
+            Op::Answer { agent, .. }
+            | Op::Back { agent, .. }
+            | Op::ReadAgent { agent, .. }
+            | Op::PromptAgent { agent, .. }
+            | Op::Transcript { agent, .. }
+            | Op::Skills { agent }
+            | Op::Dialog { agent } => Some(agent),
+            _ => None,
+        }
+    }
+
+    /// Names a herdr-core agent, which only a runner advertising `CAP_HC` can reach.
+    pub fn targets_core(&self) -> bool {
+        self.agent()
+            .is_some_and(|a| a.split_once('/').is_some_and(|(s, _)| s == CORE_SERVER))
     }
 }
 
@@ -240,6 +342,12 @@ pub struct DialogView {
     /// `not_blocked` or `answered`.
     #[serde(default)]
     pub reason: Option<String>,
+    /// A group's questions in order, as tabs; empty for a dialog that stands alone.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<crate::agents::dialog::DialogStep>,
+    /// A left arrow may show the group's previous question again.
+    #[serde(default)]
+    pub back: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -251,6 +359,9 @@ pub struct DialogOptionView {
     pub is_deny: bool,
     /// May be chosen from the phone; free-text, chat and standing-permission rows may not.
     pub offered: bool,
+    /// It answers one question of a group and submits nothing, so it needs no signature.
+    #[serde(default)]
+    pub provisional: bool,
 }
 
 /// One skill or command, as typed: `/name`, or `$name` for a Codex skill.
@@ -281,6 +392,9 @@ pub struct AgentSummary {
     /// The label of the Herdr workspace it runs in. Untrusted text.
     #[serde(default)]
     pub space: Option<String>,
+    /// It stopped on an error (herdr-core only); `agent_status` says done.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub error: bool,
 }
 
 /// One agent from `Op::Activity`: the first line of the last thing it said or did, masked.
@@ -351,6 +465,8 @@ impl ProtoError {
 pub enum ErrorCode {
     /// The change may or may not have happened; reconcile before retrying.
     OutcomeUnknown,
+    /// The start's chosen backend can't take a session on this machine now; nothing was started.
+    BackendUnavailable,
     DeadlineExceeded,
     RunnerDisconnected,
     Busy,

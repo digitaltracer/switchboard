@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The ongoing notification, expanded: the scene, then a name, what happened and the counts. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="120dp"
+    android:background="#05070A"
+    android:orientation="horizontal">
+
+    <ImageView
+        android:id="@+id/live_scene"
+        android:layout_width="147dp"
+        android:layout_height="120dp"
+        android:importantForAccessibility="no"
+        android:scaleType="fitXY" />
+
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="1"
+        android:gravity="center_vertical"
+        android:orientation="vertical"
+        android:paddingEnd="12dp">
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <ImageView
+                android:id="@+id/live_lead"
+                android:layout_width="14dp"
+                android:layout_height="14dp"
+                android:importantForAccessibility="no"
+                android:scaleType="centerCrop" />
+
+            <TextView
+                android:id="@+id/live_title"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="7dp"
+                android:ellipsize="end"
+                android:maxLines="1"
+                android:textColor="#F2F3F4"
+                android:textSize="20sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:orientation="horizontal"
+            android:paddingStart="21dp">
+
+            <TextView
+                android:id="@+id/live_happened"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:maxLines="1"
+                android:textSize="14sp" />
+
+            <Chronometer
+                android:id="@+id/live_clock"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textColor="#FFB37F"
+                android:textSize="14sp"
+                android:visibility="gone" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <ImageView android:id="@+id/live_c1" android:layout_width="11dp" android:layout_height="11dp" android:scaleType="centerCrop" android:importantForAccessibility="no" />
+            <TextView android:id="@+id/live_t1" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginStart="5dp" android:textColor="#B9BEC4" android:textSize="12.5sp" />
+            <ImageView android:id="@+id/live_c2" android:layout_width="11dp" android:layout_height="11dp" android:layout_marginStart="12dp" android:scaleType="centerCrop" android:importantForAccessibility="no" />
+            <TextView android:id="@+id/live_t2" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginStart="5dp" android:textColor="#B9BEC4" android:textSize="12.5sp" />
+            <ImageView android:id="@+id/live_c3" android:layout_width="11dp" android:layout_height="11dp" android:layout_marginStart="12dp" android:scaleType="centerCrop" android:importantForAccessibility="no" />
+            <TextView android:id="@+id/live_t3" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginStart="5dp" android:textColor="#B9BEC4" android:textSize="12.5sp" />
+        </LinearLayout>
+    </LinearLayout>
+</LinearLayout>

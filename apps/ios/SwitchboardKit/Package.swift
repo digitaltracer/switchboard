@@ -7,6 +7,8 @@ let package = Package(
     platforms: [.iOS(.v17), .macOS(.v14)],
     products: [
         .library(name: "SwitchboardKit", targets: ["SwitchboardKit"]),
+        // What the lock-screen extension needs, and nothing heavier.
+        .library(name: "SwitchboardLiveKit", targets: ["SwitchboardLiveKit"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-openapi-generator", exact: "1.14.1"),
@@ -24,10 +26,12 @@ let package = Package(
                 .plugin(name: "OpenAPIGenerator", package: "swift-openapi-generator"),
             ]
         ),
+        .target(name: "SwitchboardLiveKit"),
         .target(
             name: "SwitchboardKit",
             dependencies: [
                 "SwitchboardAPI",
+                "SwitchboardLiveKit",
                 .product(name: "OpenAPIRuntime", package: "swift-openapi-runtime"),
                 .product(name: "OpenAPIURLSession", package: "swift-openapi-urlsession"),
                 .product(name: "HTTPTypes", package: "swift-http-types"),

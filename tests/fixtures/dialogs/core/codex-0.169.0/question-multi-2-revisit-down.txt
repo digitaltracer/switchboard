@@ -1,0 +1,119 @@
+
+  >_ OpenAI Codex (v0.169.0)
+     /home/u/repo
+
+• Model changed to gpt-6-astra medium for Plan mode.
+
+
+› Use the request_user_input tool once with THREE questions in one call: 'Pick a size' (header 'Size') options Small, Large; 'Pick a drink' (header 'Drink') options Tea, Coffee; 'Pick a
+  colour' (header 'Colour') options Red, Green, Blue. Do nothing else before it. Then reply with my answers only.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  Question 2/3 (2 unanswered)
+  Pick a drink
+
+    1. Tea                Choose Tea.
+  › 2. Coffee             Choose Coffee.
+    3. None of the above  Optionally, add details in notes (tab)
+
+  tab to add notes | enter to submit answer | ←/→ to navigate questions | esc to interrupt

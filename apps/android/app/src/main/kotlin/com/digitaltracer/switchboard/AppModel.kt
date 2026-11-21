@@ -1,6 +1,8 @@
 package com.digitaltracer.switchboard
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Build
 import android.provider.Settings
 import androidx.compose.runtime.getValue
@@ -13,8 +15,8 @@ import com.digitaltracer.switchboard.api.models.Meta
 import com.digitaltracer.switchboard.api.models.Project
 import com.digitaltracer.switchboard.api.models.Session
 import com.digitaltracer.switchboard.api.models.TargetView
-import com.digitaltracer.switchboard.core.ConversationSource
-import com.digitaltracer.switchboard.core.HerdrSession
+import com.digitaltracer.switchboard.api.models.Machine
+import com.digitaltracer.switchboard.core.AgentSpace
 import com.digitaltracer.switchboard.core.DeviceKeys
 import com.digitaltracer.switchboard.core.Hub
 import com.digitaltracer.switchboard.core.HubError
@@ -32,6 +34,8 @@ import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.MapSerializer
@@ -42,14 +46,15 @@ import kotlinx.serialization.json.Json
 sealed interface Route {
     data class SessionPage(val id: String) : Route
     data class AgentPage(val machine: String, val name: String) : Route
-    data class HerdrSessionPage(val key: HerdrSession.Key) : Route
-    data object AllSessions : Route
+    data class Space(val key: AgentSpace.Key) : Route
     data class MachinePage(val machine: String) : Route
+    /** A changed file's diff; [paths] lets the page step through them all. */
+    data class Diff(val sessionId: String, val paths: List<String>, val index: Int) : Route
+    data object ShipSettings : Route
     data object Machines : Route
-    data object Projects : Route
     data object Settings : Route
-    /** [screen]: opens on the agent's screen instead of the conversation. */
-    data class Conversation(val source: ConversationSource, val title: String, val screen: Boolean = false) : Route
+    /** The dialog on an agent's screen, as its own page. [meta]: `Claude Code · mac`. */
+    data class Decision(val machine: String, val agent: String, val label: String, val meta: String?) : Route
 }
 
 /** The app's state: the pairing, the live session list and what the user is doing. */
@@ -65,6 +70,7 @@ class AppModel(context: Context, val keys: DeviceKeys) {
     data class Said(val text: String, val at: Long)
 
     private val prefs = context.getSharedPreferences("switchboard", Context.MODE_PRIVATE)
+    private val appContext: Context = context.applicationContext
     val voiceKey = VoiceKey(prefs)
     private val scope = MainScope()
     private var pairJob: Job? = null
@@ -93,6 +99,19 @@ class AppModel(context: Context, val keys: DeviceKeys) {
     /** A request has failed since the last answer; until then, not yet connected is "connecting". */
     var unreachable by mutableStateOf(false)
         private set
+    private var sessionsLoaded by mutableStateOf(false)
+    private var agentsLoaded by mutableStateOf(false)
+    /** The first session list and agent list have both arrived; until then home shows placeholders. */
+    val loaded: Boolean get() = sessionsLoaded && agentsLoaded
+    /** A poll is on its way while not connected, for Try again. */
+    var trying by mutableStateOf(false)
+        private set
+    /** Why the last poll failed, while [unreachable]. */
+    var reach by mutableStateOf(HubError.Reach.Unknown)
+        private set
+    /** Whether this phone reaches its hub through the relay. */
+    val viaRelay: Boolean get() = pairing?.relay != null
+    val relayHost: String? get() = pairing?.relay?.relayUrl?.let { runCatching { URI(it).host }.getOrNull() }
     var meta by mutableStateOf<Meta?>(null)
         private set
 
@@ -102,10 +121,52 @@ class AppModel(context: Context, val keys: DeviceKeys) {
     /** Those that ended in the last day. */
     var ended by mutableStateOf<List<EndedAgent>>(emptyList())
         private set
+
+    /** What agents did while this phone was away, until "Mark as seen". */
+    var away by mutableStateOf<com.digitaltracer.switchboard.api.models.Activity?>(null)
+        private set
+    /** The opt-in summary of [away]; on failure the facts stay. */
+    var awaySummary by mutableStateOf<String?>(null)
+        private set
+
+    /** On coming back: anything since the app was last open, if that was a while ago. */
+    fun loadAway() {
+        val hub = hub ?: return
+        val last = prefs.getLong(LAST_OPENED, 0)
+        val since = away?.since ?: last.takeIf { it > 0 && System.currentTimeMillis() - it >= com.digitaltracer.switchboard.core.AwayDigest.MIN_AWAY_MS } ?: return
+        scope.launch {
+            val a = runCatching { hub.activity(since) }.getOrNull() ?: return@launch
+            away = a.takeIf { it.agents.isNotEmpty() }
+            if (away?.summaryOn == true) runCatching { hub.activitySummary(since) }.onSuccess { awaySummary = it }
+        }
+    }
+
+    fun markAwaySeen() {
+        away = null
+        awaySummary = null
+        prefs.edit().putLong(LAST_OPENED, System.currentTimeMillis()).apply()
+    }
+
+    fun awayFor(machine: String, agent: String?, session: String?) =
+        away?.agents?.firstOrNull { (it.sessionId != null && it.sessionId == session) || (it.machineId == machine && it.agent == agent) }
+
+    /** The ship buttons kept on the hub, shared by every paired phone. */
+    var shipButtons by mutableStateOf<com.digitaltracer.switchboard.api.models.ShipButtons?>(null)
+    /** The ship skill last sent to each target, by [saidKey], to tell how it went. */
+    var lastShip by mutableStateOf<Map<String, SentShip>>(emptyMap())
+
+    data class SentShip(val button: com.digitaltracer.switchboard.core.ShipButton, val at: Long)
+
+    suspend fun loadShipButtons() {
+        val hub = hub ?: return
+        runCatching { hub.shipButtons() }.onSuccess { shipButtons = it }
+    }
     /** Home tiles' last lines, when the hub has them. */
     var tileLines by mutableStateOf<TileLines?>(null)
         private set
     var projects by mutableStateOf<List<Project>>(emptyList())
+        private set
+    var machines by mutableStateOf<List<Machine>>(emptyList())
         private set
 
     /**
@@ -155,23 +216,26 @@ class AppModel(context: Context, val keys: DeviceKeys) {
 
     val path = mutableStateListOf<Route>()
 
+    /** Home's tab, kept while a page is open on top of it. */
+    var homeTab by mutableStateOf(HomeTab.Now)
+
     fun pop() {
         if (path.isNotEmpty()) path.removeAt(path.lastIndex)
     }
 
-    /** What the back link says: the title of the screen underneath, as on iOS. */
+    /** What the back button is called: where it goes. */
     val backLabel: String
         get() = when (val under = path.getOrNull(path.size - 2)) {
-            null -> "Agents"
-            is Route.SessionPage -> sessions.firstOrNull { it.id == under.id }?.label ?: "Back"
-            is Route.AgentPage -> under.name
-            is Route.HerdrSessionPage -> under.key.name
-            Route.AllSessions -> "All sessions"
-            is Route.MachinePage -> under.machine
-            Route.Machines -> "Machines"
-            Route.Projects -> "Projects"
-            Route.Settings -> "Settings"
-            is Route.Conversation -> under.title
+            null -> "Back to Home"
+            is Route.SessionPage -> "Back to ${sessions.firstOrNull { it.id == under.id }?.label ?: "the session"}"
+            is Route.AgentPage -> "Back to ${under.name}"
+            is Route.Space -> "Back to ${under.key.space ?: under.key.session}"
+            is Route.MachinePage -> "Back to ${under.machine}"
+            Route.Machines -> "Back to machines"
+            Route.Settings -> "Back to settings"
+            is Route.Decision -> "Back to the question"
+            is Route.Diff -> "Back to the diff"
+            Route.ShipSettings -> "Back to ship actions"
         }
 
     init {
@@ -250,6 +314,8 @@ class AppModel(context: Context, val keys: DeviceKeys) {
     /** Forgets the hub and this phone's keys. The hub keeps the device until it's revoked. */
     fun forget() {
         pollJob?.cancel()
+        hub?.let { h -> scope.launch { runCatching { h.clearLive() } } }
+        LiveNotification.cancel(appContext)
         prefs.edit().remove(PAIRING).remove(SAID).apply()
         runCatching { keys.reset() }
         voiceKey.remove()
@@ -260,9 +326,12 @@ class AppModel(context: Context, val keys: DeviceKeys) {
         agents = emptyList()
         ended = emptyList()
         projects = emptyList()
+        machines = emptyList()
         meta = null
         connected = false
         unreachable = false
+        sessionsLoaded = false
+        agentsLoaded = false
         current = null
         lastSent = null
         awaiting = emptyMap()
@@ -276,6 +345,7 @@ class AppModel(context: Context, val keys: DeviceKeys) {
         if (phase != Phase.Paired) return
         wakes++
         startPolling()
+        loadAway()
     }
 
     /** This phone's FCM token, sent to the hub whenever it changes or the phone pairs. */
@@ -289,7 +359,45 @@ class AppModel(context: Context, val keys: DeviceKeys) {
 
     private fun sendPushToken() {
         val (hub, token) = (hub ?: return) to (pushToken ?: return)
-        scope.launch { runCatching { hub.setFcmToken(token) } }
+        scope.launch {
+            runCatching { hub.setFcmToken(token) }
+            runCatching { hub.setLive(liveMode) }
+        }
+    }
+
+    /** When the ongoing notification shows; kept on the hub with this phone's registration. */
+    var liveMode by mutableStateOf(com.digitaltracer.switchboard.core.LiveShowMode.of(prefs.getString(LIVE_MODE, null)))
+        private set
+
+    fun chooseLiveMode(mode: com.digitaltracer.switchboard.core.LiveShowMode) {
+        liveMode = mode
+        prefs.edit().putString(LIVE_MODE, mode.wire).apply()
+        val hub = hub ?: return
+        scope.launch {
+            runCatching { hub.setLive(mode) }
+            refreshLive()
+        }
+    }
+
+    /**
+     * Fetches the board and redraws the ongoing notification. From a push, [wait] blocks this
+     * (background) thread up to a few seconds, since the process may stop once it returns.
+     */
+    fun refreshLive(wait: Boolean = false) {
+        val hub = hub ?: return
+        val job = scope.launch {
+            runCatching { hub.live() }.onSuccess { board ->
+                val now = System.currentTimeMillis()
+                val quietSince = if (board.isQuiet) prefs.getLong(LIVE_QUIET, 0).takeIf { it > 0 } ?: now.also { prefs.edit().putLong(LIVE_QUIET, it).apply() }
+                    else null.also { prefs.edit().remove(LIVE_QUIET).apply() }
+                when (liveMode.decide(board, LiveNotification.showing(appContext), quietSince, now)) {
+                    com.digitaltracer.switchboard.core.LiveShowMode.Step.Show -> LiveNotification.show(appContext, board)
+                    com.digitaltracer.switchboard.core.LiveShowMode.Step.End -> LiveNotification.cancel(appContext)
+                    com.digitaltracer.switchboard.core.LiveShowMode.Step.None -> {}
+                }
+            }
+        }
+        if (wait) runBlocking { withTimeoutOrNull(8_000) { job.join() } }
     }
 
     /**
@@ -305,6 +413,10 @@ class AppModel(context: Context, val keys: DeviceKeys) {
                     if (a == null) {
                         banner = "Couldn't reach the hub to open that notification. Try again in a moment."
                         t.sessionId?.let { Route.SessionPage(it) } ?: return@launch
+                    } else if (a.sessionId == null && a.sameAgent == false) {
+                        // Its name may belong to another agent by now; that one isn't opened in its place.
+                        banner = "The agent that asked has ended, so there's nothing to open."
+                        return@launch
                     } else {
                         when (a.state) {
                             "open" -> {}
@@ -327,6 +439,7 @@ class AppModel(context: Context, val keys: DeviceKeys) {
     fun wentToBackground() {
         foreground = false
         pollJob?.cancel()
+        prefs.edit().putLong(LAST_OPENED, System.currentTimeMillis()).apply()
     }
 
     /** Remembers a message this phone sent, for the session page and the home screen. */
@@ -377,17 +490,18 @@ class AppModel(context: Context, val keys: DeviceKeys) {
     /** With [activity], also each agent's last line, for home's tiles. */
     suspend fun refreshAgents(activity: Boolean = false) {
         val hub = hub ?: return
+        if (activity) runCatching { hub.machines() }.onSuccess { machines = it }
         runCatching { hub.agents(activity) }.onSuccess {
             agents = it.agents
             ended = it.ended.orEmpty()
+            agentsLoaded = true
             if (activity) tileLines = TileLines.of(it)
             settleAwaiting()
         }
     }
 
-    /** Every Herdr session with its agents, whoever started them. Ended agents count from [since], or all that are known when null. */
-    fun herdrSessions(machine: String? = null, since: Long?): List<HerdrSession> =
-        HerdrSession.group(sessions, agents, ended, machine, since)
+    /** Every space with its agents, the Herdr app's and the Herdr terminal's alike. */
+    fun spaces(machine: String? = null, since: Long?): List<AgentSpace> = AgentSpace.group(sessions, agents, ended, machine, since)
 
     // The session list, long-polled: the hub answers when something newer than our revision exists.
 
@@ -397,25 +511,40 @@ class AppModel(context: Context, val keys: DeviceKeys) {
             var revision: Long? = null
             while (isActive) {
                 val hub = hub ?: return@launch
+                if (!connected) trying = true
                 try {
                     if (meta == null) meta = hub.meta()
                     if (projects.isEmpty()) runCatching { hub.projects() }.onSuccess { projects = it }
+                    if (machines.isEmpty()) runCatching { hub.machines() }.onSuccess { machines = it }
+                    if (shipButtons == null) loadShipButtons()
                     val list = hub.sessions(after = revision)
                     sessions = list.sessions
+                    refreshLive()
                     settleAwaiting()
                     revision = list.revision
                     connected = true
                     unreachable = false
+                    trying = false
+                    sessionsLoaded = true
+                    if (!agentsLoaded) launch { refreshAgents(activity = true) }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
                     connected = false
                     unreachable = true
+                    trying = false
+                    reach = if (!online()) HubError.Reach.Offline else (e as? HubError.Unreachable)?.reach ?: HubError.Reach.Unknown
                     if (handleRevoked(e)) return@launch
                     delay(3_000)
                 }
             }
         }
+    }
+
+    private fun online(): Boolean {
+        val cm = appContext.getSystemService(ConnectivityManager::class.java) ?: return true
+        val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
     }
 
     /** A refused token refresh means the hub no longer knows this device. */
@@ -430,6 +559,9 @@ class AppModel(context: Context, val keys: DeviceKeys) {
 
     companion object {
         private const val PAIRING = "pairing"
+        private const val LAST_OPENED = "lastOpened"
+        private const val LIVE_MODE = "liveMode"
+        private const val LIVE_QUIET = "liveQuietSince"
         private const val SAID = "said"
         private const val APPEARANCE = "appearance"
         private const val PUSH_TOKEN = "push_token"

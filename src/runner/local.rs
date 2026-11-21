@@ -8,7 +8,10 @@ use tokio::time::Instant;
 
 use super::link::{Handler, mask};
 use crate::hub::service::SessionService;
-use crate::proto::{CAP_ACTIVITY, Event, Frame, Hello, Outcome, PROTOCOL_VERSION, Resp};
+use crate::proto::{
+    CAP_ACTIVITY, CAP_DIFF, CAP_HC, CAP_START_BACKEND, CAP_SUMMARY, Event, Frame, Hello, Outcome,
+    PROTOCOL_VERSION, Resp,
+};
 
 const EXPIRE_TICK: Duration = Duration::from_secs(1);
 
@@ -26,7 +29,13 @@ pub async fn run<H: Handler>(
         runner_version: env!("CARGO_PKG_VERSION").into(),
         herdr_version,
         sessions: handler.owned().await,
-        capabilities: vec![CAP_ACTIVITY.into()],
+        capabilities: vec![
+            CAP_ACTIVITY.into(),
+            CAP_DIFF.into(),
+            CAP_HC.into(),
+            CAP_START_BACKEND.into(),
+            CAP_SUMMARY.into(),
+        ],
     };
     let (generation, mut outbound) = svc.runner_connected(&machine, hello).await;
     tracing::info!(machine, "built-in runner connected");

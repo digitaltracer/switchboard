@@ -186,11 +186,12 @@ class RelayInterceptor(private val route: RelayRoute) : Interceptor {
             // An offline or slow hub, or a relay that's down, is "can't reach", so a start goes to
             // reconciling, not failed.
             if (code == "hub_offline" || code == "hub_timeout") {
-                throw RelayFailure(HubError.Unreachable(
-                    if (code == "hub_offline") "Your hub isn't connected to the relay." else "Your hub didn't answer in time.",
-                ))
+                throw RelayFailure(
+                    if (code == "hub_offline") HubError.Unreachable("Your hub isn't connected to the relay.", HubError.Reach.Hub)
+                    else HubError.Unreachable("Your hub didn't answer in time.", HubError.Reach.Slow),
+                )
             }
-            if (decoded == null && status >= 500) throw RelayFailure(HubError.Unreachable("The relay isn't answering."))
+            if (decoded == null && status >= 500) throw RelayFailure(HubError.Unreachable("The relay isn't answering.", HubError.Reach.Relay))
             throw RelayFailure(HubError.Hub(code, decoded?.error?.message ?: "The relay answered $status.", null, null))
         }
         val reply = runCatching { RelaySeal.json.decodeFromString<RelaySeal.Envelope>(data.decodeToString()) }.getOrNull()

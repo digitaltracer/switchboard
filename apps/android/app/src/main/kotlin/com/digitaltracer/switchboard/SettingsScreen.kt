@@ -1,20 +1,28 @@
 package com.digitaltracer.switchboard
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Icon
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -24,9 +32,12 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -35,12 +46,12 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
 /**
- * Paired devices, appearance and the hub. Revoking a device refuses its next request; to replace
- * a lost phone, pair the new one first, then revoke the old one here.
+ * Paired devices, appearance, voice and the hub. Revoking a device refuses its next request; to
+ * replace a lost phone, pair the new one first, then revoke the old one here.
  */
 @Composable
 fun SettingsScreen(model: AppModel) {
-    var devices by remember { mutableStateOf<List<Device>>(emptyList()) }
+    var devices by remember { mutableStateOf<List<Device>?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var revoking by remember { mutableStateOf<Device?>(null) }
     var confirmForget by remember { mutableStateOf(false) }
@@ -58,61 +69,83 @@ fun SettingsScreen(model: AppModel) {
     }
     LaunchedEffect(Unit) { load() }
 
-    GroupedList(model, "Settings") {
-        error?.let { item { Text(it, style = Type.body, color = palette.red) } }
-        item {
-            InsetGroup("Paired devices") {
-                devices.forEachIndexed { i, d ->
-                    GroupRow(i == 0) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text(d.name, style = Type.headline, color = palette.label)
-                            if (d.thisDevice) Text("this phone", style = Type.caption, color = palette.secondary)
-                            if (d.state != "active") Text(d.state, style = Type.caption, color = palette.needs)
-                            Row(Modifier.weight(1f), horizontalArrangement = Arrangement.End) {
-                                Text("Revoke", Modifier.clickable { revoking = d }.padding(4.dp), style = Type.subheadline, color = palette.red)
+    InboxPage(
+        top = {
+            Row(
+                Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.statusBars).padding(start = 20.dp, end = 20.dp, top = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Settings", Modifier.weight(1f), style = Type.h1, color = palette.ink)
+                Text("Done", Modifier.clickable(onClick = model::pop).padding(vertical = 10.dp).testTag("back"), style = Type.field.copy(fontWeight = FontWeight.Medium), color = palette.ac)
+            }
+        },
+    ) {
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(start = 20.dp, end = 20.dp, bottom = 32.dp)) {
+            error?.let { Note(it, Modifier.padding(top = 12.dp), palette.bad) }
+            SectionHead("Paired devices", devices?.size?.toString(), top = 16.dp)
+            if (devices == null && error == null) StateRow("Listing devices…", busy = true)
+            devices.orEmpty().forEachIndexed { i, d ->
+                Column(Modifier.fillMaxWidth()) {
+                    if (i > 0) Hairline()
+                    Row(Modifier.fillMaxWidth().heightIn(min = 60.dp).padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text(d.name, style = Type.title, color = palette.ink)
+                                if (d.thisDevice) Chip("this phone")
+                                if (d.state != "active") Text(d.state, style = Type.meta, color = palette.warn)
                             }
+                            Text(d.fingerprint, style = Type.mono(12.5f), color = palette.sub, maxLines = 1)
+                            if (!d.pushEnabled) Text("No push", style = Type.meta, color = palette.mut)
                         }
-                        Text(d.fingerprint, style = Type.caption, fontFamily = FontFamily.Monospace, color = palette.secondary)
-                        if (!d.pushEnabled) Text("No push", style = Type.caption, color = palette.secondary)
+                        Text(
+                            "Revoke", Modifier.clickable { revoking = d }.padding(vertical = 12.dp, horizontal = 4.dp).testTag("revoke-${d.name}"),
+                            style = Type.text.copy(fontWeight = FontWeight.Medium), color = palette.bad,
+                        )
                     }
                 }
             }
-        }
-        item {
-            InsetGroup("Appearance") {
-                AppModel.Appearance.entries.forEachIndexed { i, a ->
-                    Column(Modifier.fillMaxWidth().clickable { model.chooseAppearance(a) }.testTag("appearance-${a.name}")) {
-                        GroupRow(i == 0) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(a.label, Modifier.weight(1f), style = Type.body, color = palette.label)
-                                if (model.appearance == a) Icon(Icons.Filled.Check, "Selected", Modifier.size(20.dp), tint = palette.accent)
-                            }
-                        }
-                    }
+            Hairline()
+            SectionHead("Appearance")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                AppModel.Appearance.entries.forEach { a ->
+                    val on = model.appearance == a
+                    Box(
+                        Modifier.weight(1f).height(44.dp).clip(RoundedCornerShape(12.dp)).background(if (on) palette.ink else palette.fill)
+                            .clickable { model.chooseAppearance(a) }.semantics { selected = on }.testTag("appearance-${a.name}"),
+                        Alignment.Center,
+                    ) { Text(a.label, style = Type.text.copy(fontWeight = FontWeight.Medium), color = if (on) palette.inv else palette.sub) }
                 }
             }
-        }
-        item { VoiceKeySection(model.voiceKey) }
-        model.pairing?.let { p ->
-            item {
-                InsetGroup("Hub") {
-                    GroupRow(true) { Labeled(if (p.relay == null) "Address" else "Relay", p.hubUrl) }
-                    model.meta?.let { m -> GroupRow(false) { Labeled("Oldest supported build", "${m.minClientBuild}") } }
-                    Column(Modifier.fillMaxWidth().clickable { confirmForget = true }) {
-                        GroupRow(false) { Text("Forget this hub", style = Type.body, color = palette.red) }
-                    }
+            VoiceKeySection(model.voiceKey)
+            if (model.pairing != null) {
+                SectionHead("Ship actions")
+                InboxRow("Buttons on a finished session", modifier = Modifier.testTag("shipSettings"), first = true, onClick = { model.path.add(Route.ShipSettings) }, trailing = { Chevron() })
+                Hairline()
+                AwaySettingsSection(model)
+                LockScreenSection(model)
+            }
+            model.pairing?.let { p ->
+                SectionHead("Hub")
+                FieldRow(if (p.relay == null) "Address" else "Relay", runCatching { java.net.URI(p.hubUrl).host }.getOrNull() ?: p.hubUrl, mono = true, first = true)
+                model.meta?.let { m -> FieldRow("Oldest supported build", "${m.minClientBuild}") }
+                Column(Modifier.fillMaxWidth().clickable { confirmForget = true }.testTag("forgetHub")) {
+                    Hairline()
+                    Text("Forget this hub", Modifier.padding(vertical = 14.dp), style = Type.field.copy(fontWeight = FontWeight.Medium), color = palette.bad)
                 }
+                Hairline()
             }
         }
     }
 
     revoking?.let { d ->
-        AlertDialog(
-            onDismissRequest = { revoking = null },
-            text = { Text("Revoke ${d.name}? Its next request is refused.") },
-            confirmButton = {
-                TextButton({
-                    revoking = null
+        ChoiceSheet(
+            "Revoke ${d.name}?",
+            listOf(
+                Triple<String, String?, () -> Unit>(
+                    "Revoke",
+                    if (d.thisDevice) "This phone's next request is refused and it forgets the hub. Pair it again to use it."
+                    else "Its next request is refused. It stays paired until then, and can't be un-revoked.",
+                ) {
                     scope.launch {
                         try {
                             model.hub?.revoke(d.id)
@@ -123,23 +156,17 @@ fun SettingsScreen(model: AppModel) {
                             error = e.message
                         }
                     }
-                }) { Text("Revoke", color = palette.red) }
-            },
-            dismissButton = { TextButton({ revoking = null }) { Text("Cancel", color = palette.accent) } },
-        )
+                },
+            ),
+        ) { revoking = null }
     }
     if (confirmForget) {
-        AlertDialog(
-            onDismissRequest = { confirmForget = false },
-            text = { Text("Forget this hub? This phone's keys are deleted; revoke it at the hub too.") },
-            confirmButton = {
-                TextButton({
-                    confirmForget = false
-                    model.forget()
-                }) { Text("Forget", color = palette.red) }
-            },
-            dismissButton = { TextButton({ confirmForget = false }) { Text("Cancel", color = palette.accent) } },
-        )
+        ChoiceSheet(
+            "Forget this hub?",
+            listOf(
+                Triple<String, String?, () -> Unit>("Forget", "This phone's keys are deleted. Revoke it at the hub too.") { model.forget() },
+            ),
+        ) { confirmForget = false }
     }
 }
 
@@ -148,48 +175,60 @@ fun SettingsScreen(model: AppModel) {
 private fun VoiceKeySection(key: VoiceKey) {
     var entered by remember { mutableStateOf("") }
     var failed by remember { mutableStateOf(false) }
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        InsetGroup("Voice") {
-            if (key.saved) {
-                GroupRow(true) {
-                    Row(Modifier.testTag("voiceKeySaved")) {
-                        Text("OpenAI", Modifier.weight(1f), style = Type.body, color = palette.label)
-                        Text("Key saved", style = Type.body, color = palette.secondary)
-                    }
-                }
-                Column(Modifier.fillMaxWidth().clickable { key.remove() }.testTag("voiceKeyRemove")) {
-                    GroupRow(false) { Text("Remove key", style = Type.body, color = palette.red) }
-                }
-            } else {
-                GroupRow(true) {
-                    BasicTextField(
-                        entered, { entered = it },
-                        Modifier.fillMaxWidth().testTag("voiceKeyField"),
-                        textStyle = Type.body.copy(color = palette.label),
-                        cursorBrush = SolidColor(palette.accent),
-                        singleLine = true,
-                        visualTransformation = PasswordVisualTransformation(),
-                        keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, keyboardType = KeyboardType.Password),
-                        decorationBox = { inner ->
-                            if (entered.isEmpty()) Text("OpenAI API key", style = Type.body, color = palette.tertiary)
-                            inner()
-                        },
-                    )
-                }
-                val ready = entered.isNotBlank()
-                Column(
-                    Modifier.fillMaxWidth().clickable(enabled = ready) {
-                        failed = !key.save(entered)
-                        entered = ""
-                    }.testTag("voiceKeySave"),
-                ) {
-                    GroupRow(false) { Text("Save key", style = Type.body, color = if (ready) palette.accent else palette.tertiary) }
-                }
+    SectionHead("Voice", "On this phone")
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        val box = Modifier.weight(1f).heightIn(min = 52.dp).clip(RoundedCornerShape(14.dp)).background(palette.sf)
+            .border(1.dp, palette.line, RoundedCornerShape(14.dp)).padding(horizontal = 16.dp)
+        if (key.saved) {
+            Box(box.testTag("voiceKeySaved"), Alignment.CenterStart) { Text("Key saved", style = Type.field, color = palette.ink) }
+            BigButton("Remove key", Modifier.widthIn(min = 130.dp).testTag("voiceKeyRemove"), ButtonKind.Outline, destructive = true) { key.remove() }
+        } else {
+            Box(box, Alignment.CenterStart) {
+                BasicTextField(
+                    entered, { entered = it },
+                    Modifier.fillMaxWidth().testTag("voiceKeyField"),
+                    textStyle = Type.field.copy(color = palette.ink),
+                    cursorBrush = SolidColor(palette.ac),
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, keyboardType = KeyboardType.Password),
+                    decorationBox = { inner ->
+                        if (entered.isEmpty()) Text("OpenAI API key", style = Type.field, color = palette.mut)
+                        inner()
+                    },
+                )
             }
-            if (failed) {
-                GroupRow(false) { Text("This phone couldn't store the key, so voice stays on the device.", style = Type.footnote, color = palette.red) }
+            BigButton("Save key", Modifier.widthIn(min = 108.dp).testTag("voiceKeySave"), enabled = entered.isNotBlank()) {
+                failed = !key.save(entered)
+                entered = ""
             }
         }
-        Text(VoiceKey.DISCLOSURE, Modifier.padding(horizontal = 16.dp), style = Type.footnote, color = palette.secondary)
     }
+    if (failed) Note("This phone couldn't store the key, so voice stays on the device.", Modifier.padding(top = 8.dp), palette.bad)
+    Note(VoiceKey.DISCLOSURE, Modifier.padding(top = 8.dp))
+}
+
+/** Settings › Lock screen: when the ongoing notification shows. */
+@Composable
+private fun LockScreenSection(model: AppModel) {
+    SectionHead("Lock screen")
+    Text("Show on the lock screen", Modifier.padding(bottom = 8.dp), style = Type.text.copy(fontWeight = FontWeight.Medium), color = palette.ink)
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        listOf(com.digitaltracer.switchboard.core.LiveShowMode.Working to "While agents are working", com.digitaltracer.switchboard.core.LiveShowMode.Always to "Always").forEach { (m, label) ->
+            val on = model.liveMode == m
+            Box(
+                Modifier.weight(1f).height(44.dp).clip(RoundedCornerShape(12.dp)).background(if (on) palette.ink else palette.fill)
+                    .clickable { model.chooseLiveMode(m) }.semantics { selected = on }.testTag("liveMode-${m.wire}"),
+                Alignment.Center,
+            ) { Text(label, style = Type.meta.copy(fontWeight = FontWeight.Medium), color = if (on) palette.inv else palette.sub) }
+        }
+    }
+    Note(
+        if (model.liveMode == com.digitaltracer.switchboard.core.LiveShowMode.Always) {
+            "The notification stays, with All quiet when nothing runs."
+        } else {
+            "The notification starts when an agent is working or needs you, and ends 15 minutes after everything is idle or done."
+        },
+        Modifier.padding(top = 8.dp),
+    )
 }

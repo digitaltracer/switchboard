@@ -153,6 +153,16 @@ impl Fcm {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs() as i64);
         let ttl = (push.expires_at - now).max(0);
+        // The card is drawn by the app from the board it fetches; the push only wakes it.
+        if let Some(l) = &push.live {
+            data.insert("event".into(), l.event.clone().into());
+            return Ok(json!({ "message": {
+                "token": token,
+                "data": data,
+                "android": { "priority": if l.urgent { "high" } else { "normal" },
+                             "collapse_key": push.collapse_id, "ttl": format!("{ttl}s") },
+            }}));
+        }
         Ok(json!({ "message": {
             "token": token,
             "notification": { "title": title, "body": body },

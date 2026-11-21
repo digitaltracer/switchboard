@@ -8,7 +8,13 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use crate::herdr::{Client, session_socket};
+
+/// herdr-core's agents go by `hc/<agent>`, so no Herdr session may be called that.
+pub const CORE_NAME: &str = "hc";
+static WARNED_CORE_NAME: AtomicBool = AtomicBool::new(false);
 
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 const PING_TIMEOUT: Duration = Duration::from_secs(2);
@@ -105,6 +111,15 @@ impl Herdrs {
                 .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
                 .map(|e| e.file_name().to_string_lossy().into_owned())
                 .filter(|n| valid_session_name(n))
+                .filter(|n| {
+                    let core = n == CORE_NAME;
+                    if core && !WARNED_CORE_NAME.swap(true, Ordering::Relaxed) {
+                        tracing::warn!(
+                            "skipping the Herdr session named hc: that name is herdr-core's"
+                        );
+                    }
+                    !core
+                })
                 .collect();
             found.sort();
             names.extend(found.into_iter().map(Some));
@@ -127,10 +142,10 @@ impl Herdrs {
         out
     }
 
-    /// A free session name: `base`, else `base` with more of `id`.
+    /// A free session name: `base`, else `base` with more of `id`. Never `hc`.
     pub fn free_name(&self, base: &str, id: &str) -> String {
         let taken = |n: &str| match &self.multi {
-            Some(m) => m.config_dir.join("sessions").join(n).exists(),
+            Some(m) => n == CORE_NAME || m.config_dir.join("sessions").join(n).exists(),
             None => false,
         };
         if !taken(base) {
@@ -271,7 +286,7 @@ pub fn qualified(session: Option<&str>, agent: &str) -> String {
     }
 }
 
-/// Splits `<session>/<agent>`; a plain name has no session.
+/// Splits `<session>/<agent>`; a plain name has no session. `hc/<agent>` is herdr-core's.
 pub fn split_qualified(name: &str) -> (Option<&str>, &str) {
     match name.split_once('/') {
         Some((s, a)) if valid_session_name(s) => (Some(s), a),

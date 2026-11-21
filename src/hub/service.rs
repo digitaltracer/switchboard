@@ -19,12 +19,14 @@ use crate::agents::claude::answers;
 use crate::cli::Agent;
 use crate::config::{HubConfig, ProjectConfig};
 use crate::proto::{
-    AgentActivity, AgentPromptOutcome, AgentSummary, CAP_ACTIVITY, DialogView, ErrorCode, Event,
-    Frame, Hello, Op, OwnedSession, ProtoError, SkillInfo, TranscriptPage,
+    AgentActivity, AgentPromptOutcome, AgentSummary, CAP_ACTIVITY, CAP_DIFF, CAP_START_BACKEND,
+    DialogView, ErrorCode, Event, Frame, Hello, Op, OwnedSession, ProtoError, SkillInfo,
+    StartBackend, StartOptions, TranscriptPage,
 };
 use crate::redact::{redact, redact_as, redact_str};
 use crate::runner::random_id;
 use crate::runner::sessions::agent_name;
+use crate::store::ShipButton;
 use crate::store::{
     AnswerProof, ApprovalProof, ApprovalRecord, AttentionRecord, Begin, DecideOutcome, Decision,
     Delivery, Lifecycle, NewOperation, OpState, Operation, SeenAgent, SeenAgentRecord,
@@ -36,6 +38,8 @@ use crate::whatsapp::watchlist::WatchState;
 pub const DEFAULT_MACHINE: &str = "vps";
 /// Longest a runner start can take: worktree, agent launch, liveness, readiness and the prompt.
 pub const START_TIMEOUT: Duration = Duration::from_secs(240);
+/// The runner waits up to 2 s for the core's hello.
+const START_OPTIONS_TIMEOUT: Duration = Duration::from_secs(5);
 pub const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 pub const STOP_TIMEOUT: Duration = Duration::from_secs(90);
 pub const DEDUPE_WINDOW: Duration = Duration::from_secs(60);
@@ -172,6 +176,11 @@ pub enum HubError {
     MachineOffline(String),
     #[error("machine {0:?} is reconciling after a reconnect; retry shortly")]
     Reconciling(String),
+    /// The start chose where to open, and this machine's runner can't be told.
+    #[error(
+        "machine {0:?} can't choose where a session opens; update its runner, or start without choosing"
+    )]
+    BackendUnsupported(String),
     #[error("unknown session {0:?}")]
     UnknownSession(String),
     #[error("unknown approval {0:?} for this session")]
@@ -215,6 +224,7 @@ impl HubError {
             HubError::ProjectNotOnMachine { .. } => "project_not_on_machine".into(),
             HubError::MachineOffline(_) => "machine_offline".into(),
             HubError::Reconciling(_) => "reconciling".into(),
+            HubError::BackendUnsupported(_) => "backend_unavailable".into(),
             HubError::UnknownSession(_) => "unknown_session".into(),
             HubError::UnknownApproval(_) => "unknown_approval".into(),
             HubError::ApproveNotAllowed(_) => "approve_not_allowed".into(),
@@ -268,6 +278,9 @@ pub struct AgentDialog {
     /// Herdr says the agent is waiting on its owner; false from runners older than this field.
     #[serde(default)]
     pub blocked: bool,
+    /// The process behind the name now, as a `waiting` event names it; none from older runners.
+    #[serde(default)]
+    pub terminal_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -277,6 +290,9 @@ pub struct AttentionView {
     pub record: AttentionRecord,
     /// The dialog, while open.
     pub dialog: Option<DialogView>,
+    /// Whether the agent now under its name is the one that asked: false once it ended or another
+    /// took the name, none when that can't be told (machine offline, an older runner).
+    pub same_agent: Option<bool>,
 }
 
 /// One option of the dialog on an agent's screen, as the runner listed it.
@@ -298,6 +314,10 @@ pub struct AnswerResult {
     pub operation_id: String,
     #[serde(default)]
     pub replayed: bool,
+    /// What the screen shows after the answer, such as a group's next question. Not recorded:
+    /// a replay has none.
+    #[serde(skip)]
+    pub next: Option<DialogView>,
 }
 
 #[derive(Debug, Clone)]
@@ -311,6 +331,8 @@ pub struct StartRequest {
     pub agent: Option<Agent>,
     pub notify: bool,
     pub request_id: Option<String>,
+    /// Where it opens on the machine; none leaves it to the runner's `new_sessions`.
+    pub backend: Option<StartBackend>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -413,6 +435,8 @@ pub struct SessionView {
     pub herdr_session: Option<String>,
     /// The owner's name for it, given when it was started.
     pub name: Option<String>,
+    /// The space its agent was last seen in. Untrusted text.
+    pub space: Option<String>,
 }
 
 /// Every session, newest first, at one list revision.
@@ -526,6 +550,117 @@ pub struct ChangedFile {
     /// Lines added and deleted; none for a binary or new untracked file.
     pub added: Option<u64>,
     pub deleted: Option<u64>,
+    #[serde(default)]
+    pub binary: bool,
+    /// Bytes, for a binary file still in the worktree.
+    #[serde(default)]
+    pub size: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DiffLine {
+    /// `" "`, `"+"` or `"-"`.
+    pub kind: String,
+    pub old: Option<u32>,
+    pub new: Option<u32>,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DiffHunk {
+    pub header: String,
+    pub old_start: u32,
+    pub new_start: u32,
+    pub lines: Vec<DiffLine>,
+    /// The hunk was longer than a page and is cut short.
+    #[serde(default)]
+    pub cut: bool,
+}
+
+/// One changed file's diff, a page of hunks, masked.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FileDiff {
+    pub path: String,
+    pub binary: bool,
+    pub size: Option<u64>,
+    #[serde(default)]
+    pub added: Option<u64>,
+    #[serde(default)]
+    pub deleted: Option<u64>,
+    pub hunk_count: u32,
+    pub hunks: Vec<DiffHunk>,
+    /// The first hunk of the next page.
+    pub next: Option<u32>,
+    /// The file is the kind that holds secrets, so its content isn't shown.
+    #[serde(default)]
+    pub withheld: bool,
+}
+
+impl FileDiff {
+    fn withheld(path: &str) -> Self {
+        Self {
+            path: redact_str(path),
+            binary: false,
+            size: None,
+            added: None,
+            deleted: None,
+            hunk_count: 0,
+            hunks: vec![],
+            next: None,
+            withheld: true,
+        }
+    }
+
+    /// Masks every line; a private key's lines between its BEGIN and END are masked whole, since
+    /// one line alone doesn't look like a secret.
+    pub fn mask(&mut self) {
+        self.path = redact_str(&self.path);
+        for h in &mut self.hunks {
+            h.header = redact_str(&h.header);
+            let mut in_key = false;
+            for l in &mut h.lines {
+                let key_line = l.text.contains("PRIVATE KEY-----");
+                let begins = key_line && l.text.contains("-----BEGIN");
+                let ends = key_line && l.text.contains("-----END");
+                l.text = if in_key || begins {
+                    "[redacted private key]".into()
+                } else {
+                    redact_str(&l.text)
+                };
+                in_key = (in_key || begins) && !ends;
+            }
+        }
+    }
+}
+
+pub const MAX_SHIP_BUTTONS: usize = 12;
+
+/// A skill or command name as agents list them: `pr`, `code-review`, `plugin:skill`.
+pub fn valid_skill_name(s: &str) -> bool {
+    let mut chars = s.chars();
+    chars.next().is_some_and(|c| c.is_ascii_alphanumeric())
+        && s.len() <= 64
+        && chars.all(|c| c.is_ascii_alphanumeric() || ":_.-".contains(c))
+}
+
+/// Files whose whole content is a secret, by name: env files, keys and credential stores.
+pub fn secret_file(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase();
+    ["id_rsa", "id_ed25519", "id_ecdsa", ".env"]
+        .iter()
+        .any(|p| name.starts_with(p))
+        || [
+            ".netrc",
+            ".pgpass",
+            "credentials",
+            "credentials.json",
+            ".npmrc",
+            ".pypirc",
+        ]
+        .contains(&name.as_str())
+        || [".pem", ".key", ".p8", ".p12", ".pfx", ".keystore", ".jks"]
+            .iter()
+            .any(|ext| name.ends_with(ext))
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -572,7 +707,14 @@ pub struct SessionService {
     /// Per machine, starts whose outcome is unknown; that machine takes no new start until they resolve.
     unresolved: Mutex<HashMap<String, HashSet<String>>>,
     screen_reads: tokio::sync::Semaphore,
+    /// Each agent's last state, for "while you were away"; `away::state_of` says which.
+    agent_states: Mutex<HashMap<(String, String), String>>,
+    /// The lock-screen board's memory, and the last board built.
+    board: tokio::sync::Mutex<(crate::live::Tracker, Option<crate::live::Board>)>,
 }
+
+/// A board younger than this is reused rather than rebuilt.
+const BOARD_FRESH_SECS: i64 = 3;
 
 impl SessionService {
     pub fn new(cfg: HubConfig, store: Store, clock: Clock) -> Arc<Self> {
@@ -587,6 +729,8 @@ impl SessionService {
             start_lock: tokio::sync::Mutex::new(()),
             unresolved: Mutex::default(),
             screen_reads: tokio::sync::Semaphore::new(MAX_SCREEN_READS),
+            board: tokio::sync::Mutex::default(),
+            agent_states: Mutex::default(),
         })
     }
 
@@ -608,6 +752,11 @@ impl SessionService {
 
     pub fn readiness(&self, machine: &str) -> Readiness {
         self.runners.readiness(machine)
+    }
+
+    /// Ticks whenever sessions, approvals or attention change.
+    pub fn watch_changes(&self) -> watch::Receiver<u64> {
+        self.changes.subscribe()
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<HubEvent> {
@@ -683,6 +832,19 @@ impl SessionService {
             .get_session(id)
             .await?
             .ok_or_else(|| HubError::UnknownSession(id.to_owned()))
+    }
+
+    /// A session whose agent may still be there to read; an ended one is refused without
+    /// asking its runner, so phones stop polling it.
+    async fn live_session(&self, id: &str) -> Result<SessionRecord, HubError> {
+        let s = self.session(id).await?;
+        match s.lifecycle {
+            Lifecycle::Starting | Lifecycle::Running | Lifecycle::Stopping => Ok(s),
+            lifecycle => Err(HubError::NotRunning {
+                id: s.id,
+                lifecycle,
+            }),
+        }
     }
 
     /// A session that belongs to `machine`; events never touch another machine's sessions.
@@ -878,6 +1040,28 @@ impl SessionService {
             .collect()
     }
 
+    /// Where a new session on `machine` would open, and what the phone may choose. None from a
+    /// runner too old to say.
+    pub async fn start_options(&self, machine: &str) -> Result<Option<StartOptions>, HubError> {
+        if self.cfg.machine(machine).is_none() {
+            return Err(HubError::UnknownMachine(machine.into()));
+        }
+        if self.runners.readiness(machine) == Readiness::Offline {
+            return Err(HubError::MachineOffline(machine.into()));
+        }
+        if !self.runners.can(machine, CAP_START_BACKEND) {
+            return Ok(None);
+        }
+        let v = self
+            .runners
+            .call(machine, Op::StartOptions, START_OPTIONS_TIMEOUT)
+            .await
+            .map_err(HubError::Runner)?;
+        serde_json::from_value(v)
+            .map(Some)
+            .map_err(|e| HubError::Runner(ProtoError::new(ErrorCode::Internal, e.to_string())))
+    }
+
     // Start.
 
     pub async fn start(
@@ -908,10 +1092,14 @@ impl SessionService {
         }
         let agent = req.agent.unwrap_or(project.default_agent);
         let prompt_sha256 = sha256_hex(&prompt);
-        let fp = fingerprint(&json!({
+        let mut fp_args = json!({
             "project": project.id, "machine": machine, "agent": agent.as_str(),
             "prompt_sha256": prompt_sha256, "notify": req.notify,
-        }));
+        });
+        if let Some(b) = req.backend {
+            fp_args["backend"] = json!(b.as_str());
+        }
+        let fp = fingerprint(&fp_args);
         let rid = req.request_id.as_deref();
         if let Some(v) = self.replayed(rid, KIND_START, &fp).await? {
             return self.replay_start(v).await;
@@ -923,6 +1111,9 @@ impl SessionService {
                 return Err(HubError::Reconciling(machine));
             }
             Readiness::Ready => {}
+        }
+        if req.backend.is_some() && !self.runners.can(&machine, CAP_START_BACKEND) {
+            return Err(HubError::BackendUnsupported(machine));
         }
 
         let guard = self.start_lock.lock().await;
@@ -967,6 +1158,7 @@ impl SessionService {
             start_commit: None,
             herdr_session: None,
             name,
+            space: None,
         };
         let op_id = rid
             .map(str::to_owned)
@@ -989,6 +1181,7 @@ impl SessionService {
             json!({
                 "project_id": project.id, "machine_id": machine, "agent": agent.as_str(),
                 "branch": record.branch, "notify": req.notify, "prompt": prompt,
+                "backend": req.backend.map(StartBackend::as_str),
                 "name": record.name,
                 "operation_id": op_id,
             }),
@@ -1003,6 +1196,7 @@ impl SessionService {
             agent,
             prompt: prompt.clone(),
             deny_patterns: project.deny_patterns.clone(),
+            backend: req.backend,
         };
         match self.runners.call(&machine, op, START_TIMEOUT).await {
             Ok(v) => {
@@ -1159,7 +1353,7 @@ impl SessionService {
     /// The last `lines` of the agent's terminal, ANSI stripped by Herdr. Untrusted text. Reading
     /// past the screen scrolls a full-screen agent, so this is only for reads a person asks for.
     pub async fn read_history(&self, session_id: &str, lines: u32) -> Result<ReadResult, HubError> {
-        let s = self.session(session_id).await?;
+        let s = self.live_session(session_id).await?;
         let op = Op::Read {
             session_id: session_id.to_owned(),
             lines: lines.min(MAX_READ_LINES),
@@ -1201,6 +1395,96 @@ impl SessionService {
         Ok(r)
     }
 
+    /// Every scope's ship buttons: `*` for all projects, then projects with their own list.
+    pub async fn ship_buttons(&self) -> Result<Vec<(String, Vec<ShipButton>)>, HubError> {
+        Ok(self.store.ship_buttons().await?)
+    }
+
+    /// Replaces one scope's ship buttons; an empty list removes a project's own list, so it
+    /// shows the one for all projects again.
+    pub async fn set_ship_buttons(
+        &self,
+        caller: &Caller,
+        scope: &str,
+        buttons: Vec<ShipButton>,
+    ) -> Result<(), HubError> {
+        if scope != "*" && !self.cfg.projects.iter().any(|p| p.id == scope) {
+            return Err(HubError::BadRequest(format!("unknown project {scope}")));
+        }
+        if buttons.len() > MAX_SHIP_BUTTONS {
+            return Err(HubError::BadRequest(format!(
+                "at most {MAX_SHIP_BUTTONS} ship buttons"
+            )));
+        }
+        let mut seen = HashSet::new();
+        let mut clean = Vec::new();
+        for b in buttons {
+            let skill = b.skill.trim();
+            // Claude Code's skills go by `/name`, Codex's by `$name`; a bare name is a `/` one.
+            let skill = if skill.starts_with(['/', '$']) {
+                skill.to_owned()
+            } else {
+                format!("/{skill}")
+            };
+            let label = b.label.trim().to_owned();
+            if !valid_skill_name(&skill[1..]) {
+                return Err(HubError::BadRequest(format!(
+                    "{skill:?} is not a skill name"
+                )));
+            }
+            if label.is_empty() || label.chars().count() > 40 || label.chars().any(char::is_control)
+            {
+                return Err(HubError::BadRequest(
+                    "a label is 1 to 40 characters on one line".into(),
+                ));
+            }
+            if seen.insert(skill.clone()) {
+                clean.push(ShipButton {
+                    skill,
+                    label,
+                    after_pr: b.after_pr,
+                });
+            }
+        }
+        let detail =
+            json!({ "scope": scope, "skills": clean.iter().map(|b| &b.skill).collect::<Vec<_>>() });
+        self.store.set_ship_buttons(scope, clean).await?;
+        self.audit(&caller.actor, None, "ship_buttons_set", detail)
+            .await
+    }
+
+    /// A page of one changed file's diff, masked. Read-only; sessions Switchboard started only.
+    pub async fn diff(
+        &self,
+        session_id: &str,
+        path: &str,
+        from: u32,
+    ) -> Result<FileDiff, HubError> {
+        let s = self.session(session_id).await?;
+        if secret_file(path) {
+            return Ok(FileDiff::withheld(path));
+        }
+        if !self.runners.can(&s.machine_id, CAP_DIFF) {
+            return Err(HubError::BadRequest(
+                "this machine's runner is too old to show diffs; update Switchboard there".into(),
+            ));
+        }
+        let op = Op::Diff {
+            session_id: session_id.to_owned(),
+            path: path.to_owned(),
+            from,
+        };
+        let v = self
+            .runners
+            .call(&s.machine_id, op, CALL_TIMEOUT)
+            .await
+            .map_err(|e| runner_error(&s.machine_id, e))?;
+        let mut d: FileDiff = serde_json::from_value(v)
+            .map_err(|e| HubError::BadRequest(format!("runner diff: {e}")))?;
+        d.mask();
+        Ok(d)
+    }
+
     /// A page of the session's conversation, from its agent's own log. Untrusted text, masked.
     /// With `after` and `wait_ms`, the runner first waits for the log to grow past `after`.
     pub async fn transcript(
@@ -1210,7 +1494,7 @@ impl SessionService {
         before: Option<u64>,
         wait_ms: Option<u64>,
     ) -> Result<TranscriptPage, HubError> {
-        let s = self.session(session_id).await?;
+        let s = self.live_session(session_id).await?;
         let agent = s
             .agent_name
             .ok_or_else(|| HubError::BadRequest("this session has no agent name".into()))?;
@@ -1220,7 +1504,7 @@ impl SessionService {
 
     /// The skills and commands the session's agent can run.
     pub async fn session_skills(&self, session_id: &str) -> Result<Vec<SkillInfo>, HubError> {
-        let s = self.session(session_id).await?;
+        let s = self.live_session(session_id).await?;
         let agent = s
             .agent_name
             .ok_or_else(|| HubError::BadRequest("this session has no agent name".into()))?;
@@ -1295,7 +1579,7 @@ impl SessionService {
         session_id: &str,
         colours: bool,
     ) -> Result<ReadResult, HubError> {
-        let s = self.session(session_id).await?;
+        let s = self.live_session(session_id).await?;
         let agent = s
             .agent_name
             .ok_or_else(|| HubError::BadRequest("this session has no agent name".into()))?;
@@ -1381,15 +1665,18 @@ impl SessionService {
             label_sha256: req.label_sha256.clone(),
             deny_only: !approve,
         };
-        if let Err(e) = self.runners.call(&req.machine_id, op, CALL_TIMEOUT).await {
-            let refused = e.code == ErrorCode::ApproveNotAllowed;
-            let err = self.settle_err(&op_id, sid, &req.machine_id, e).await;
-            return Err(if refused {
-                HubError::ApproveNotAllowed(caller.door.as_str())
-            } else {
-                err
-            });
-        }
+        let reply = match self.runners.call(&req.machine_id, op, CALL_TIMEOUT).await {
+            Ok(v) => v,
+            Err(e) => {
+                let refused = e.code == ErrorCode::ApproveNotAllowed;
+                let err = self.settle_err(&op_id, sid, &req.machine_id, e).await;
+                return Err(if refused {
+                    HubError::ApproveNotAllowed(caller.door.as_str())
+                } else {
+                    err
+                });
+            }
+        };
         self.store
             .resolve_attention(
                 &req.machine_id,
@@ -1400,14 +1687,47 @@ impl SessionService {
             )
             .await?;
         self.audit("hub", sid, "dialog_answered", detail).await?;
-        let result = AnswerResult {
+        let mut result = AnswerResult {
             outcome: "answered".into(),
             operation_id: op_id.clone(),
             replayed: false,
+            next: None,
         };
         let v = serde_json::to_value(&result).expect("serializes");
         self.finish(&op_id, OpState::Done, sid, &v).await?;
+        result.next = shown(&reply);
         Ok(result)
+    }
+
+    /// Shows the previous question of a group again on an agent's screen. It submits nothing, so
+    /// it needs neither a signature nor the approve right; the runner checks it against a fresh
+    /// read, and a repeat finds a different occurrence and does nothing.
+    pub async fn dialog_back(
+        &self,
+        caller: &Caller,
+        machine: &str,
+        agent: &str,
+        occurrence: &str,
+    ) -> Result<Option<DialogView>, HubError> {
+        self.known_machine(machine)?;
+        let op = Op::Back {
+            agent: agent.to_owned(),
+            occurrence: occurrence.to_owned(),
+        };
+        let result = self.runners.call(machine, op, CALL_TIMEOUT).await;
+        let outcome = match &result {
+            Ok(_) => "moved".to_owned(),
+            Err(e) => format!("{:?}", e.code),
+        };
+        let detail = json!({
+            "machine_id": machine, "agent": redact_str(agent), "occurrence": occurrence,
+            "outcome": outcome,
+        });
+        self.audit(&caller.actor, None, "dialog_back", detail)
+            .await?;
+        result
+            .map(|reply| shown(&reply))
+            .map_err(|e| runner_error(machine, e))
     }
 
     /// The dialog on an agent's screen, masked, and the occurrence the screen shows. It shares
@@ -1427,12 +1747,8 @@ impl SessionService {
             .map_err(|e| runner_error(machine, e))?;
         let mut d: AgentDialog = serde_json::from_value(v)
             .map_err(|e| HubError::BadRequest(format!("runner dialog: {e}")))?;
-        // The runner masked it already; masking is idempotent, so the label hashes still match.
         if let Some(view) = &mut d.dialog {
-            view.prompt = redact_str(&view.prompt);
-            for o in &mut view.options {
-                o.label = redact_str(&o.label);
-            }
+            remask(view);
         }
         Ok(d)
     }
@@ -1445,32 +1761,42 @@ impl SessionService {
             .get_attention(id)
             .await?
             .ok_or_else(|| HubError::UnknownAttention(id.to_owned()))?;
-        let settle = |state: &'static str, a: AttentionRecord| AttentionView {
-            state: state.to_owned(),
+        let settle = |state: String, a: AttentionRecord, same_agent| AttentionView {
+            state,
             record: a,
             dialog: None,
+            same_agent,
         };
         if let Some(r) = a.resolution.clone() {
-            return Ok(AttentionView {
-                state: r,
-                record: a,
-                dialog: None,
-            });
+            let same = self.same_agent(&a).await;
+            return Ok(settle(r, a, same));
         }
         if self.now() >= a.expires_at {
             self.resolve_one(&a, "expired").await?;
-            return Ok(settle("expired", a));
+            let same = self.same_agent(&a).await;
+            return Ok(settle("expired".into(), a, same));
         }
         let current = self.agent_dialog(&a.machine_id, &a.agent).await?;
         if current.occurrence != a.occurrence {
             self.resolve_one(&a, "gone").await?;
-            return Ok(settle("gone", a));
+            let same = current.terminal_id.map(|t| t == a.terminal_id);
+            return Ok(settle("gone".into(), a, same));
         }
         Ok(AttentionView {
             state: "open".into(),
             record: a,
             dialog: current.dialog,
+            same_agent: Some(true),
         })
+    }
+
+    /// Whether the agent now under a waiting push's name is the process that asked.
+    async fn same_agent(&self, a: &AttentionRecord) -> Option<bool> {
+        match self.agent_dialog(&a.machine_id, &a.agent).await {
+            Ok(d) => d.terminal_id.map(|t| t == a.terminal_id),
+            Err(HubError::Runner(e)) if e.code == ErrorCode::NotFound => Some(false),
+            Err(_) => None,
+        }
     }
 
     async fn resolve_one(&self, a: &AttentionRecord, resolution: &str) -> Result<(), HubError> {
@@ -1666,6 +1992,8 @@ impl SessionService {
         for m in self.machines().into_iter().filter(|m| m.connected) {
             match self.agents(&m.id).await {
                 Ok(agents) => {
+                    self.record_session_spaces(&m.id, &agents).await;
+                    self.note_states(&m.id, &agents).await;
                     let agents: Vec<_> = agents
                         .into_iter()
                         .filter(|a| a.session_id.is_none() && !session_agents.contains(&a.name))
@@ -1678,6 +2006,7 @@ impl SessionService {
                             kind: a.kind.clone(),
                             name: a.name.clone(),
                             title: a.title.clone(),
+                            space: a.space.clone(),
                         })
                         .collect();
                     if let Err(e) = self.store.record_agents(&m.id, seen, self.now()).await {
@@ -1689,6 +2018,27 @@ impl SessionService {
             }
         }
         out
+    }
+
+    /// Keeps each listed session agent's space on its session, so the phone can file it there.
+    async fn record_session_spaces(&self, machine: &str, agents: &[AgentSummary]) {
+        let mut changed = false;
+        for a in agents {
+            let (Some(id), Some(space)) = (&a.session_id, &a.space) else {
+                continue;
+            };
+            match self
+                .store
+                .set_session_space(machine, id, &redact_str(space))
+                .await
+            {
+                Ok(c) => changed |= c,
+                Err(e) => tracing::warn!(session = %id, error = %e, "recording a session's space"),
+            }
+        }
+        if changed {
+            self.changed();
+        }
     }
 
     /// Every agent's last line on the connected machines whose runner advertises activity,
@@ -1732,6 +2082,85 @@ impl SessionService {
             answered.push(m);
         }
         (entries, answered)
+    }
+
+    /// Every agent on the connected machines as the lock-screen board needs it, names masked. A
+    /// session's undecided approval and a recorded dialog both count as needing the owner.
+    pub async fn live_inputs(&self) -> Result<Vec<crate::live::Seen>, HubError> {
+        let now = self.now();
+        let mut asked: HashMap<(String, String), i64> = HashMap::new();
+        let sessions = self.list().await?;
+        // A session goes by its label, as the app shows it.
+        let labels: HashMap<String, String> = sessions
+            .iter()
+            .map(|s| {
+                (
+                    s.id.clone(),
+                    route::label(&s.project_id, &s.id, s.name.as_deref()),
+                )
+            })
+            .collect();
+        for s in sessions {
+            let (Some(agent), Some(first)) = (
+                s.agent_name.clone(),
+                s.pending_approvals.iter().map(|a| a.created_at).min(),
+            ) else {
+                continue;
+            };
+            asked.insert((s.machine_id.clone(), agent), first);
+        }
+        for (machine, agent, at) in self.store.open_attention(now).await? {
+            let e = asked.entry((machine, agent)).or_insert(at);
+            *e = (*e).min(at);
+        }
+        let mut out = Vec::new();
+        for m in self.machines().into_iter().filter(|m| m.connected) {
+            let agents = match self.agents(&m.id).await {
+                Ok(a) => a,
+                Err(e) => {
+                    tracing::debug!(machine = %m.id, error = %e, "listing agents for the board");
+                    continue;
+                }
+            };
+            out.extend(agents.into_iter().map(|a| {
+                crate::live::Seen {
+                    needs_you_since: asked
+                        .get(&(m.id.clone(), a.name.clone()))
+                        .map(|ms| ms / 1000),
+                    label: redact_str(
+                        &a.session_id
+                            .as_ref()
+                            .and_then(|id| labels.get(id).cloned())
+                            .unwrap_or_else(|| {
+                                crate::live::agent_label(
+                                    &a.name,
+                                    a.title.as_deref(),
+                                    a.kind.as_deref(),
+                                )
+                            }),
+                    ),
+                    machine: m.id.clone(),
+                    name: redact_str(&a.name),
+                    space: a.space.as_deref().map(redact_str),
+                    status: a.agent_status,
+                    error: a.error,
+                }
+            }));
+        }
+        Ok(out)
+    }
+
+    /// The lock-screen board, masked: built at most every few seconds however many ask.
+    pub async fn board(&self) -> Result<crate::live::Board, HubError> {
+        let mut g = self.board.lock().await;
+        let now = self.now() / 1000;
+        if let Some(b) = g.1.as_ref().filter(|b| now - b.at < BOARD_FRESH_SECS) {
+            return Ok(b.clone());
+        }
+        let inputs = self.live_inputs().await?;
+        let b = g.0.observe(now, &inputs);
+        g.1 = Some(b.clone());
+        Ok(b)
     }
 
     /// Agents Switchboard didn't start, on every connected machine.
@@ -2498,6 +2927,7 @@ impl SessionService {
             start_commit: s.start_commit,
             herdr_session: s.herdr_session,
             name: s.name,
+            space: s.space,
         })
     }
 
@@ -3050,6 +3480,12 @@ impl SessionService {
                 ..
             } => {
                 if let Some(s) = self.owned_by(machine, &session_id).await?
+                    && let Some(agent) = &s.agent_name
+                {
+                    self.note_state(machine, agent, Some(&s.id), &agent_status, false)
+                        .await;
+                }
+                if let Some(s) = self.owned_by(machine, &session_id).await?
                     && s.agent_status != agent_status
                 {
                     self.patch(
@@ -3256,6 +3692,8 @@ impl SessionService {
                 agent_name,
                 agent_status,
             } => {
+                self.note_state(machine, &agent_name, None, &agent_status, false)
+                    .await;
                 // An agent that moved on no longer waits; its pushes not yet sent are dropped.
                 if agent_status != "blocked" {
                     self.store
@@ -3377,6 +3815,24 @@ fn finished_turn(s: &SessionRecord, new_status: &str) -> bool {
         && matches!(new_status, "idle" | "done")
 }
 
+/// The runner masked it already; masking is idempotent, so the label hashes still match.
+fn remask(view: &mut DialogView) {
+    view.prompt = redact_str(&view.prompt);
+    for o in &mut view.options {
+        o.label = redact_str(&o.label);
+    }
+    for s in &mut view.steps {
+        s.label = redact_str(&s.label);
+    }
+}
+
+/// The dialog a runner says the screen shows after its key, if it sent one.
+fn shown(reply: &Value) -> Option<DialogView> {
+    let mut view: DialogView = serde_json::from_value(reply.get("dialog")?.clone()).ok()?;
+    remask(&mut view);
+    Some(view)
+}
+
 fn runner_error(machine: &str, e: ProtoError) -> HubError {
     match e.code {
         ErrorCode::RunnerDisconnected => HubError::MachineOffline(machine.to_owned()),
@@ -3418,6 +3874,9 @@ async fn approval_now(svc: &SessionService, id: &str) -> Result<ApprovalRecord, 
         .await?
         .ok_or_else(|| HubError::UnknownApproval(id.to_owned()))
 }
+
+#[path = "away.rs"]
+pub mod away;
 
 #[cfg(test)]
 #[path = "service_tests.rs"]

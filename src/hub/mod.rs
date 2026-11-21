@@ -3,6 +3,7 @@
 //! session service.
 
 pub mod app;
+pub mod live;
 pub mod relay_link;
 pub mod route;
 pub mod runners;
@@ -59,6 +60,7 @@ pub async fn run(config: PathBuf, whatsapp_pair_phone: Option<String>) -> anyhow
             claude_config: l.claude_config.clone(),
             claude_permission_mode: l.claude_permission_mode,
             herdr_session: l.herdr_session.clone(),
+            new_sessions: l.new_sessions,
         });
     let _local = match local {
         Some(settings) => {
@@ -85,6 +87,15 @@ pub async fn run(config: PathBuf, whatsapp_pair_phone: Option<String>) -> anyhow
         None => None,
     };
     let _relay = link.as_ref().map(|l| AbortOnDrop(l.spawn()));
+    let _live = match (&push, &link) {
+        (Some(p), _) => Some(AbortOnDrop(
+            live::LiveLoop::new(svc.clone(), crate::push::Senders::from_config(p)?).spawn(),
+        )),
+        (None, Some(link)) => Some(AbortOnDrop(
+            live::LiveLoop::new(svc.clone(), relay_link::RelaySender(link.clone())).spawn(),
+        )),
+        (None, None) => None,
+    };
     let _push = match (&push, &link) {
         (Some(p), _) => {
             tracing::info!(sender = ?p.sender, "push notifications on");

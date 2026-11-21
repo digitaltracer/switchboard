@@ -9,6 +9,8 @@ import com.digitaltracer.switchboard.api.apis.MetaApi
 import com.digitaltracer.switchboard.api.apis.PairingApi
 import com.digitaltracer.switchboard.api.apis.SessionsApi
 import com.digitaltracer.switchboard.api.infrastructure.ClientError
+import com.digitaltracer.switchboard.api.models.FileDiffView
+import com.digitaltracer.switchboard.api.models.LiveRegistrationRequest
 import com.digitaltracer.switchboard.api.infrastructure.ClientException
 import com.digitaltracer.switchboard.api.infrastructure.Serializer
 import com.digitaltracer.switchboard.api.infrastructure.ServerError
@@ -18,6 +20,7 @@ import com.digitaltracer.switchboard.api.models.Agents
 import com.digitaltracer.switchboard.api.models.ApiError
 import com.digitaltracer.switchboard.api.models.Changes
 import com.digitaltracer.switchboard.api.models.DecisionKind
+import com.digitaltracer.switchboard.api.models.DialogBackRequest
 import com.digitaltracer.switchboard.api.models.DecisionRequest
 import com.digitaltracer.switchboard.api.models.DecisionResponse
 import com.digitaltracer.switchboard.api.models.DeleteResponse
@@ -43,6 +46,7 @@ import com.digitaltracer.switchboard.api.models.PushTokenRequest
 import com.digitaltracer.switchboard.api.models.Session
 import com.digitaltracer.switchboard.api.models.Skill
 import com.digitaltracer.switchboard.api.models.Sessions
+import com.digitaltracer.switchboard.api.models.StartOptions
 import com.digitaltracer.switchboard.api.models.StartRequest
 import com.digitaltracer.switchboard.api.models.StartResponse
 import com.digitaltracer.switchboard.api.models.StopRequest
@@ -77,7 +81,20 @@ sealed class HubError(message: String) : Exception(message) {
     class Hub(override val code: String, message: String, val operationId: String?, val sessionId: String?) : HubError(message)
 
     /** No answer: the request may or may not have reached the hub. */
-    class Unreachable(why: String) : HubError("Can't reach the hub: $why")
+    class Unreachable(why: String, val reach: Reach = Reach.Unknown) : HubError("Can't reach the hub: $why")
+
+    /** Which step from this phone to the hub failed. */
+    enum class Reach {
+        /** This phone has no network. */
+        Offline,
+        /** The relay didn't answer. */
+        Relay,
+        /** The relay is up, but the hub isn't connected to it. */
+        Hub,
+        /** The hub is connected but didn't answer in time. */
+        Slow,
+        Unknown,
+    }
 
     object NotPaired : HubError("This phone isn't paired.")
 
@@ -329,9 +346,24 @@ class Hub private constructor(
     /** Files the session changed since it started, committed or not. */
     suspend fun changes(id: String): Changes = authed { sessions.getChanges(id) }
 
+    /** A page of one changed file's diff, from hunk [from]. */
+    suspend fun diff(id: String, path: String, from: Int = 0): FileDiffView = authed { sessions.getDiff(id, path, from) }
+
+    /** [backend] is `hc` or `herdr`; null leaves it to the machine's runner. */
     suspend fun start(
         project: String, prompt: String, machine: String?, agent: String?, notify: Boolean, requestId: String,
-    ): StartResponse = authed { sessions.startSession(StartRequest(project, prompt, requestId, machine, agent, notify)) }
+        backend: String? = null,
+    ): StartResponse = authed {
+        sessions.startSession(
+            StartRequest(
+                projectId = project, prompt = prompt, requestId = requestId, machineId = machine, agent = agent,
+                notify = notify, backend = backend,
+            ),
+        )
+    }
+
+    /** Where a new session on [machine] opens, and which backends can take one now. */
+    suspend fun startOptions(machine: String): StartOptions = authed { sessions.getStartOptions(machine) }
 
     suspend fun operation(requestId: String): OperationStatus = authed { sessions.getOperation(requestId) }
 
@@ -412,10 +444,13 @@ class Hub private constructor(
     /** What the agent's screen shows: a dialog with options, or whether it waits on something else. */
     suspend fun dialog(machine: String, agent: String): AgentDialog = authed { agentsApi.getAgentDialog(machine, agent) }
 
-    /** Picks one offered option: the deny unsigned, any other option signed with the approval key. */
+    /**
+     * Picks one offered option: the deny unsigned, and so one question of a group, which submits
+     * nothing; any other option signed with the approval key.
+     */
     suspend fun answer(machine: String, agent: String, dialog: Dialog, option: DialogOption, reason: String, requestId: String): DialogAnswerResponse {
         var body = DialogAnswerRequest(machine, agent, dialog.occurrenceId, option.id, option.labelSha256, requestId)
-        if (!option.isDeny) {
+        if (!option.isDeny && option.provisional != true) {
             val pairing = pairing ?: throw HubError.NotPaired
             val ch = authed { agentsApi.dialogChallenge(DialogChallengeRequest(machine, agent, dialog.occurrenceId)) }
             val message = SignedMessage.answer(
@@ -426,6 +461,13 @@ class Hub private constructor(
         }
         return authed { agentsApi.answerDialog(body) }
     }
+
+    /**
+     * Shows the previous question of a group again, and returns it when the hub sends it. It
+     * submits nothing, so it is sent unsigned.
+     */
+    suspend fun back(machine: String, agent: String, dialog: Dialog): Dialog? =
+        authed { agentsApi.dialogBack(DialogBackRequest(machine, agent, dialog.occurrenceId)) }.dialog
 
     /** What a `waiting` push names, if it still shows. */
     suspend fun attention(id: String): Attention = authed { agentsApi.getAttention(id) }
@@ -438,6 +480,32 @@ class Hub private constructor(
 
     suspend fun setPushToken(token: String?, environment: PushEnvironment) =
         authed { devicesApi.setPushToken(PushTokenRequest(environment, token)) }
+
+    /** Turns on this phone's ongoing notification; Android sends no key, since it fetches the board. */
+    suspend fun setLive(mode: LiveShowMode) = authed {
+        devicesApi.setLive(LiveRegistrationRequest(mode = if (mode == LiveShowMode.Always) com.digitaltracer.switchboard.api.models.LiveMode.always else com.digitaltracer.switchboard.api.models.LiveMode.working))
+    }
+
+    suspend fun clearLive() = authed { devicesApi.clearLive() }
+
+    /** What agents did since [since] (Unix ms). */
+    suspend fun activity(since: Long): com.digitaltracer.switchboard.api.models.Activity = authed { agentsApi.getActivity(since) }
+
+    suspend fun activitySummary(since: Long): String =
+        authed { agentsApi.postActivitySummary(com.digitaltracer.switchboard.api.models.SummaryRequest(since)) }.summary
+
+    suspend fun awaySettings(): com.digitaltracer.switchboard.api.models.AwaySettingsView = authed { devicesApi.getAwaySettings() }
+
+    suspend fun setAwaySettings(s: com.digitaltracer.switchboard.api.models.AwaySettingsView) = authed { devicesApi.setAwaySettings(s) }
+
+    suspend fun shipButtons(): com.digitaltracer.switchboard.api.models.ShipButtons = authed { agentsApi.getShipButtons() }
+
+    /** Replaces one scope's buttons: `*` for all projects, or a project id. */
+    suspend fun setShipButtons(scope: String, buttons: List<ShipButton>) =
+        authed { agentsApi.setShipButtons(com.digitaltracer.switchboard.api.models.SetShipButtonsRequest(scope, buttons.map { it.view })) }
+
+    /** What the ongoing notification shows. */
+    suspend fun live(): LiveBoard = LiveBoard.of(authed { agentsApi.getLive() })
 
     /** Registers this phone's FCM token; FCM has no sandbox. */
     suspend fun setFcmToken(token: String?) =
