@@ -254,15 +254,21 @@ fun Changes.title(): String {
     return if (n == 1) "1 changed file" else "$n${if (truncated) "+" else ""} changed files"
 }
 
-/** Changed files as rows: the path, then what changed. */
+/** Changed files as rows: the path, then what changed. With [open], each opens its diff. */
 @Composable
-fun ChangesList(changes: Changes) {
+fun ChangesList(changes: Changes, open: ((Int) -> Unit)? = null) {
     Column(Modifier.fillMaxWidth()) {
         changes.files.forEachIndexed { i, f ->
             if (i > 0) Hairline()
-            Row(Modifier.fillMaxWidth().heightIn(min = 44.dp).padding(vertical = 8.dp).testTag(f.path), verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                Modifier.fillMaxWidth().then(if (open != null) Modifier.clickable { open(i) } else Modifier)
+                    .heightIn(min = 44.dp).padding(vertical = 8.dp).testTag(f.path),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 Text(f.path, Modifier.weight(1f), style = Type.mono(12.5f), color = palette.ink, maxLines = 1, overflow = TextOverflow.StartEllipsis)
-                if (f.added == null && f.deleted == null) {
+                if (f.binary == true) {
+                    Text("binary${f.propertySize?.let { " · ${com.digitaltracer.switchboard.core.fileSize(it)}" } ?: ""}", style = Type.mono(12.5f), color = palette.mut)
+                } else if (f.added == null && f.deleted == null) {
                     Text("new", style = Type.mono(12.5f), color = palette.ok)
                 } else {
                     Text("+${f.added ?: 0} ", style = Type.mono(12.5f), color = palette.ok)

@@ -32,6 +32,8 @@ import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.MapSerializer
@@ -44,6 +46,9 @@ sealed interface Route {
     data class AgentPage(val machine: String, val name: String) : Route
     data class Space(val key: AgentSpace.Key) : Route
     data class MachinePage(val machine: String) : Route
+    /** A changed file's diff; [paths] lets the page step through them all. */
+    data class Diff(val sessionId: String, val paths: List<String>, val index: Int) : Route
+    data object ShipSettings : Route
     data object Machines : Route
     data object Settings : Route
     /** The dialog on an agent's screen, as its own page. [meta]: `Claude Code · mac`. */
@@ -63,6 +68,7 @@ class AppModel(context: Context, val keys: DeviceKeys) {
     data class Said(val text: String, val at: Long)
 
     private val prefs = context.getSharedPreferences("switchboard", Context.MODE_PRIVATE)
+    private val appContext: Context = context.applicationContext
     val voiceKey = VoiceKey(prefs)
     private val scope = MainScope()
     private var pairJob: Job? = null
@@ -100,6 +106,46 @@ class AppModel(context: Context, val keys: DeviceKeys) {
     /** Those that ended in the last day. */
     var ended by mutableStateOf<List<EndedAgent>>(emptyList())
         private set
+
+    /** What agents did while this phone was away, until "Mark as seen". */
+    var away by mutableStateOf<com.digitaltracer.switchboard.api.models.Activity?>(null)
+        private set
+    /** The opt-in summary of [away]; on failure the facts stay. */
+    var awaySummary by mutableStateOf<String?>(null)
+        private set
+
+    /** On coming back: anything since the app was last open, if that was a while ago. */
+    fun loadAway() {
+        val hub = hub ?: return
+        val last = prefs.getLong(LAST_OPENED, 0)
+        val since = away?.since ?: last.takeIf { it > 0 && System.currentTimeMillis() - it >= com.digitaltracer.switchboard.core.AwayDigest.MIN_AWAY_MS } ?: return
+        scope.launch {
+            val a = runCatching { hub.activity(since) }.getOrNull() ?: return@launch
+            away = a.takeIf { it.agents.isNotEmpty() }
+            if (away?.summaryOn == true) runCatching { hub.activitySummary(since) }.onSuccess { awaySummary = it }
+        }
+    }
+
+    fun markAwaySeen() {
+        away = null
+        awaySummary = null
+        prefs.edit().putLong(LAST_OPENED, System.currentTimeMillis()).apply()
+    }
+
+    fun awayFor(machine: String, agent: String?, session: String?) =
+        away?.agents?.firstOrNull { (it.sessionId != null && it.sessionId == session) || (it.machineId == machine && it.agent == agent) }
+
+    /** The ship buttons kept on the hub, shared by every paired phone. */
+    var shipButtons by mutableStateOf<com.digitaltracer.switchboard.api.models.ShipButtons?>(null)
+    /** The ship skill last sent to each target, by [saidKey], to tell how it went. */
+    var lastShip by mutableStateOf<Map<String, SentShip>>(emptyMap())
+
+    data class SentShip(val button: com.digitaltracer.switchboard.core.ShipButton, val at: Long)
+
+    suspend fun loadShipButtons() {
+        val hub = hub ?: return
+        runCatching { hub.shipButtons() }.onSuccess { shipButtons = it }
+    }
     /** Home tiles' last lines, when the hub has them. */
     var tileLines by mutableStateOf<TileLines?>(null)
         private set
@@ -173,6 +219,8 @@ class AppModel(context: Context, val keys: DeviceKeys) {
             Route.Machines -> "Back to machines"
             Route.Settings -> "Back to settings"
             is Route.Decision -> "Back to the question"
+            is Route.Diff -> "Back to the diff"
+            Route.ShipSettings -> "Back to ship actions"
         }
 
     init {
@@ -251,6 +299,8 @@ class AppModel(context: Context, val keys: DeviceKeys) {
     /** Forgets the hub and this phone's keys. The hub keeps the device until it's revoked. */
     fun forget() {
         pollJob?.cancel()
+        hub?.let { h -> scope.launch { runCatching { h.clearLive() } } }
+        LiveNotification.cancel(appContext)
         prefs.edit().remove(PAIRING).remove(SAID).apply()
         runCatching { keys.reset() }
         voiceKey.remove()
@@ -278,6 +328,7 @@ class AppModel(context: Context, val keys: DeviceKeys) {
         if (phase != Phase.Paired) return
         wakes++
         startPolling()
+        loadAway()
     }
 
     /** This phone's FCM token, sent to the hub whenever it changes or the phone pairs. */
@@ -291,7 +342,45 @@ class AppModel(context: Context, val keys: DeviceKeys) {
 
     private fun sendPushToken() {
         val (hub, token) = (hub ?: return) to (pushToken ?: return)
-        scope.launch { runCatching { hub.setFcmToken(token) } }
+        scope.launch {
+            runCatching { hub.setFcmToken(token) }
+            runCatching { hub.setLive(liveMode) }
+        }
+    }
+
+    /** When the ongoing notification shows; kept on the hub with this phone's registration. */
+    var liveMode by mutableStateOf(com.digitaltracer.switchboard.core.LiveShowMode.of(prefs.getString(LIVE_MODE, null)))
+        private set
+
+    fun chooseLiveMode(mode: com.digitaltracer.switchboard.core.LiveShowMode) {
+        liveMode = mode
+        prefs.edit().putString(LIVE_MODE, mode.wire).apply()
+        val hub = hub ?: return
+        scope.launch {
+            runCatching { hub.setLive(mode) }
+            refreshLive()
+        }
+    }
+
+    /**
+     * Fetches the board and redraws the ongoing notification. From a push, [wait] blocks this
+     * (background) thread up to a few seconds, since the process may stop once it returns.
+     */
+    fun refreshLive(wait: Boolean = false) {
+        val hub = hub ?: return
+        val job = scope.launch {
+            runCatching { hub.live() }.onSuccess { board ->
+                val now = System.currentTimeMillis()
+                val quietSince = if (board.isQuiet) prefs.getLong(LIVE_QUIET, 0).takeIf { it > 0 } ?: now.also { prefs.edit().putLong(LIVE_QUIET, it).apply() }
+                    else null.also { prefs.edit().remove(LIVE_QUIET).apply() }
+                when (liveMode.decide(board, LiveNotification.showing(appContext), quietSince, now)) {
+                    com.digitaltracer.switchboard.core.LiveShowMode.Step.Show -> LiveNotification.show(appContext, board)
+                    com.digitaltracer.switchboard.core.LiveShowMode.Step.End -> LiveNotification.cancel(appContext)
+                    com.digitaltracer.switchboard.core.LiveShowMode.Step.None -> {}
+                }
+            }
+        }
+        if (wait) runBlocking { withTimeoutOrNull(8_000) { job.join() } }
     }
 
     /**
@@ -333,6 +422,7 @@ class AppModel(context: Context, val keys: DeviceKeys) {
     fun wentToBackground() {
         foreground = false
         pollJob?.cancel()
+        prefs.edit().putLong(LAST_OPENED, System.currentTimeMillis()).apply()
     }
 
     /** Remembers a message this phone sent, for the session page and the home screen. */
@@ -407,8 +497,10 @@ class AppModel(context: Context, val keys: DeviceKeys) {
                     if (meta == null) meta = hub.meta()
                     if (projects.isEmpty()) runCatching { hub.projects() }.onSuccess { projects = it }
                     if (machines.isEmpty()) runCatching { hub.machines() }.onSuccess { machines = it }
+                    if (shipButtons == null) loadShipButtons()
                     val list = hub.sessions(after = revision)
                     sessions = list.sessions
+                    refreshLive()
                     settleAwaiting()
                     revision = list.revision
                     connected = true
@@ -437,6 +529,9 @@ class AppModel(context: Context, val keys: DeviceKeys) {
 
     companion object {
         private const val PAIRING = "pairing"
+        private const val LAST_OPENED = "lastOpened"
+        private const val LIVE_MODE = "liveMode"
+        private const val LIVE_QUIET = "liveQuietSince"
         private const val SAID = "said"
         private const val APPEARANCE = "appearance"
         private const val PUSH_TOKEN = "push_token"

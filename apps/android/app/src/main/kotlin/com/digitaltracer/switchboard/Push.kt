@@ -83,6 +83,12 @@ class PushService : FirebaseMessagingService() {
 
     override fun onMessageReceived(message: RemoteMessage) {
         val target = PushTarget.parse(message.data) ?: return
+        // The card's push only wakes the app; it fetches the board and draws the notification.
+        if (target.kind == "live") {
+            // The hub ends a "while working" card after fifteen quiet minutes.
+            if (message.data["event"] == "end") LiveNotification.cancel(this) else model.refreshLive(wait = true)
+            return
+        }
         val n = message.notification
         Push.show(
             this,

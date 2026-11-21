@@ -70,6 +70,8 @@ fun PairedRoot(model: AppModel, voice: Voice) {
             is Route.Decision -> DecisionScreen(model, route)
             is Route.Space -> SpaceScreen(model, route.key)
             is Route.MachinePage -> MachineSpacesScreen(model, route.machine)
+            is Route.Diff -> DiffScreen(model, voice, route)
+            Route.ShipSettings -> ShipSettingsScreen(model)
             Route.Machines -> MachinesScreen(model)
             Route.Settings -> SettingsScreen(model)
         }
@@ -194,7 +196,8 @@ fun HomeScreen(model: AppModel, voice: Voice, listen: Listen) {
                     stateText("Nothing running yet.", "Say what you want done.")
                 } else {
                     stateText(
-                        if (needs == 0) "Nothing needs you." else "$needs ${if (needs == 1) "thing needs" else "things need"} you.",
+                        (if (model.away != null) "Welcome back. " else "") +
+                            if (needs == 0) "Nothing needs you." else "$needs ${if (needs == 1) "thing needs" else "things need"} you.",
                         if (working.isEmpty()) "Nothing working." else "${working.size} ${if (working.size == 1) "agent" else "agents"} working.",
                     )
                 }
@@ -254,6 +257,7 @@ private fun Now(
     approvals: List<Pair<Session, Approval>>, waiting: List<Item>, working: List<Item>, finished: List<Item>,
     nothingLive: Boolean, lastLines: Map<String, String>, switchTab: (HomeTab) -> Unit,
 ) {
+    model.away?.let { AwayCard(model, it) }
     model.lastSent?.takeIf { System.currentTimeMillis() - it.at < 600_000 }?.let { sent ->
         InboxRow(
             if (sent.started) "Started ${sent.target?.label ?: "a session"}" else "Sent to ${sent.target?.label ?: "the hub"}",

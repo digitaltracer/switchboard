@@ -117,6 +117,13 @@ fun SettingsScreen(model: AppModel) {
                 }
             }
             VoiceKeySection(model.voiceKey)
+            if (model.pairing != null) {
+                SectionHead("Ship actions")
+                InboxRow("Buttons on a finished session", modifier = Modifier.testTag("shipSettings"), first = true, onClick = { model.path.add(Route.ShipSettings) }, trailing = { Chevron() })
+                Hairline()
+                AwaySettingsSection(model)
+                LockScreenSection(model)
+            }
             model.pairing?.let { p ->
                 SectionHead("Hub")
                 FieldRow(if (p.relay == null) "Address" else "Relay", runCatching { java.net.URI(p.hubUrl).host }.getOrNull() ?: p.hubUrl, mono = true, first = true)
@@ -199,4 +206,29 @@ private fun VoiceKeySection(key: VoiceKey) {
     }
     if (failed) Note("This phone couldn't store the key, so voice stays on the device.", Modifier.padding(top = 8.dp), palette.bad)
     Note(VoiceKey.DISCLOSURE, Modifier.padding(top = 8.dp))
+}
+
+/** Settings › Lock screen: when the ongoing notification shows. */
+@Composable
+private fun LockScreenSection(model: AppModel) {
+    SectionHead("Lock screen")
+    Text("Show on the lock screen", Modifier.padding(bottom = 8.dp), style = Type.text.copy(fontWeight = FontWeight.Medium), color = palette.ink)
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        listOf(com.digitaltracer.switchboard.core.LiveShowMode.Working to "While agents are working", com.digitaltracer.switchboard.core.LiveShowMode.Always to "Always").forEach { (m, label) ->
+            val on = model.liveMode == m
+            Box(
+                Modifier.weight(1f).height(44.dp).clip(RoundedCornerShape(12.dp)).background(if (on) palette.ink else palette.fill)
+                    .clickable { model.chooseLiveMode(m) }.semantics { selected = on }.testTag("liveMode-${m.wire}"),
+                Alignment.Center,
+            ) { Text(label, style = Type.meta.copy(fontWeight = FontWeight.Medium), color = if (on) palette.inv else palette.sub) }
+        }
+    }
+    Note(
+        if (model.liveMode == com.digitaltracer.switchboard.core.LiveShowMode.Always) {
+            "The notification stays, with All quiet when nothing runs."
+        } else {
+            "The notification starts when an agent is working or needs you, and ends 15 minutes after everything is idle or done."
+        },
+        Modifier.padding(top = 8.dp),
+    )
 }

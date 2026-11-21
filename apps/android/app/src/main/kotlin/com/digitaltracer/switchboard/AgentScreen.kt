@@ -1,6 +1,7 @@
 package com.digitaltracer.switchboard
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -239,6 +240,10 @@ fun AgentScreen(model: AppModel, voice: Voice, listen: Listen, source: Conversat
                     .forEach { (text, color) -> Note(text, Modifier.padding(top = 14.dp).then(if (text == notice) Modifier.testTag("deleteNotice") else Modifier), color) }
                 if (s?.hookFailed == true) Banner("It's stuck at a dialog Switchboard won't answer. Answer it at its terminal.", Modifier.padding(top = 14.dp))
                 target?.let { model.said[AppModel.saidKey(it)] }?.let { Box(Modifier.padding(top = 14.dp)) { SaidBubble(it) } }
+                val act = model.away
+                model.awayFor(machine, s?.agentName ?: (source as? ConversationSource.Agent)?.name, sessionId)?.let { mine ->
+                    if (act != null) AwayTimeline(mine, act.since, act.now, Turns.latest(convo.conversation.items).reply?.text)
+                }
                 s?.pendingApprovals?.forEach { a -> Box(Modifier.padding(top = 14.dp)) { ApprovalCard(model, a, s, decided = { refresh() }) } }
                 if (watch != null && pane != null) {
                     Box(Modifier.padding(top = 14.dp)) { WaitingCard(watch, { model.path.add(pane) }) { tab = AgentTab.Screen } }
@@ -247,13 +252,30 @@ fun AgentScreen(model: AppModel, voice: Voice, listen: Listen, source: Conversat
                     SectionHead("Working on")
                     Text(it, style = Type.title3, color = palette.ink)
                 }
-                Latest(convo, { tab = AgentTab.Conversation }) { tab = AgentTab.Screen }
                 val c = changes
+                LatestReply(convo, hideFiles = c != null && c.files.isNotEmpty())
                 if (c != null && c.files.isNotEmpty()) {
-                    SectionHead(c.title(), action = if (s != null) ({ DetailsLink(details) { details = !details } }) else null)
-                    ChangesList(c)
-                    Hairline()
-                } else if (s != null) {
+                    val open = sessionId?.let { id -> { i: Int -> model.path.add(Route.Diff(id, c.files.map { it.path }, i)); Unit } }
+                    val added = c.files.sumOf { it.added ?: 0 }
+                    val deleted = c.files.sumOf { it.deleted ?: 0 }
+                    SectionHead(
+                        "${c.title()} · +$added −$deleted",
+                        action = open?.let { o -> { Text("Review all", Modifier.clickable { o(0) }.testTag("reviewAll"), style = Type.meta.copy(fontWeight = FontWeight.Medium), color = palette.ac) } },
+                    )
+                    Column(Modifier.fillMaxWidth().card(16.dp, palette.sf).border(1.dp, palette.line, androidx.compose.foundation.shape.RoundedCornerShape(16.dp)).padding(horizontal = 14.dp)) {
+                        ChangesList(c, open)
+                    }
+                }
+                val shipTarget = s?.let(::sessionTarget) ?: (source as? ConversationSource.Agent)?.let { com.digitaltracer.switchboard.api.models.TargetView("agent", it.machine, info?.agentLabel ?: it.name, null, it.name) }
+                if (shipTarget != null) {
+                    val latest = Turns.latest(convo.conversation.items)
+                    ShipCard(
+                        model, shipTarget, s?.projectId, s?.branch, s?.agentStatus ?: info?.agentStatus ?: "unknown",
+                        latest.reply?.text, latest.at?.let { runCatching { java.time.Instant.parse(it).toEpochMilli() }.getOrNull() },
+                    )
+                }
+                ConversationRows(convo, { tab = AgentTab.Conversation }) { tab = AgentTab.Screen }
+                if (s != null) {
                     SectionHead("Details", action = { DetailsLink(details, "Show", "Hide") { details = !details } })
                 }
                 if (details && s != null) {
@@ -296,7 +318,7 @@ private fun DetailsLink(open: Boolean, show: String = "Details", hide: String = 
 
 /** The latest reply, its tags, and the ways into the whole conversation and the screen. */
 @Composable
-private fun Latest(convo: ConversationModel, conversation: () -> Unit, screen: () -> Unit) {
+private fun LatestReply(convo: ConversationModel, hideFiles: Boolean) {
     val latest = Turns.latest(convo.conversation.items)
     SectionHead("Latest reply", latest.at?.let(Turns::time))
     Column(Modifier.testTag("latest")) {
@@ -310,7 +332,13 @@ private fun Latest(convo: ConversationModel, conversation: () -> Unit, screen: (
             else -> Note("Nothing said yet.", color = palette.sub)
         }
     }
-    if (latest.tags.isNotEmpty()) Row(Modifier.padding(top = 14.dp)) { TagRow(latest.tags) }
+    // A session lists its changed files right below, so the files chip would only repeat it.
+    val tags = if (hideFiles) latest.tags.filter { "file" !in it.text } else latest.tags
+    if (tags.isNotEmpty()) Row(Modifier.padding(top = 14.dp)) { TagRow(tags) }
+}
+
+@Composable
+private fun ConversationRows(convo: ConversationModel, conversation: () -> Unit, screen: () -> Unit) {
     Column(Modifier.padding(top = 18.dp)) {
         if (convo.unavailable == null && !convo.ended) {
             InboxRow("Read the whole conversation", modifier = Modifier.testTag("openConversation"), first = true, onClick = conversation, trailing = { Chevron() })
