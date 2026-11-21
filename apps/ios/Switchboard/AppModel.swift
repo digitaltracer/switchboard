@@ -16,6 +16,7 @@ final class AppModel {
 
     let keys: DeviceKeys
     let voiceKey = VoiceKey()
+    @ObservationIgnored let live = LiveController()
     let build: Int
     private(set) var phase: Phase = .unpaired
     private(set) var pairing: Pairing?
@@ -38,6 +39,68 @@ final class AppModel {
     private(set) var agents: [Schemas.AgentView] = []
     /// Those that ended in the last day.
     private(set) var ended: [Schemas.EndedAgent] = []
+    /// What agents did while this phone was away, until "Mark as seen".
+    private(set) var away: Schemas.Activity?
+    /// The opt-in summary of `away`; on failure the facts stay.
+    private(set) var awaySummary: String?
+    private static let lastOpenedKey = "lastOpened"
+    @ObservationIgnored private var awayBackdated = false
+
+    /// Called on coming back: anything since the app was last open, if that was a while ago.
+    func loadAway() async {
+        guard let hub else { return }
+        #if DEBUG
+        // `SB_AWAY_SINCE_MIN=120` makes the app last opened that long ago, for screenshots.
+        if let m = ProcessInfo.processInfo.environment["SB_AWAY_SINCE_MIN"].flatMap(Double.init), away == nil, !awayBackdated {
+            awayBackdated = true
+            UserDefaults.standard.set(Date().timeIntervalSince1970 - m * 60, forKey: Self.lastOpenedKey)
+        }
+        #endif
+        let last = UserDefaults.standard.double(forKey: Self.lastOpenedKey)
+        let since: Int64
+        if let shown = away {
+            since = shown.since
+        } else if last > 0, Date().timeIntervalSince1970 - last >= AwayDigest.minAway {
+            since = Int64(last * 1000)
+        } else {
+            return
+        }
+        guard let a = try? await hub.activity(since: since) else { return }
+        away = a.agents.isEmpty ? nil : a
+        if let away, away.summaryOn {
+            if let s = try? await hub.activitySummary(since: since) { awaySummary = s }
+        }
+    }
+
+    func markAwaySeen() {
+        away = nil
+        awaySummary = nil
+        noteOpened()
+    }
+
+    /// Facts about one agent while the phone was away.
+    func away(for machine: String, agent: String?, session: String?) -> Schemas.AwayAgentView? {
+        away?.agents.first { ($0.sessionId != nil && $0.sessionId == session) || ($0.machineId == machine && $0.agent == agent) }
+    }
+
+    private func noteOpened() {
+        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: Self.lastOpenedKey)
+    }
+
+    /// The ship buttons kept on the hub, shared by every paired phone.
+    var shipButtons: Schemas.ShipButtons?
+    /// The ship skill last sent to each target, by `saidKey`, to tell how it went.
+    var lastShip: [String: SentShip] = [:]
+
+    struct SentShip: Equatable {
+        let button: ShipButton
+        let at: Date
+    }
+
+    func loadShipButtons() async {
+        guard let hub else { return }
+        if let b = try? await hub.shipButtons() { shipButtons = b }
+    }
     /// Home tiles' last lines, when the hub has them.
     private(set) var tileLines: TileLines?
     private(set) var projects: [Schemas.Project] = []
@@ -103,7 +166,9 @@ final class AppModel {
         hub = Hub(pairing: p, keys: keys, build: build)
         phase = .paired
         startPolling()
+        live.use(hub)
         Task { await registerPush() }
+        Task { await loadShipButtons() }
     }
 
     // Pairing.
@@ -161,6 +226,11 @@ final class AppModel {
     /// Forgets the hub and this phone's keys. The hub keeps the device until it's revoked.
     func forget() {
         pollTask?.cancel()
+        let live = live
+        Task {
+            await live.end()
+            live.use(nil)
+        }
         UserDefaults.standard.removeObject(forKey: Self.pairingKey)
         UserDefaults.standard.removeObject(forKey: Self.saidStore)
         said = [:]
@@ -192,12 +262,15 @@ final class AppModel {
         guard phase == .paired else { return }
         wakes += 1
         startPolling()
+        Task { await loadAway() }
+        Task { await live.resend() }
     }
 
     /// The app left the foreground: following and the session list's long-poll stop until it comes back.
     func wentInactive() {
         active = false
         pollTask?.cancel()
+        noteOpened()
     }
 
     /// Remembers a message this phone sent, for the session page and the home screen.
@@ -291,6 +364,7 @@ final class AppModel {
                     if self.machines.isEmpty, let m = try? await hub.machines() { self.machines = m }
                     let list = try await hub.sessions(after: revision)
                     self.sessions = list.sessions
+                    Task { await self.live.refresh() }
                     self.settleAwaiting()
                     revision = list.revision
                     self.connected = true

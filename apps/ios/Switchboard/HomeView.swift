@@ -81,6 +81,7 @@ struct HomeView: View {
             .navigationDestination(for: AgentRef.self) { AgentPage(source: .agent(machine: $0.machine, name: $0.name)) }
             .navigationDestination(for: AgentPageRef.self) { AgentPage(source: $0.source, tab: $0.tab) }
             .navigationDestination(for: DecisionRef.self) { DecisionPage(ref: $0) }
+            .navigationDestination(for: DiffRef.self) { DiffPage(ref: $0) }
             .navigationDestination(for: AgentSpace.Key.self) { SpacePage(key: $0) }
             .navigationDestination(for: Browse.self) { b in
                 switch b {
@@ -210,7 +211,8 @@ struct HomeView: View {
             let needs = approvals.count + waiting.count
             let w = working.count
             if needs == 0 && live.isEmpty && finished.isEmpty { return Headline("Nothing running yet.", "Say what you want done.") }
-            let first = needs == 0 ? "Nothing needs you." : "\(needs) \(needs == 1 ? "thing needs" : "things need") you."
+            var first = needs == 0 ? "Nothing needs you." : "\(needs) \(needs == 1 ? "thing needs" : "things need") you."
+            if model.away != nil { first = "Welcome back. " + first }
             let second = w == 0 ? "Nothing working." : "\(w) \(w == 1 ? "agent" : "agents") working."
             return Headline(first, second)
         case .spaces:
@@ -229,6 +231,9 @@ struct HomeView: View {
 
     @ViewBuilder
     private var now: some View {
+        if let away = model.away {
+            AwayCard(activity: away).padding(.bottom, 14)
+        }
         if let sent = model.lastSent, Date().timeIntervalSince(sent.at) < 600 {
             SentRow(sent: sent) { open($0) }
         }

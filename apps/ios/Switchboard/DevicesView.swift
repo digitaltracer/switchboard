@@ -30,8 +30,13 @@ struct DevicesView: View {
     @State private var confirmForget = false
     @State private var newVoiceKey = ""
     @State private var voiceKeyError: String?
+    @State private var shipSettings = false
 
     var body: some View {
+        content.sheet(isPresented: $shipSettings) { ShipSettingsView() }
+    }
+
+    private var content: some View {
         VStack(spacing: 0) {
             HStack {
                 Text("Settings").font(Face.h1).tracking(-0.84).foregroundStyle(Ink.ink)
@@ -68,6 +73,16 @@ struct DevicesView: View {
                     .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("appearancePicker")
                     voiceSection
+                    if model.pairing != nil {
+                        SectionHead("Ship actions")
+                        Button { shipSettings = true } label: {
+                            Row(title: "Buttons on a finished session", leading: { EmptyView() }, trailing: { Chevron() })
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("shipSettings")
+                        AwaySettingsSection()
+                    }
+                    LiveActivityLab()
                     if let p = model.pairing {
                         SectionHead("Hub")
                         FieldRow(p.relay == nil ? "Address" : "Relay", value: p.hubURL.host() ?? p.hubURL.absoluteString, mono: true, first: true)

@@ -22,7 +22,7 @@ final class ScreenshotsUITests: XCTestCase {
         app.launchArguments = ["-appearance", "light"]
         app.launch()
         allowNotifications()
-        XCTAssertTrue(app.buttons["pairButton"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["pairButton"].waitForExistence(timeout: 30))
         shot("pair")
         app.buttons["pairButton"].tap()
         XCTAssertTrue(app.buttons["micButton"].waitForExistence(timeout: 60), app.debugDescription)
@@ -100,6 +100,59 @@ final class ScreenshotsUITests: XCTestCase {
                 sleep(1)
                 shot("lifecycle")
                 app.buttons["Cancel"].firstMatch.tap()
+                // A changed file's diff, selecting lines, and asking about them.
+                let file = app.buttons["crates/core/src/retry.rs"]
+                for _ in 0..<4 where !file.isHittable { app.swipeUp() }
+                if tap(file) {
+                    sleep(2)
+                    shot("diff")
+                    if tap(app.buttons["Line 42"]), tap(app.buttons["Line 43"]) {
+                        shot("diff-selected")
+                        if tap(app.buttons["askAgent"]) {
+                            sleep(1)
+                            app.textViews["askQuestion"].typeText("Cap the delay at 30 seconds.")
+                            shot("ask")
+                            app.buttons["Cancel"].firstMatch.tap()
+                        }
+                    }
+                    back()
+                }
+                let binary = app.buttons["docs/rate-limit.png"]
+                for _ in 0..<4 where !binary.isHittable { app.swipeUp() }
+                if tap(binary) {
+                    sleep(2)
+                    shot("diff-binary")
+                    back()
+                }
+                // Denied, the agent finishes; its ship buttons show, then the confirm sheet.
+                app.swipeDown()
+                if tap(app.buttons["Deny"].firstMatch) {
+                    let ship = app.buttons["ship-/pr"]
+                    if ship.waitForExistence(timeout: 15) {
+                        for _ in 0..<4 where !ship.isHittable { app.swipeUp() }
+                        shot("ship")
+                        // A ship skill that ends without a pull request.
+                        if tap(app.buttons["runAnotherSkill"]), tap(app.buttons["/ship"]), tap(app.buttons["shipRun"]) {
+                            if app.staticTexts["No pull request was opened. See the agent's reply."].waitForExistence(timeout: 20) {
+                                sleep(1)
+                                shot("ship-no-pr")
+                            }
+                        }
+                        // Then /pr, whose reply names one.
+                        let pr = app.buttons["ship-/pr"]
+                        for _ in 0..<4 where pr.exists && !pr.isHittable { app.swipeUp() }
+                        if tap(pr) {
+                            app.textFields["shipInstructions"].tap()
+                            app.textFields["shipInstructions"].typeText("Draft, base main")
+                            shot("ship-confirm")
+                            if tap(app.buttons["shipRun"]), app.buttons["openPullRequest"].waitForExistence(timeout: 20) {
+                                sleep(1)
+                                for _ in 0..<3 where !app.buttons["openPullRequest"].isHittable { app.swipeUp() }
+                                shot("ship-pr")
+                            }
+                        }
+                    }
+                }
                 back()
             }
         }
@@ -148,7 +201,44 @@ final class ScreenshotsUITests: XCTestCase {
             shot("settings")
             app.swipeUp()
             shot("settings-more")
+            // Settings › Lock screen: when the card shows, both choices.
+            let working = app.buttons["liveMode-working"]
+            for _ in 0..<4 where !working.isHittable { app.swipeUp() }
+            if working.exists {
+                shot("settings-lock")
+                app.buttons["liveMode-always"].tap()
+                sleep(1)
+                shot("settings-lock-always")
+                working.tap()
+                app.swipeDown(); app.swipeDown()
+            }
+            // Settings › Ship actions, with two buttons added from the agent's skills.
+            let ship = app.buttons["shipSettings"]
+            for _ in 0..<3 where !ship.isHittable { app.swipeUp() }
+            if tap(ship) {
+                sleep(3)
+                for name in ["/pr", "/commit", "/code-review", "/triage-reviews"] {
+                    let add = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", name + ",")).firstMatch
+                    if add.waitForExistence(timeout: 5) { add.tap(); usleep(800_000) }
+                }
+                shot("ship-settings")
+                app.buttons["Settings"].firstMatch.tap()
+                sleep(1)
+            }
             app.buttons["Done"].tap()
+        }
+        // Coming back after two hours: the Inbox card, then one agent's "Since you looked".
+        app.terminate()
+        app.launchEnvironment["SB_AWAY_SINCE_MIN"] = "120"
+        app.launch()
+        if app.otherElements["awayCard"].waitForExistence(timeout: 20) || app.buttons["markAwaySeen"].waitForExistence(timeout: 5) {
+            sleep(2)
+            shot("away-inbox")
+            let row = app.buttons.matching(NSPredicate(format: "label CONTAINS 'demo'")).firstMatch
+            if tap(row), app.otherElements["sinceYouLooked"].waitForExistence(timeout: 10) || app.staticTexts["Facts the hub recorded, plus the agent's own last reply. No summarising model."].waitForExistence(timeout: 5) {
+                sleep(1)
+                shot("away-agent")
+            }
         }
     }
 

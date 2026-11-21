@@ -279,38 +279,54 @@ struct MeBubble: View {
     }
 }
 
-/// Changed files as rows: the path, then what changed.
+/// Changed files as rows: the path, then what changed. For a session, each opens its diff.
 struct ChangesList: View {
     let changes: Schemas.Changes
+    var sessionId: String?
 
     var body: some View {
         VStack(spacing: 0) {
             ForEach(Array(changes.files.enumerated()), id: \.element.path) { i, f in
-                HStack(spacing: 12) {
-                    Text(f.path)
-                        .font(Face.mono(12.5))
-                        .foregroundStyle(Ink.ink)
-                        .lineLimit(1)
-                        .truncationMode(.head)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    if f.added == nil && f.deleted == nil {
-                        Text("new").font(Face.mono(12.5)).foregroundStyle(Ink.ok)
-                    } else {
-                        HStack(spacing: 4) {
-                            Text("+\(f.added ?? 0)").foregroundStyle(Ink.ok)
-                            Text("−\(f.deleted ?? 0)").foregroundStyle(Ink.bad)
-                        }
-                        .font(Face.mono(12.5))
+                if let sessionId {
+                    NavigationLink(value: DiffRef(sessionId: sessionId, paths: changes.files.map(\.path), index: i)) {
+                        row(i, f, chevron: true)
                     }
+                    .buttonStyle(.plain)
+                } else {
+                    row(i, f, chevron: false)
                 }
-                .padding(.vertical, 8)
-                .frame(minHeight: 44)
-                .overlay(alignment: .top) { if i > 0 { Hairline() } }
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel(f.path)
-                .accessibilityIdentifier(f.path)
             }
         }
+    }
+
+    private func row(_ i: Int, _ f: Schemas.ChangedFile, chevron: Bool) -> some View {
+        HStack(spacing: 12) {
+            Text(f.path)
+                .font(Face.mono(12.5))
+                .foregroundStyle(Ink.ink)
+                .lineLimit(1)
+                .truncationMode(.head)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if f.binary == true {
+                Text("binary\(f.size.map { " · \(fileSize($0))" } ?? "")").font(Face.mono(12.5)).foregroundStyle(Ink.mut)
+            } else if f.added == nil && f.deleted == nil {
+                Text("new").font(Face.mono(12.5)).foregroundStyle(Ink.ok)
+            } else {
+                HStack(spacing: 4) {
+                    Text("+\(f.added ?? 0)").foregroundStyle(Ink.ok)
+                    Text("−\(f.deleted ?? 0)").foregroundStyle(Ink.bad)
+                }
+                .font(Face.mono(12.5))
+            }
+            if chevron { Chevron() }
+        }
+        .padding(.vertical, 8)
+        .frame(minHeight: 44)
+        .contentShape(Rectangle())
+        .overlay(alignment: .top) { if i > 0 { Hairline() } }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(f.path)
+        .accessibilityIdentifier(f.path)
     }
 
     var title: String {

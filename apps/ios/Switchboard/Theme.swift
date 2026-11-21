@@ -546,19 +546,24 @@ struct TextTabs<T: Hashable>: View {
 /// The top line of a pushed page: back, and what it is on the right.
 struct PageTop<Trailing: View>: View {
     let back: String
+    /// Writes where back goes beside the chevron, "‹ Changes".
+    var labelled = false
     @ViewBuilder var trailing: Trailing
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         HStack(spacing: 8) {
             Button { dismiss() } label: {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 19, weight: .medium))
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
+                HStack(spacing: 2) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 19, weight: .medium))
+                        .frame(width: labelled ? 24 : 44, height: 44)
+                    if labelled { Text(back).font(Face.geist(16, .medium)) }
+                }
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .foregroundStyle(Ink.ink)
+            .foregroundStyle(labelled ? Ink.ac : Ink.ink)
             .accessibilityLabel(back)
             .accessibilityIdentifier("back")
             Spacer(minLength: 0)

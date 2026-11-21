@@ -179,6 +179,10 @@ struct AgentPage: View {
                             Banner(text: "It's stuck at a dialog Switchboard won't answer. Answer it at its terminal.").padding(.top, 14)
                         }
                     }
+                    if let act = model.away, let mine = model.away(for: machine, agent: session?.agentName ?? agentRef?.name, session: sessionId) {
+                        AwayTimeline(agent: mine, since: act.since, now: act.now,
+                                     reply: Turns.latest(convo.conversation.items).reply?.text)
+                    }
                     if let target, let said = model.said[AppModel.saidKey(for: target)] {
                         SaidBubble(said: said).padding(.top, 14)
                     }
@@ -195,20 +199,31 @@ struct AgentPage: View {
                         Text(t).font(Face.geist(20, .medium)).tracking(-0.4).foregroundStyle(Ink.ink)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    latest
+                    latestReply
                     if let changes, !changes.files.isEmpty {
                         VStack(spacing: 0) {
-                            SectionHead(title: ChangesList(changes: changes).title) {
-                                if session != nil {
-                                    Button(details ? "Hide details" : "Details") { withAnimation(.snappy) { details.toggle() } }
-                                        .font(Face.geist(13, .medium)).foregroundStyle(Ink.ac).textCase(nil)
+                            SectionHead(title: changesTitle(changes)) {
+                                if let sessionId {
+                                    NavigationLink(value: DiffRef(sessionId: sessionId, paths: changes.files.map(\.path), index: 0)) {
+                                        Text("Review all").font(Face.geist(13, .medium)).foregroundStyle(Ink.ac).textCase(nil)
+                                    }
+                                    .accessibilityIdentifier("reviewAll")
                                 }
                             }
-                            ChangesList(changes: changes)
-                            Hairline()
+                            ChangesList(changes: changes, sessionId: sessionId)
+                                .padding(.horizontal, 14)
+                                .background(Ink.sf, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                                .overlay { RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Ink.line) }
                         }
                         .id("changes")
-                    } else if session != nil {
+                    }
+                    if let t = shipTarget {
+                        ShipCard(target: t, project: session?.projectId, branch: session?.branch, status: currentStatus,
+                                 reply: Turns.latest(convo.conversation.items).reply?.text,
+                                 replyAt: Turns.latest(convo.conversation.items).at.flatMap(Turns.date))
+                    }
+                    conversationRows
+                    if session != nil {
                         SectionHead(title: "Details") {
                             Button(details ? "Hide" : "Show") { withAnimation(.snappy) { details.toggle() } }
                                 .font(Face.geist(13, .medium)).foregroundStyle(Ink.ac)
@@ -231,8 +246,24 @@ struct AgentPage: View {
     /// A session's own agent's dialog, watched once its pane is known.
     @State private var sessionWatch: DialogWatch?
 
+    /// "4 files changed · +86 −12".
+    private func changesTitle(_ c: Schemas.Changes) -> String {
+        let added = c.files.compactMap(\.added).reduce(0, +)
+        let deleted = c.files.compactMap(\.deleted).reduce(0, +)
+        return "\(ChangesList(changes: c).title) · +\(added) −\(deleted)"
+    }
+
+    /// Who a ship button goes to: the session, or an agent Switchboard didn't start.
+    private var shipTarget: Schemas.TargetView? {
+        if let s = session { return .session(s) }
+        if let a = agentRef { return .agent(machine: a.machine, name: a.name, label: info?.agentLabel) }
+        return nil
+    }
+
+    private var currentStatus: String { session?.agentStatus ?? info?.agentStatus ?? "unknown" }
+
     @ViewBuilder
-    private var latest: some View {
+    private var latestReply: some View {
         let latest = Turns.latest(convo.conversation.items)
         SectionHead(title: "Latest reply") {
             if let at = latest.at.flatMap(Turns.time) { Text(at) }
@@ -251,7 +282,13 @@ struct AgentPage: View {
             }
         }
         .accessibilityIdentifier("latest")
-        if !latest.tags.isEmpty { TagRow(tags: latest.tags).padding(.top, 14) }
+        // A session lists its changed files right below, so the files chip would only repeat it.
+        let tags = changes?.files.isEmpty == false ? latest.tags.filter { !$0.text.contains("file") } : latest.tags
+        if !tags.isEmpty { TagRow(tags: tags).padding(.top, 14) }
+    }
+
+    @ViewBuilder
+    private var conversationRows: some View {
         VStack(spacing: 0) {
             if convo.unavailable == nil && !convo.ended {
                 Button { tab = .conversation } label: {

@@ -6,3 +6,5 @@ DEVELOPMENT_TEAM = N3B962X7RX
 // Push needs your team and an App ID with Push Notifications. Then set this to
 // Switchboard/Switchboard.entitlements; empty builds for the simulator, where simctl delivers.
 SB_ENTITLEMENTS = Switchboard/Switchboard.entitlements
+// The lock-screen extension's entitlements: the App Group it shares with the app.
+SB_LIVE_ENTITLEMENTS = SwitchboardLive/SwitchboardLive.entitlements

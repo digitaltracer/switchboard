@@ -10,11 +10,16 @@ struct SwitchboardApp: App {
 
     var body: some Scene {
         WindowGroup {
-            RootView()
-                .preferredColorScheme(appearance.scheme)
-                .environment(delegate.model)
-                .environment(delegate.voice)
-                .onChange(of: delegate.model.vocabulary, initial: true) { _, v in delegate.voice.vocabulary = v }
+            if LivePreviewScreen.requested {
+                LivePreviewScreen()
+            } else {
+                RootView()
+                    .preferredColorScheme(appearance.scheme)
+                    .environment(delegate.model)
+                    .environment(delegate.voice)
+                    .onChange(of: delegate.model.vocabulary, initial: true) { _, v in delegate.voice.vocabulary = v }
+                    .task { await LiveDemo.fromEnvironment() }
+            }
         }
         .onChange(of: scenePhase) { old, new in
             if new == .active, old != .active {
@@ -35,6 +40,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions _: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = self
+        MainActor.assumeIsolated { model.live.observe() }
         return true
     }
 
