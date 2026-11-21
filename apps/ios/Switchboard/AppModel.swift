@@ -25,6 +25,17 @@ final class AppModel {
     private(set) var connected = false
     /// A request has failed since the last answer; until then, not yet connected is "connecting".
     private(set) var unreachable = false
+    /// The first session list and agent list have both arrived; until then home shows placeholders.
+    var loaded: Bool { sessionsLoaded && agentsLoaded }
+    private var sessionsLoaded = false
+    /// A poll is on its way while not connected, for Try again.
+    private(set) var trying = false
+    /// Why the last poll failed, while `unreachable`.
+    private(set) var reach: HubError.Reach = .unknown
+    /// Whether this phone reaches its hub through the relay.
+    var viaRelay: Bool { pairing?.relay != nil }
+    var relayHost: String? { pairing?.relay?.relayURL.host() }
+    private var agentsLoaded = false
     private(set) var meta: Schemas.Meta?
     var pairingError: String?
     /// A short notice over every screen, such as why a notification opened nothing new.
@@ -249,6 +260,8 @@ final class AppModel {
         meta = nil
         connected = false
         unreachable = false
+        sessionsLoaded = false
+        agentsLoaded = false
         sentPushToken = nil
         phase = .unpaired
     }
@@ -341,6 +354,7 @@ final class AppModel {
         guard let list = try? await hub.agents(activity: activity) else { return }
         agents = list.agents
         ended = list.ended ?? []
+        agentsLoaded = true
         if activity { tileLines = TileLines(list) }
         settleAwaiting()
     }
@@ -358,6 +372,7 @@ final class AppModel {
             var revision: Int64?
             while !Task.isCancelled {
                 guard let self, let hub = self.hub else { return }
+                if !self.connected { self.trying = true }
                 do {
                     if self.meta == nil { self.meta = try await hub.meta() }
                     if self.projects.isEmpty, let p = try? await hub.projects() { self.projects = p }
@@ -369,12 +384,18 @@ final class AppModel {
                     revision = list.revision
                     self.connected = true
                     self.unreachable = false
+                    self.trying = false
+                    self.sessionsLoaded = true
+                    if !self.agentsLoaded { Task { await self.refreshAgents(activity: true) } }
                     if let token = self.pendingPushToken, token != self.sentPushToken {
                         await self.sendPushToken(token)
                     }
                 } catch {
+                    if Task.isCancelled { return }
                     self.connected = false
                     self.unreachable = true
+                    self.reach = (error as? HubError)?.reach ?? .unknown
+                    self.trying = false
                     if self.handleRevoked(error) { return }
                     try? await Task.sleep(for: .seconds(3))
                 }

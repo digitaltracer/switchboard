@@ -16,6 +16,8 @@ struct HomeView: View {
     /// The last line each busy agent said, by its id.
     @State private var lastLines: [String: String] = [:]
     @State private var pacer = FallbackPacer()
+    /// Connecting has taken long enough to say so.
+    @State private var slow = false
 
     private var spaces: [AgentSpace] { model.spaces(since: HerdrSession.startOfToday()) }
     private var approvals: [(session: Schemas.Session, approval: Schemas.Approval)] {
@@ -57,21 +59,18 @@ struct HomeView: View {
                     .padding(.horizontal, 20)
                     .padding(.top, 8)
                     .accessibilityIdentifier("headline")
-                TextTabs(tabs: [(.now, "Now"), (.spaces, "Spaces"), (.projects, "Projects")], selection: $tab)
-                    .padding(.top, 14)
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 0) {
-                        switch tab {
-                        case .now: now
-                        case .spaces: SpacesList()
-                        case .projects: ProjectsList { starting = StartRequestDraft(project: $0) }
-                        }
+                if !model.loaded && model.unreachable {
+                    HubUnreachable(state: ConnectState(model, slow: slow))
+                } else {
+                    TextTabs(tabs: [(.now, "Now"), (.spaces, "Spaces"), (.projects, "Projects")], selection: $tab.animation(.snappy))
+                        .padding(.top, 14)
+                    TabView(selection: $tab) {
+                        page { now }.tag(HomeTab.now)
+                        page { SpacesList() }.tag(HomeTab.spaces)
+                        page { ProjectsList { starting = StartRequestDraft(project: $0) } }.tag(HomeTab.projects)
                     }
-                    .padding(.horizontal, 20)
-                    .padding(.top, 14)
-                    .padding(.bottom, 24)
+                    .tabViewStyle(.page(indexDisplayMode: .never))
                 }
-                .refreshable { model.startPolling(); await model.refreshAgents(activity: true) }
                 AskBar(placeholder: "Say or type what you want done",
                        start: { starting = StartRequestDraft(project: nil) },
                        type: { voice.type(to: nil) }, speak: { voice.listen(to: nil) })
@@ -88,6 +87,12 @@ struct HomeView: View {
                 case .machines: MachinesPage()
                 case .machine(let id): MachineSpacesPage(machine: id)
                 }
+            }
+            .task(id: model.loaded) {
+                slow = false
+                guard !model.loaded else { return }
+                try? await Task.sleep(for: .seconds(8))
+                if !Task.isCancelled { slow = true }
             }
             .task(id: model.followKey) {
                 while model.followKey != nil, !Task.isCancelled {
@@ -198,6 +203,19 @@ struct HomeView: View {
         .frame(height: 44)
     }
 
+    /// One tab's list. Until the hub's first answer, placeholders: empty lists would read as "nothing running".
+    private func page<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                if model.loaded { content() } else { LoadingRows() }
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 14)
+            .padding(.bottom, 24)
+        }
+        .refreshable { model.startPolling(); await model.refreshAgents(activity: true) }
+    }
+
     private var hubLine: String {
         let m = model.machines
         if m.count == 1 { return "\(m[0].id) · connected" }
@@ -206,6 +224,7 @@ struct HomeView: View {
     }
 
     private var headline: Headline {
+        if !model.loaded { return ConnectState(model, slow: slow).headline }
         switch tab {
         case .now:
             let needs = approvals.count + waiting.count
@@ -333,8 +352,11 @@ struct HomeView: View {
     private var empty: some View {
         SectionHead("Try saying")
         Button { voice.listen(to: nil) } label: {
-            example("“In \(model.projects.first?.id ?? "kraft"), fix the flaky retry test.”",
-                    "Starts a new task in \(model.projects.first?.id ?? "a project"), on its own branch", first: true)
+            if let p = model.projects.first?.id {
+                example("“In \(p), fix the flaky retry test.”", "Starts a new task in \(p), on its own branch", first: true)
+            } else {
+                example("“Fix the flaky retry test.”", "Starts a new task, on its own branch", first: true)
+            }
         }
         .buttonStyle(.plain)
         Button { voice.listen(to: nil) } label: {

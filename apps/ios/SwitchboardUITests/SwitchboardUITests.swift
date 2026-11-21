@@ -16,6 +16,15 @@ private func goHome(_ app: XCUIApplication) {
 }
 
 private extension XCUIElement {
+    func waitForSelected(timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if isSelected { return true }
+            usleep(200_000)
+        }
+        return isSelected
+    }
+
     func waitForEnabled(timeout: TimeInterval) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
@@ -60,6 +69,12 @@ final class SwitchboardUITests: XCTestCase {
         XCTAssertTrue(atHome(app, timeout: 60), app.debugDescription)
         allowNotifications(app)
         snapshot(app, "home")
+
+        // Home's tabs follow a swipe across the list.
+        app.swipeLeft()
+        XCTAssertTrue(app.buttons["Spaces"].waitForSelected(timeout: 5), "a left swipe opens Spaces")
+        app.swipeRight()
+        XCTAssertTrue(app.buttons["Now"].waitForSelected(timeout: 5), "a right swipe goes back to Now")
 
         if let project = env["SB_EXPECT_PROJECT"] {
             app.buttons["startButton"].tap()

@@ -675,3 +675,37 @@ struct StateRow: View {
         .frame(minHeight: 52)
     }
 }
+
+/// Grey rows in a list's place before its first answer: the shape of what's coming, never made-up names.
+struct LoadingRows: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var dim = false
+    private static let widths: [(CGFloat, CGFloat)] = [(0.42, 0.7), (0.55, 0.48), (0.36, 0.62), (0.48, 0.4)]
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ForEach(Self.widths.indices, id: \.self) { i in
+                let (title, sub) = Self.widths[i]
+                HStack(spacing: 12) {
+                    Circle().fill(Ink.fill).frame(width: 12, height: 12)
+                    GeometryReader { g in
+                        VStack(alignment: .leading, spacing: 8) {
+                            Capsule().fill(Ink.fill).frame(width: g.size.width * title, height: 13)
+                            Capsule().fill(Ink.fill).frame(width: g.size.width * sub, height: 10)
+                        }
+                        .frame(maxHeight: .infinity, alignment: .center)
+                    }
+                }
+                .padding(.vertical, 12)
+                .frame(height: 60)
+                .overlay(alignment: .top) { if i > 0 { Hairline() } }
+            }
+        }
+        .opacity(dim ? 0.4 : 1)
+        .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: dim)
+        .onAppear { dim = !reduceMotion }
+        .accessibilityElement()
+        .accessibilityLabel("Loading")
+        .accessibilityIdentifier("loadingRows")
+    }
+}
