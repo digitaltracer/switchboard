@@ -588,6 +588,34 @@ struct InboxPage: ViewModifier {
         content
             .background(Ink.bg.ignoresSafeArea())
             .toolbar(.hidden, for: .navigationBar)
+            .background(BackSwipe())
+    }
+}
+
+/// Hiding the system bar turns off its edge swipe back; this turns it on again, ahead of any pager.
+private struct BackSwipe: UIViewControllerRepresentable {
+    func makeUIViewController(context: Context) -> Probe { Probe() }
+    func updateUIViewController(_ vc: Probe, context: Context) {}
+
+    final class Probe: UIViewController {
+        override func viewDidAppear(_ animated: Bool) {
+            super.viewDidAppear(animated)
+            navigationController?.interactivePopGestureRecognizer?.delegate = BackSwipeDelegate.shared
+        }
+    }
+}
+
+private final class BackSwipeDelegate: NSObject, UIGestureRecognizerDelegate {
+    static let shared = BackSwipeDelegate()
+
+    func gestureRecognizerShouldBegin(_ gesture: UIGestureRecognizer) -> Bool {
+        guard let nav = gesture.view?.next as? UINavigationController else { return false }
+        return nav.viewControllers.count > 1 && nav.transitionCoordinator == nil
+    }
+
+    // A pager's or list's pan waits until the edge swipe has failed.
+    func gestureRecognizer(_ gesture: UIGestureRecognizer, shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool {
+        other is UIPanGestureRecognizer
     }
 }
 

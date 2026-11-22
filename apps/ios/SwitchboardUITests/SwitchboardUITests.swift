@@ -135,8 +135,10 @@ final class SwitchboardUITests: XCTestCase {
             app.buttons["Screen"].tap()
             XCTAssertTrue(app.descendants(matching: .any)["terminal"].waitForExistence(timeout: 10))
             snapshot(app, "terminal")
-            goHome(app)
-            XCTAssertTrue(atHome(app, timeout: 10))
+            // The system's edge swipe goes back, even from the last of the page's tabs.
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0.5))
+                .press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)))
+            XCTAssertTrue(atHome(app, timeout: 10), "an edge swipe goes back")
             snapshot(app, "home-running")
 
             // Voice: the scripted words name the project, so the hub's preview picks a start there.
