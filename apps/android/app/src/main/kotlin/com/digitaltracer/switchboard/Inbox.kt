@@ -5,6 +5,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -35,13 +36,21 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -65,9 +74,9 @@ import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
@@ -402,17 +411,34 @@ fun <T> TextTabs(tabs: List<Pair<T, String>>, selection: T, select: (T) -> Unit)
     }
 }
 
-/** The top line of a pushed page: back, and what it is on the right. */
+/** Empties the page stack; null when one back already gets home. */
+val LocalGoHome = staticCompositionLocalOf<(() -> Unit)?> { null }
+
+/** The top line of a pushed page: back, and what it is on the right. A long press on back offers Home. */
 @Composable
 fun PageTop(back: String, onBack: () -> Unit, meta: String? = null, content: (@Composable RowScope.() -> Unit)? = null) {
     Row(
         Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.statusBars).height(44.dp).padding(start = 8.dp, end = 18.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        val goHome = LocalGoHome.current
+        var menu by remember { mutableStateOf(false) }
         Box(
-            Modifier.size(44.dp).clickable(role = Role.Button, onClick = onBack).semantics { contentDescription = back }.testTag("back"),
+            Modifier.size(44.dp)
+                .combinedClickable(role = Role.Button, onLongClickLabel = goHome?.let { "Home" }, onLongClick = goHome?.let { { menu = true } }, onClick = onBack)
+                .semantics { contentDescription = back }.testTag("back"),
             Alignment.Center,
-        ) { Icon(Icons.AutoMirrored.Filled.ArrowBackIos, null, Modifier.size(19.dp).padding(start = 4.dp), tint = palette.ink) }
+        ) {
+            Icon(Icons.AutoMirrored.Filled.ArrowBackIos, null, Modifier.size(19.dp).padding(start = 4.dp), tint = palette.ink)
+            if (goHome != null) {
+                DropdownMenu(menu, { menu = false }) {
+                    DropdownMenuItem({ Text("Home", style = Type.field) }, {
+                        menu = false
+                        goHome()
+                    }, Modifier.testTag("goHome"), leadingIcon = { Icon(Icons.Outlined.Home, null, tint = palette.ink) })
+                }
+            }
+        }
         if (content != null) {
             Spacer(Modifier.width(4.dp))
             content()

@@ -27,6 +27,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
@@ -66,6 +67,7 @@ fun PairedRoot(model: AppModel, voice: Voice) {
     BackHandler(model.path.isNotEmpty() && voice.phase == Voice.Phase.Idle) { model.pop() }
     BackHandler(voice.phase == Voice.Phase.Listening || voice.phase == Voice.Phase.Transcribing) { voice.cancel() }
     Box(Modifier.fillMaxSize()) {
+        CompositionLocalProvider(LocalGoHome provides if (model.path.size > 1) model.path::clear else null) {
         when (val route = model.path.lastOrNull()) {
             null -> HomeScreen(model, voice, listen)
             is Route.SessionPage -> AgentScreen(model, voice, listen, ConversationSource.Session(route.id))
@@ -77,6 +79,7 @@ fun PairedRoot(model: AppModel, voice: Voice) {
             Route.ShipSettings -> ShipSettingsScreen(model)
             Route.Machines -> MachinesScreen(model)
             Route.Settings -> SettingsScreen(model)
+        }
         }
         model.banner?.let { b ->
             LaunchedEffect(b) {
