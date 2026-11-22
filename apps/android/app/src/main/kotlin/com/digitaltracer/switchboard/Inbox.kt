@@ -1,5 +1,11 @@
 package com.digitaltracer.switchboard
 
+import android.provider.Settings
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -66,6 +72,7 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -100,6 +107,7 @@ enum class Glyph {
 @Composable
 fun StatusGlyph(glyph: Glyph, size: Dp = 18.dp) {
     val p = palette
+    val turn = if (glyph == Glyph.Work) spin() else 0f
     Canvas(Modifier.size(size)) {
         val s = this.size.minDimension
         val w = s * 1.7f / 18f
@@ -108,7 +116,7 @@ fun StatusGlyph(glyph: Glyph, size: Dp = 18.dp) {
                 val side = s * 0.76f
                 drawRoundRect(p.warn, Offset((s - side) / 2, (s - side) / 2), Size(side, side), CornerRadius(s * 4 / 18f))
             }
-            Glyph.Work -> drawArc(p.ac, -135f, 270f, false, Offset(w / 2, w / 2), Size(s - w, s - w), style = Stroke(w, cap = StrokeCap.Round))
+            Glyph.Work -> drawArc(p.ac, -135f + turn, 270f, false, Offset(w / 2, w / 2), Size(s - w, s - w), style = Stroke(w, cap = StrokeCap.Round))
             Glyph.Done -> {
                 drawCircle(p.ok, (s - w) / 2, style = Stroke(w))
                 val path = Path().apply {
@@ -123,6 +131,16 @@ fun StatusGlyph(glyph: Glyph, size: Dp = 18.dp) {
             )
         }
     }
+}
+
+/** One turn a second, in degrees; still when the system's animations are off. */
+@Composable
+private fun spin(): Float {
+    val context = LocalContext.current
+    val off = remember { Settings.Global.getFloat(context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f }
+    if (off) return 0f
+    val turn by rememberInfiniteTransition(label = "work").animateFloat(0f, 360f, infiniteRepeatable(tween(1000, easing = LinearEasing)), label = "turn")
+    return turn
 }
 
 /** Where an agent lives: the Herdr app or a Herdr terminal, by shape as well as word. */
