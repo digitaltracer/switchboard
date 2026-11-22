@@ -131,6 +131,7 @@ enum Glyph: Equatable {
 struct StatusGlyph: View {
     let glyph: Glyph
     var size: CGFloat = 18
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let w = size * 1.7 / 18
@@ -142,10 +143,14 @@ struct StatusGlyph: View {
                     .frame(width: size * 0.76, height: size * 0.76)
                     .rotationEffect(.degrees(45))
             case .work:
-                Circle().trim(from: 0, to: 0.75)
-                    .stroke(Ink.ac, style: StrokeStyle(lineWidth: w, lineCap: .round))
-                    .rotationEffect(.degrees(-45))
-                    .padding(w / 2)
+                // One turn a second; still under Reduce Motion.
+                TimelineView(.animation(paused: reduceMotion)) { t in
+                    let turn = reduceMotion ? 0 : t.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1)
+                    Circle().trim(from: 0, to: 0.75)
+                        .stroke(Ink.ac, style: StrokeStyle(lineWidth: w, lineCap: .round))
+                        .rotationEffect(.degrees(-45 + turn * 360))
+                        .padding(w / 2)
+                }
             case .done:
                 Circle().stroke(Ink.ok, lineWidth: w).padding(w / 2)
                 Path { p in
