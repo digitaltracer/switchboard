@@ -550,17 +550,19 @@ struct PageTop<Trailing: View>: View {
     var labelled = false
     @ViewBuilder var trailing: Trailing
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.goHome) private var goHome
 
     var body: some View {
         HStack(spacing: 8) {
-            Button { dismiss() } label: {
-                HStack(spacing: 2) {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 19, weight: .medium))
-                        .frame(width: labelled ? 24 : 44, height: 44)
-                    if labelled { Text(back).font(Face.geist(16, .medium)) }
+            Group {
+                if let goHome {
+                    // Like the system back button: a long press offers a jump home.
+                    Menu {
+                        Button("Home", systemImage: "house", action: goHome)
+                    } label: { chevron } primaryAction: { dismiss() }
+                } else {
+                    Button { dismiss() } label: { chevron }
                 }
-                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .foregroundStyle(labelled ? Ink.ac : Ink.ink)
@@ -573,6 +575,21 @@ struct PageTop<Trailing: View>: View {
         .padding(.trailing, 18)
         .frame(height: 44)
     }
+
+    private var chevron: some View {
+        HStack(spacing: 2) {
+            Image(systemName: "chevron.left")
+                .font(.system(size: 19, weight: .medium))
+                .frame(width: labelled ? 24 : 44, height: 44)
+            if labelled { Text(back).font(Face.geist(16, .medium)) }
+        }
+        .contentShape(Rectangle())
+    }
+}
+
+extension EnvironmentValues {
+    /// Empties the navigation stack; nil when one back already gets home.
+    @Entry var goHome: (() -> Void)? = nil
 }
 
 extension PageTop where Trailing == Text {

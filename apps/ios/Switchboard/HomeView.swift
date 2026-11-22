@@ -102,6 +102,7 @@ struct HomeView: View {
                 }
             }
         }
+        .environment(\.goHome, path.count > 1 ? { path = NavigationPath() } : nil)
         .scaleEffect(voice.squeeze ? 0.982 : 1, anchor: .bottom)
         .animation(.spring(response: 0.3, dampingFraction: 1), value: voice.squeeze)
         .overlay(alignment: .top) {
