@@ -43,6 +43,9 @@ import com.digitaltracer.switchboard.api.models.PromptResponse
 import com.digitaltracer.switchboard.api.models.PushEnvironment
 import com.digitaltracer.switchboard.api.models.PushProviderKind
 import com.digitaltracer.switchboard.api.models.PushTokenRequest
+import com.digitaltracer.switchboard.api.models.RenameAgentRequest
+import com.digitaltracer.switchboard.api.models.RenameSessionRequest
+import com.digitaltracer.switchboard.api.models.RenameSpaceRequest
 import com.digitaltracer.switchboard.api.models.Session
 import com.digitaltracer.switchboard.api.models.Skill
 import com.digitaltracer.switchboard.api.models.Sessions
@@ -349,17 +352,37 @@ class Hub private constructor(
     /** A page of one changed file's diff, from hunk [from]. */
     suspend fun diff(id: String, path: String, from: Int = 0): FileDiffView = authed { sessions.getDiff(id, path, from) }
 
-    /** [backend] is `hc` or `herdr`; null leaves it to the machine's runner. */
+    /**
+     * [backend] is `hc` or `herdr`; null leaves it to the machine's runner. [spaceId] is a Herdr
+     * app space for its tab to open in, instead of a new space.
+     */
     suspend fun start(
         project: String, prompt: String, machine: String?, agent: String?, notify: Boolean, requestId: String,
-        backend: String? = null,
+        backend: String? = null, spaceId: String? = null,
     ): StartResponse = authed {
         sessions.startSession(
             StartRequest(
                 projectId = project, prompt = prompt, requestId = requestId, machineId = machine, agent = agent,
-                notify = notify, backend = backend,
+                notify = notify, backend = backend, spaceId = spaceId,
             ),
         )
+    }
+
+    // Renames. Each answers with the name as it is now listed.
+
+    suspend fun renameSession(id: String, name: String): String =
+        authed { sessions.renameSession(id, RenameSessionRequest(name)).name }
+
+    /** An agent Switchboard didn't start, by its name as listed. */
+    suspend fun renameAgent(machine: String, agent: String, name: String, requestId: String): String = authed {
+        agentsApi.renameAgent(RenameAgentRequest(machineId = machine, agent = agent, name = name, requestId = requestId)).name
+    }
+
+    /** A Herdr app space or a Herdr workspace, by the id its agents list. */
+    suspend fun renameSpace(machine: String, herdrSession: String?, spaceId: String, name: String, requestId: String): String = authed {
+        agentsApi.renameSpace(
+            RenameSpaceRequest(machineId = machine, spaceId = spaceId, name = name, herdrSession = herdrSession, requestId = requestId),
+        ).name
     }
 
     /** Where a new session on [machine] opens, and which backends can take one now. */
