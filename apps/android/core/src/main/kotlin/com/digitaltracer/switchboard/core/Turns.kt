@@ -16,6 +16,8 @@ object Turns {
         val id: String
 
         data class User(val item: TranscriptItem) : Entry { override val id get() = item.id }
+        /** A message another terminal sent the agent. */
+        data class Peer(val item: TranscriptItem) : Entry { override val id get() = item.id }
         data class Reply(val item: TranscriptItem) : Entry { override val id get() = item.id }
         /** Something the agent said with more work after it before your next message: a note on the way. */
         data class Progress(val item: TranscriptItem) : Entry { override val id get() = item.id }
@@ -43,6 +45,7 @@ object Turns {
             when (item.kind) {
                 "tool" -> steps += item
                 "user" -> { flush(); out += Entry.User(item) }
+                "peer" -> { flush(); out += Entry.Peer(item) }
                 "assistant" -> { flush(); out += Entry.Reply(item) }
                 else -> { flush(); out += Entry.Note(item) }
             }
@@ -53,7 +56,7 @@ object Turns {
         var followed = false
         for (i in out.indices.reversed()) {
             when (val e = out[i]) {
-                is Entry.User, is Entry.Note -> followed = false
+                is Entry.User, is Entry.Peer, is Entry.Note -> followed = false
                 is Entry.Work -> followed = true
                 is Entry.Reply -> if (followed && e.item.endsTurn != true) out[i] = Entry.Progress(e.item) else followed = true
                 else -> {}
