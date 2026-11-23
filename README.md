@@ -46,6 +46,7 @@ Your code, sessions and secrets stay on your machine. The only shared piece is a
 | Relay: end-to-end encrypted phone-to-hub forwarding and push | Built |
 | MCP and OAuth for bots | Planned |
 | Changed files per session in the app | Built |
+| Rename a space or an agent from the app; start a session inside an existing Herdr app space | Built; starting into an existing space not yet seen with the real Herdr app |
 | Live screen and full diff view in the app | Planned |
 | Answering an agent's questions | Planned |
 | Android app | Planned |

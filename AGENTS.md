@@ -88,7 +88,8 @@ Each test file's header says what it needs.
   - `local.rs` is the runner built into the hub for its own machine; `link.rs` is a remote runner's WebSocket to the hub. Both carry the same masked frames.
   - `herdrs.rs` is every Herdr session on the machine.
   - `backend.rs` is the runner's own view of an agent server (a Herdr session or herdr-core), so callers don't read either one's types.
-  - `core_watch.rs` mirrors herdr-core and lists its agents as `hc/<name>`; `core_sessions.rs` starts sessions there (`new_sessions` in the runner config).
+  - `core_watch.rs` mirrors herdr-core and lists its agents as `hc/<name>`; `core_sessions.rs` starts sessions there (`new_sessions` in the runner config), in a new space or one the owner names.
+  - `manage.rs` renames an agent, a space or a session's tab when the owner asks from the phone: one API call, or one compare-and-set write of a `name` in the app's layout. It sends no keys.
   - `sessions.rs` covers worktrees and the agent lifecycle.
   - `hooks.rs` is the hook endpoint.
   - `codex.rs` and `dialogs.rs` are the only key paths: Codex's own startup and deny keys, and the owner's chosen option on a recognised dialog.
