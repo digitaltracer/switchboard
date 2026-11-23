@@ -129,6 +129,33 @@ impl Sessions {
         }
     }
 
+    /// A start into an existing space needs the Herdr app, and the space in its layout on this
+    /// machine now. Checked before anything is created.
+    pub(super) async fn check_space(
+        &self,
+        core: Option<&Core>,
+        space: &str,
+    ) -> Result<(), ProtoError> {
+        let Some(core) = core else {
+            return Err(err(
+                ErrorCode::BadRequest,
+                "a session can only join a space in the Herdr app",
+            ));
+        };
+        let doc = core
+            .client()
+            .doc_get(LAYOUT_DOC)
+            .await
+            .map_err(|e| err(ErrorCode::Herdr, format!("herdr-core: {e}")))?;
+        if core_watch::local_space(&spaces(&doc.value), space).is_none() {
+            return Err(err(
+                ErrorCode::NotFound,
+                "that space is no longer in the Herdr app on this machine",
+            ));
+        }
+        Ok(())
+    }
+
     fn agent_bin(&self, agent: Agent) -> Result<PathBuf, ProtoError> {
         let starts = self.core_starts.get();
         let name = agent.as_str();
@@ -145,12 +172,14 @@ impl Sessions {
     }
 
     /// The rest of `start` for a session on the core. The secret, hook and arguments are ready.
+    /// With `into`, its tab opens in that space; else in a new space of its own.
     pub(super) async fn start_on_core(
         &self,
         mut session: RunnerSession,
         core: Arc<Core>,
         mut args: Vec<String>,
         prompt: String,
+        into: Option<String>,
     ) -> Result<Value, ProtoError> {
         let client = core.client();
         let core_id = match client.hello().await {
@@ -189,10 +218,14 @@ impl Sessions {
             // Else its commands and hooks run in a shared server outside the terminal.
             args.insert(0, "--no-daemon".into());
         }
-        let (space, tab) = (
-            format!("sp{}", super::super::random_id()),
-            format!("tb{}", super::super::random_id()),
-        );
+        // In a space that exists the app makes the tab itself, as its manual says.
+        let (space, tab) = match &into {
+            Some(space) => (space.clone(), None),
+            None => (
+                format!("sp{}", super::super::random_id()),
+                Some(format!("tb{}", super::super::random_id())),
+            ),
+        };
         let mut argv = vec![
             "/bin/sh".to_owned(),
             "-c".into(),
@@ -201,12 +234,14 @@ impl Sessions {
             bin.to_string_lossy().into_owned(),
         ];
         argv.extend(args);
-        let labels = BTreeMap::from([
+        let mut labels = BTreeMap::from([
             ("herdr.space".to_owned(), space.clone()),
-            ("herdr.tab".to_owned(), tab.clone()),
             ("herdr.seen".to_owned(), "0".to_owned()),
             (SESSION_LABEL.to_owned(), session.session_id.clone()),
         ]);
+        if let Some(tab) = &tab {
+            labels.insert("herdr.tab".to_owned(), tab.clone());
+        }
         session.workspace_id = Some(space.clone());
         let run = RunParams {
             argv,
@@ -250,12 +285,12 @@ impl Sessions {
         }
         self.audit(&session.session_id, "prompt", json!({ "initial": true }));
         let tab_name = crate::hub::route::label(&session.project_id, &session.session_id, None);
-        tokio::spawn(name_space_and_tab(
+        tokio::spawn(name_tab_and_space(
             client,
-            space,
+            t.address.clone(),
             tab,
             tab_name,
-            session.project_id.clone(),
+            into.is_none().then(|| (space, session.project_id.clone())),
         ));
         Ok(started_json(&session))
     }
@@ -404,35 +439,46 @@ impl Sessions {
     }
 }
 
-/// Names the new tab after the session and its space after the project, once the app has
-/// adopted them. Without the app running, they stay unnamed.
-async fn name_space_and_tab(
+/// Names the session's tab after it, and a new space after the project, once the app has
+/// adopted the terminal: into the tab its label names, or one the app made in an existing space.
+/// Without the app running, they stay unnamed.
+async fn name_tab_and_space(
     client: crate::hc::Client,
-    space: String,
-    tab: String,
+    address: String,
+    tab: Option<String>,
     tab_name: String,
-    space_name: String,
+    new_space: Option<(String, String)>,
 ) {
     let deadline = Instant::now() + ADOPT_WAIT;
-    loop {
-        let adopted = client.doc_get(LAYOUT_DOC).await.is_ok_and(|d| {
-            spaces(&d.value)
-                .iter()
-                .any(|s| s.tabs.iter().any(|t| t.id == tab))
+    let tab = loop {
+        let adopted = client.doc_get(LAYOUT_DOC).await.ok().and_then(|d| {
+            let all = spaces(&d.value);
+            match &tab {
+                Some(id) => all
+                    .iter()
+                    .flat_map(|s| &s.tabs)
+                    .any(|t| &t.id == id)
+                    .then(|| id.clone()),
+                None => super::super::manage::tab_holding(&all, &address, None),
+            }
         });
-        if adopted {
-            break;
+        if let Some(id) = adopted {
+            break id;
         }
         if Instant::now() >= deadline {
-            tracing::debug!(tab, "the Herdr app didn't adopt the tab; it stays unnamed");
+            tracing::debug!(
+                address,
+                "the Herdr app didn't adopt the terminal; its tab stays unnamed"
+            );
             return;
         }
         tokio::time::sleep(ADOPT_POLL).await;
+    };
+    let mut names = vec![(layout::Which::Tab(&tab), &tab_name)];
+    if let Some((space, name)) = &new_space {
+        names.push((layout::Which::Space(space), name));
     }
-    for (which, name) in [
-        (layout::Which::Tab(&tab), &tab_name),
-        (layout::Which::Space(&space), &space_name),
-    ] {
+    for (which, name) in names {
         for _ in 0..RENAME_TRIES {
             match layout::rename(&client, which, name).await {
                 Err(LayoutError::Conflict) => continue,

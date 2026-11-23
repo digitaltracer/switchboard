@@ -204,6 +204,7 @@ async fn claude_through_the_hub_allow_deny_prompt_and_stop() {
                 notify: false,
                 request_id: Some(format!("live-{}", std::process::id())),
                 backend: None,
+                space_id: None,
             },
         )
         .await;

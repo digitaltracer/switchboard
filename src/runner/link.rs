@@ -18,8 +18,8 @@ use url::Url;
 use super::sessions::Sessions;
 use crate::proto::conn::{Backoff, PING_INTERVAL, QUEUE_CAPACITY};
 use crate::proto::{
-    CAP_ACTIVITY, CAP_DIFF, CAP_HC, CAP_START_BACKEND, CAP_SUMMARY, Event, Frame, Hello, Op,
-    Outcome, OwnedSession, PROTOCOL_VERSION, ProtoError, Resp, decode,
+    CAP_ACTIVITY, CAP_DIFF, CAP_HC, CAP_MANAGE, CAP_START_BACKEND, CAP_SUMMARY, Event, Frame,
+    Hello, Op, Outcome, OwnedSession, PROTOCOL_VERSION, ProtoError, Resp, decode,
 };
 use crate::redact::redact;
 
@@ -82,6 +82,7 @@ async fn connect_once<H: Handler>(
             CAP_ACTIVITY.into(),
             CAP_DIFF.into(),
             CAP_HC.into(),
+            CAP_MANAGE.into(),
             CAP_START_BACKEND.into(),
             CAP_SUMMARY.into(),
         ],

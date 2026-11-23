@@ -170,6 +170,7 @@ fn start_req(agent: Agent) -> StartRequest {
         prompt: "do the task".into(),
         deny_patterns: vec![],
         backend: None,
+        space: None,
     }
 }
 
@@ -2167,4 +2168,395 @@ async fn start_options_follow_the_setting_and_whether_the_core_answers() {
     assert_eq!(o.default, Hc, "the setting's choice, though it would fail");
     let hc = o.backends.iter().find(|b| b.backend == Hc).unwrap();
     assert_eq!(hc.reason.as_deref(), Some("not_followed"));
+}
+
+// Renames, and a start into a space that exists.
+
+fn doc_with(spaces: Value) -> Value {
+    json!({ "spaces": spaces, "app_owned": { "keep": true } })
+}
+
+fn tab_of(id: &str, name: Value, terminals: &[&str]) -> Value {
+    let panes: Vec<Value> = terminals
+        .iter()
+        .map(|t| json!({ "content": { "terminal": t } }))
+        .collect();
+    json!({ "id": id, "name": name, "root": { "children": panes } })
+}
+
+fn tabbed(tab: &str) -> Value {
+    json!({ "argv": ["/x/claude"], "reported": true, "cwd": "/w",
+            "status": { "state": "idle", "app": "claude-code" },
+            "labels": { "herdr.space": "sp1", "herdr.tab": tab } })
+}
+
+fn rename_agent(agent: &str, name: &str) -> Op {
+    Op::RenameAgent {
+        agent: agent.into(),
+        name: name.into(),
+    }
+}
+
+#[tokio::test]
+async fn a_herdr_app_agent_is_renamed_by_its_tab_and_only_when_it_owns_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let (r, fake) = core_rig(dir);
+    let (t1, t2, t3) = (
+        fake.add(tabbed("tb1")),
+        fake.add(tabbed("tb2")),
+        fake.add(tabbed("tb2")),
+    );
+    let mut named = tabbed("tb4");
+    named["name"] = json!("review");
+    fake.add(named);
+    let shell = fake.add(json!({ "argv": ["/bin/zsh"], "labels": { "herdr.tab": "tb5" } }));
+    fake.set_doc(doc_with(json!([
+        { "id": "sp1", "name": "repo", "color": "blue", "tabs": [
+            tab_of("tb1", Value::Null, &[&t1]), tab_of("tb2", json!("pair"), &[&t2, &t3]),
+            tab_of("tb4", json!("x"), &["t4"]), tab_of("tb5", json!("sh"), &[&shell]) ] },
+    ])));
+    let listed: Vec<crate::proto::AgentSummary> =
+        serde_json::from_value(r.sessions.handle(Op::Agents).await.unwrap()).unwrap();
+    let can: Vec<(&str, bool, Option<&str>)> = listed
+        .iter()
+        .map(|a| (a.name.as_str(), a.can_rename, a.space_id.as_deref()))
+        .collect();
+    assert_eq!(
+        can,
+        [
+            ("hc/t1", true, Some("sp1")),
+            ("hc/pair-t2", false, Some("sp1")),
+            ("hc/pair-t3", false, Some("sp1")),
+            ("hc/review", false, Some("sp1")),
+        ]
+    );
+
+    let v = r
+        .sessions
+        .handle(rename_agent("hc/t1", "  fix login  "))
+        .await
+        .unwrap();
+    assert_eq!(v["name"], "hc/fix login");
+    let (doc, _) = fake.doc();
+    assert_eq!(doc["spaces"][0]["tabs"][0]["name"], "fix login");
+    assert_eq!(
+        doc["spaces"][0]["color"], "blue",
+        "the rest is kept as read"
+    );
+    assert_eq!(doc["app_owned"], json!({ "keep": true }));
+    // The next listing has it, by the new name, without waiting for the core's event.
+    r.sessions
+        .handle(Op::ReadAgent {
+            agent: "hc/fix login".into(),
+            lines: 0,
+            visible: true,
+            ansi: false,
+        })
+        .await
+        .unwrap();
+
+    let writes = || requests_of(&fake, "doc.set").len();
+    let before = writes();
+    for (agent, name, code) in [
+        ("hc/pair-t2", "solo", ErrorCode::BadRequest),
+        ("hc/review", "other", ErrorCode::BadRequest),
+        // A shell is no agent, whatever tab it sits in.
+        ("hc/sh", "other", ErrorCode::NotFound),
+        ("hc/t9", "other", ErrorCode::NotFound),
+        ("vps/t1", "other", ErrorCode::NotFound),
+        // Names another agent shows, alone or told apart by its address.
+        ("hc/fix login", "review", ErrorCode::NameTaken),
+        ("hc/fix login", "pair", ErrorCode::NameTaken),
+        ("hc/fix login", "a/b", ErrorCode::BadRequest),
+        ("hc/fix login", " ", ErrorCode::BadRequest),
+    ] {
+        let e = r
+            .sessions
+            .handle(rename_agent(agent, name))
+            .await
+            .unwrap_err();
+        assert_eq!(e.code, code, "{agent} -> {name:?}: {e:?}");
+    }
+    assert_eq!(writes(), before, "a refusal writes nothing");
+    let sent: Vec<String> = fake.methods();
+    for typed in ["terminal.send", "terminal.keys", "terminal.label"] {
+        assert!(
+            !sent.contains(&typed.to_owned()),
+            "a rename never does {typed}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_layout_someone_keeps_writing_is_retried_then_reported() {
+    use crate::hc::fake::Script;
+    let dir = tempfile::tempdir().unwrap();
+    let (r, fake) = core_rig(dir);
+    let t = fake.add(tabbed("tb1"));
+    let e = r
+        .sessions
+        .handle(rename_agent("hc/t1", "x"))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, ErrorCode::NotFound, "the app never ran here: {e:?}");
+
+    fake.set_doc(doc_with(json!([
+        { "id": "sp1", "name": "repo", "tabs": [ tab_of("tb1", Value::Null, &[&t]) ] },
+    ])));
+    for _ in 0..2 {
+        fake.script("doc.set", Script::Error("conflict"));
+    }
+    r.sessions
+        .handle(rename_agent("hc/t1", "third time"))
+        .await
+        .unwrap();
+    assert_eq!(fake.doc().0["spaces"][0]["tabs"][0]["name"], "third time");
+
+    for _ in 0..5 {
+        fake.script("doc.set", Script::Error("conflict"));
+    }
+    let e = r
+        .sessions
+        .handle(rename_agent("hc/third time", "never"))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, ErrorCode::Busy, "{e:?}");
+    assert_eq!(fake.doc().0["spaces"][0]["tabs"][0]["name"], "third time");
+}
+
+#[tokio::test]
+async fn a_herdr_app_space_is_renamed_by_id_and_never_another_machines() {
+    let dir = tempfile::tempdir().unwrap();
+    let (r, fake) = core_rig(dir);
+    fake.add(tabbed("tb1"));
+    let space = |id: &str, name: &str| Op::RenameSpace {
+        herdr_session: Some("hc".into()),
+        space_id: id.into(),
+        name: name.into(),
+    };
+    let e = r.sessions.handle(space("sp1", "x")).await.unwrap_err();
+    assert_eq!(e.code, ErrorCode::NotFound, "the app never ran here: {e:?}");
+
+    fake.set_doc(doc_with(json!([
+        { "id": "sp1", "name": "repo", "folder": "/r", "tabs": [] },
+        { "id": "sp2", "name": "billing", "tabs": [] },
+        { "id": "sp3", "name": "far", "machine": "vps", "tabs": [] },
+    ])));
+    let v = r.sessions.handle(space("sp1", " kraft ")).await.unwrap();
+    assert_eq!(v["name"], "kraft");
+    let (doc, _) = fake.doc();
+    assert_eq!(doc["spaces"][0]["name"], "kraft");
+    assert_eq!(doc["spaces"][0]["folder"], "/r");
+
+    for (id, name, code) in [
+        ("sp1", "billing", ErrorCode::NameTaken),
+        ("sp3", "near", ErrorCode::NotFound),
+        ("vps/sp1", "near", ErrorCode::NotFound),
+        ("sp9", "near", ErrorCode::NotFound),
+        ("sp2", "two\nlines", ErrorCode::BadRequest),
+    ] {
+        let e = r.sessions.handle(space(id, name)).await.unwrap_err();
+        assert_eq!(e.code, code, "{id} -> {name:?}: {e:?}");
+    }
+    assert_eq!(fake.doc().0, doc, "a refusal writes nothing");
+    // A Herdr session that isn't running is not looked for on disk.
+    let e = r
+        .sessions
+        .handle(Op::RenameSpace {
+            herdr_session: Some("../elsewhere".into()),
+            space_id: "w1".into(),
+            name: "x".into(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, ErrorCode::NotFound);
+}
+
+#[tokio::test]
+async fn a_herdr_terminal_agent_and_workspace_are_renamed_through_herdr() {
+    let dir = tempfile::tempdir().unwrap();
+    let (r, config_dir, _) = multi_rig(dir, vec![]);
+    let folder = config_dir.join("sessions/main");
+    std::fs::create_dir_all(&folder).unwrap();
+    let herdr = FakeHerdr::start(&folder, json!({"type": "ok"}), vec![]);
+    let mut agent = agent_info("idle");
+    agent["name"] = json!("old");
+    agent["agent"] = json!("claude");
+    herdr.answer(
+        "session.snapshot",
+        json!({"type": "session_snapshot", "snapshot": {"version": "0.9.1", "protocol": 22,
+            "workspaces": [
+                {"workspace_id": "w2", "label": "kraft", "agent_status": "idle"},
+                {"workspace_id": "w3", "label": "atlas", "agent_status": "idle"}],
+            "tabs": [], "panes": [], "layouts": [], "agents": [agent.clone()]}}),
+    );
+    herdr.answer("agent.get", json!({"type": "agent_info", "agent": agent}));
+
+    let listed: Vec<crate::proto::AgentSummary> =
+        serde_json::from_value(r.sessions.handle(Op::Agents).await.unwrap()).unwrap();
+    assert_eq!(listed[0].name, "main/old");
+    assert_eq!(listed[0].space_id.as_deref(), Some("w2"));
+    assert!(listed[0].can_rename);
+
+    let v = r
+        .sessions
+        .handle(rename_agent("main/old", "reviewer"))
+        .await
+        .unwrap();
+    assert_eq!(v["name"], "main/reviewer");
+    // By pane, so an agent that goes by its pane id is renamed the same way.
+    assert_eq!(
+        herdr.call("agent.rename").unwrap()["params"],
+        json!({"target": "w2:p1", "name": "reviewer"})
+    );
+    let e = r
+        .sessions
+        .handle(rename_agent("main/old", "My Agent"))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, ErrorCode::BadRequest, "{e:?}");
+    herdr.answer(
+        "agent.rename",
+        json!({"error": {"code": "agent_name_taken", "message": "agent name tester is already used"}}),
+    );
+    let e = r
+        .sessions
+        .handle(rename_agent("main/old", "tester"))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, ErrorCode::NameTaken, "{e:?}");
+
+    let space = |id: &str, name: &str| Op::RenameSpace {
+        herdr_session: Some("main".into()),
+        space_id: id.into(),
+        name: name.into(),
+    };
+    let v = r.sessions.handle(space("w2", "billing")).await.unwrap();
+    assert_eq!(v["name"], "billing");
+    assert_eq!(
+        herdr.call("workspace.rename").unwrap()["params"],
+        json!({"workspace_id": "w2", "label": "billing"})
+    );
+    // Herdr would accept a label twice; the phone would then show two spaces as one.
+    let e = r.sessions.handle(space("w2", "atlas")).await.unwrap_err();
+    assert_eq!(e.code, ErrorCode::NameTaken);
+    let e = r.sessions.handle(space("w9", "x")).await.unwrap_err();
+    assert_eq!(e.code, ErrorCode::NotFound);
+    let renames = herdr
+        .methods()
+        .iter()
+        .filter(|m| *m == "workspace.rename")
+        .count();
+    assert_eq!(renames, 1);
+    assert!(!herdr.methods().contains(&"agent.send_keys".to_owned()));
+}
+
+#[tokio::test]
+async fn a_session_started_into_a_space_gets_a_tab_there_named_after_it() {
+    let (r, fake, repo) = core_start_rig(crate::config::NewSessions::Herdr);
+    // The app's side: the space exists, and it puts the new terminal in a tab of its own making.
+    fake.set_doc(doc_with(json!([
+        { "id": "sp1", "name": "billing", "tabs": [
+            tab_of("tb1", json!("other"), &["t7"]), tab_of("tbnew", Value::Null, &["t1"]) ] },
+    ])));
+    fake.queue_screens("t1", vec![fixture("folder-access"), fixture("ready")]);
+    report_idle(&fake, "codex");
+    let req = StartRequest {
+        backend: Some(crate::proto::StartBackend::Hc),
+        space: Some("sp1".into()),
+        ..core_req(Agent::Codex, &repo)
+    };
+    let started = r.sessions.start(req).await.unwrap();
+    assert_eq!(started["workspace_id"], "sp1");
+    let run = &requests_of(&fake, "terminal.run")[0];
+    assert_eq!(run["labels"]["herdr.space"], "sp1");
+    assert!(
+        run["labels"].get("herdr.tab").is_none(),
+        "the app makes the tab in a space that exists: {run}"
+    );
+    assert_eq!(run["labels"]["switchboard.session"], "s1");
+
+    let named = || fake.doc().0["spaces"][0]["tabs"][1]["name"] == "p-s1";
+    for _ in 0..100 {
+        if named() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let (doc, _) = fake.doc();
+    assert_eq!(doc["spaces"][0]["tabs"][1]["name"], "p-s1");
+    assert_eq!(doc["spaces"][0]["tabs"][0]["name"], "other");
+    assert_eq!(
+        doc["spaces"][0]["name"], "billing",
+        "the space keeps its name"
+    );
+
+    // The hub's later name for the session reaches that same tab, and no other.
+    let v = r
+        .sessions
+        .handle(Op::RenameSessionTab {
+            session_id: "s1".into(),
+            name: "login fix".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(v["renamed"], true);
+    let (doc, _) = fake.doc();
+    assert_eq!(doc["spaces"][0]["tabs"][1]["name"], "login fix");
+    assert_eq!(doc["spaces"][0]["tabs"][0]["name"], "other");
+    // Its own agent keeps the name the runner reaches it by.
+    let e = r
+        .sessions
+        .handle(rename_agent("hc/sb-s1", "x"))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, ErrorCode::BadRequest, "{e:?}");
+}
+
+#[tokio::test]
+async fn a_start_into_a_space_that_is_gone_or_elsewhere_creates_nothing() {
+    let (r, fake, repo) = core_start_rig(crate::config::NewSessions::Auto);
+    fake.set_doc(doc_with(json!([
+        { "id": "sp1", "name": "billing", "tabs": [] },
+        { "id": "sp3", "name": "far", "machine": "vps", "tabs": [] },
+    ])));
+    let into = |space: &str, backend| StartRequest {
+        backend,
+        space: Some(space.into()),
+        ..core_req(Agent::Claude, &repo)
+    };
+    let hc = Some(crate::proto::StartBackend::Hc);
+    for (req, code) in [
+        (into("sp9", hc), ErrorCode::NotFound),
+        (into("sp3", hc), ErrorCode::NotFound),
+        (into("vps/sp1", hc), ErrorCode::NotFound),
+        // A Herdr terminal has no such space.
+        (
+            into("sp1", Some(crate::proto::StartBackend::Herdr)),
+            ErrorCode::BadRequest,
+        ),
+    ] {
+        let e = r.sessions.start(req).await.unwrap_err();
+        assert_eq!(e.code, code, "{e:?}");
+    }
+    assert!(requests_of(&fake, "terminal.run").is_empty());
+    assert!(r.sessions.get("s1").is_none(), "no session record");
+    assert!(!r.dir.path().join("worktrees").exists(), "no worktree");
+    assert!(!r.dir.path().join("state/s1").exists(), "no secret");
+}
+
+#[tokio::test]
+async fn a_herdr_terminal_session_has_no_tab_to_rename() {
+    let dir = tempfile::tempdir().unwrap();
+    let screens = vec![fixture("folder-access"), fixture("ready")];
+    let (r, _, _) = multi_rig(dir, screens);
+    r.sessions.start(start_req(Agent::Codex)).await.unwrap();
+    let rename = |id: &str| Op::RenameSessionTab {
+        session_id: id.into(),
+        name: "login fix".into(),
+    };
+    let v = r.sessions.handle(rename("s1")).await.unwrap();
+    assert_eq!(v["renamed"], false);
+    let e = r.sessions.handle(rename("nope")).await.unwrap_err();
+    assert_eq!(e.code, ErrorCode::NotFound);
 }

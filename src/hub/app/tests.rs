@@ -2369,3 +2369,218 @@ async fn a_sessions_card_name_is_its_label_not_its_agents_internal_name() {
     let board = call.await.unwrap();
     assert_eq!(board.body["running"], json!([label]), "{}", board.body);
 }
+
+// Renames, and a start into a space the owner already has.
+
+fn managing() -> Vec<String> {
+    vec![
+        crate::proto::CAP_HC.into(),
+        crate::proto::CAP_START_BACKEND.into(),
+        crate::proto::CAP_MANAGE.into(),
+    ]
+}
+
+#[tokio::test]
+async fn the_lists_say_what_can_be_renamed_and_a_start_takes_a_space() {
+    let mut r = rig_advertising("", managing()).await;
+    let (_, token) = r.pair(&Phone::new()).await;
+    let sid = r.start(&token, "rq-m1").await;
+    let call = r.call_later("GET", "/agents", &token, Value::Null);
+    let req = r.req().await;
+    r.ok(
+        req.id,
+        json!([
+            {"name": "sb-x", "pane_id": "t4", "kind": "claude", "agent_status": "idle",
+             "session_id": sid, "herdr_session": "hc", "space": "kraft", "space_id": "sp1"},
+            {"name": "hc/2", "pane_id": "t5", "kind": "claude", "agent_status": "idle",
+             "herdr_session": "hc", "space": "kraft", "space_id": "sp1", "can_rename": true},
+            {"name": "hc/review", "pane_id": "t6", "kind": "claude", "agent_status": "idle",
+             "herdr_session": "hc", "space": "core"},
+        ]),
+    )
+    .await;
+    let agents = call.await.unwrap().body;
+    let a = &agents["agents"];
+    assert_eq!(a[0]["space_id"], "sp1", "{agents}");
+    assert_eq!(a[0]["can_rename"], true);
+    assert!(
+        a[1].get("space_id").is_none(),
+        "outside every space: {agents}"
+    );
+    assert_eq!(a[1]["can_rename"], false);
+    let s = r
+        .call("GET", &format!("/sessions/{sid}"), Some(&token), None)
+        .await
+        .body;
+    assert_eq!(s["space_id"], "sp1", "{s}");
+    assert_eq!(s["can_rename"], true);
+
+    let start = json!({"project_id": "switchboard", "prompt": "another task in that space",
+                       "request_id": "rq-m2", "space_id": "sp1"});
+    let call = r.call_later("POST", "/sessions", &token, start.clone());
+    let req = r.req().await;
+    let Op::StartSession {
+        session_id,
+        backend,
+        space,
+        ..
+    } = &req.op
+    else {
+        panic!("{:?}", req.op);
+    };
+    assert_eq!(space.as_deref(), Some("sp1"));
+    assert_eq!(*backend, Some(crate::proto::StartBackend::Hc));
+    r.ok(
+        req.id,
+        json!({"session_id": session_id, "workspace_id": "sp1", "pane_id": "t7",
+               "herdr_session": "hc"}),
+    )
+    .await;
+    assert_eq!(call.await.unwrap().status, StatusCode::OK);
+
+    // A Herdr terminal has no such space; nothing reaches the runner.
+    let mut in_terminal = start.clone();
+    in_terminal["backend"] = json!("herdr");
+    in_terminal["request_id"] = json!("rq-m3");
+    let reply = r
+        .call("POST", "/sessions", Some(&token), Some(in_terminal))
+        .await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{}", reply.body);
+    assert!(r.runner.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn sessions_agents_and_spaces_are_renamed_through_the_api() {
+    let mut r = rig_advertising("", managing()).await;
+    let (_, token) = r.pair(&Phone::new()).await;
+    let sid = r.start(&token, "rq-n1").await;
+
+    let unsigned = r
+        .call(
+            "POST",
+            &format!("/sessions/{sid}/rename"),
+            None,
+            Some(json!({"name": "x"})),
+        )
+        .await;
+    assert_eq!(unsigned.status, StatusCode::UNAUTHORIZED);
+
+    let call = r.call_later(
+        "POST",
+        &format!("/sessions/{sid}/rename"),
+        &token,
+        json!({"name": "login fix"}),
+    );
+    let req = r.req().await;
+    assert!(matches!(req.op, Op::Agents), "the clash check lists agents");
+    r.ok(req.id, json!([])).await;
+    let reply = call.await.unwrap();
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(reply.body["name"], "login fix");
+    let s = r
+        .call("GET", &format!("/sessions/{sid}"), Some(&token), None)
+        .await
+        .body;
+    assert_eq!(s["label"], "login fix", "{s}");
+    let bad = r
+        .call(
+            "POST",
+            &format!("/sessions/{sid}/rename"),
+            Some(&token),
+            Some(json!({"name": "  "})),
+        )
+        .await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST);
+
+    let call = r.call_later(
+        "POST",
+        "/agents/rename",
+        &token,
+        json!({"machine_id": "mac", "agent": "hc/2", "name": "reviewer", "request_id": "rq-n2"}),
+    );
+    let req = r.req().await;
+    assert_eq!(
+        req.op,
+        Op::RenameAgent {
+            agent: "hc/2".into(),
+            name: "reviewer".into()
+        }
+    );
+    r.ok(req.id, json!({"name": "hc/reviewer"})).await;
+    let reply = call.await.unwrap();
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(reply.body["name"], "hc/reviewer");
+
+    let call = r.call_later(
+        "POST",
+        "/agents/rename",
+        &token,
+        json!({"machine_id": "mac", "agent": "hc/reviewer", "name": "tester"}),
+    );
+    let req = r.req().await;
+    r.err(
+        req.id,
+        ErrorCode::NameTaken,
+        "another agent is already called tester",
+    )
+    .await;
+    let reply = call.await.unwrap();
+    assert_eq!(reply.status, StatusCode::CONFLICT);
+    assert_eq!(reply.body["error"]["code"], "name_taken", "{}", reply.body);
+
+    let call = r.call_later(
+        "POST",
+        "/spaces/rename",
+        &token,
+        json!({"machine_id": "mac", "herdr_session": "hc", "space_id": "sp1",
+               "name": "sk-ant-abcdefghijklmnopqrstuv"}),
+    );
+    let req = r.req().await;
+    let Op::RenameSpace { space_id, name, .. } = &req.op else {
+        panic!("{:?}", req.op);
+    };
+    assert_eq!(space_id, "sp1");
+    assert!(
+        !name.contains("abcdefgh"),
+        "masked before it leaves the hub"
+    );
+    let masked = name.clone();
+    r.ok(req.id, json!({ "name": masked })).await;
+    let reply = call.await.unwrap();
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert!(!reply.body.to_string().contains("abcdefgh"));
+}
+
+#[tokio::test]
+async fn an_older_runner_is_never_sent_a_rename() {
+    let mut r = rig().await;
+    let (_, token) = r.pair(&Phone::new()).await;
+    for (path, body) in [
+        (
+            "/agents/rename",
+            json!({"machine_id": "mac", "agent": "main/old", "name": "new"}),
+        ),
+        (
+            "/spaces/rename",
+            json!({"machine_id": "mac", "herdr_session": "main", "space_id": "w2", "name": "x"}),
+        ),
+        (
+            "/sessions",
+            json!({"project_id": "switchboard", "prompt": "do it", "request_id": "rq-o1",
+                   "space_id": "sp1"}),
+        ),
+    ] {
+        let reply = r.call("POST", path, Some(&token), Some(body)).await;
+        assert_eq!(reply.status, StatusCode::CONFLICT, "{path}: {}", reply.body);
+    }
+    assert!(r.runner.try_recv().is_err(), "nothing went to the runner");
+    let offline = r
+        .call(
+            "POST",
+            "/agents/rename",
+            Some(&token),
+            Some(json!({"machine_id": "nowhere", "agent": "a", "name": "b"})),
+        )
+        .await;
+    assert_eq!(offline.status, StatusCode::BAD_REQUEST, "unknown machine");
+}

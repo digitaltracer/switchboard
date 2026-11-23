@@ -70,6 +70,60 @@ fn agents_are_live_local_claude_codex_or_reporting_programs() {
 }
 
 #[test]
+fn the_listing_says_which_space_and_whether_a_rename_is_possible() {
+    let tab = |id: &str, terminals: &[&str]| {
+        let panes: Vec<Value> = terminals
+            .iter()
+            .map(|t| json!({ "content": { "terminal": t } }))
+            .collect();
+        json!({ "id": id, "name": id, "root": { "children": panes } })
+    };
+    let doc = json!({ "spaces": [
+        { "id": "sp1", "name": "here", "tabs": [
+            tab("tb1", &["t1"]), tab("tb2", &["t2", "t3"]), tab("tb4", &["t4"]) ] },
+        { "id": "sp2", "name": "there", "machine": "vps", "tabs": [ tab("tb5", &["t5"]) ] },
+    ] });
+    let agent = |address: &str, space: &str, tab: &str| {
+        json!({ "address": address, "argv": ["claude"],
+                "labels": { "herdr.space": space, "herdr.tab": tab } })
+    };
+    let mut named = agent("t4", "sp1", "tb4");
+    named["name"] = json!("review");
+    let ts = [
+        term(agent("t1", "sp1", "tb1")),
+        term(agent("t2", "sp1", "tb2")),
+        term(agent("t3", "sp1", "tb2")),
+        term(named),
+        term(agent("t5", "sp2", "tb5")),
+        term(agent("t6", "sp9", "tb9")),
+        term(json!({ "address": "t7", "argv": ["claude"], "parent": "t1" })),
+        term(json!({ "address": "t8", "argv": ["claude"] })),
+    ];
+    let got: Vec<(String, Option<String>, bool)> = list(&ts, &doc)
+        .into_iter()
+        .map(|f| (f.target, f.space_id, f.can_rename))
+        .collect();
+    let here = Some("sp1".to_owned());
+    let want = [
+        ("t1", here.clone(), true),
+        // Two terminals share the tab: its name isn't one agent's.
+        ("t2", here.clone(), false),
+        ("t3", here.clone(), false),
+        // Named when it started; the core can't change that.
+        ("t4", here.clone(), false),
+        // A space on another machine is never targeted.
+        ("t5", None, false),
+        // A space the layout doesn't hold.
+        ("t6", None, false),
+        // A helper shows in its parent's space but has no tab.
+        ("t7", here, false),
+        ("t8", None, false),
+    ]
+    .map(|(a, s, r)| (a.to_owned(), s, r));
+    assert_eq!(got, want);
+}
+
+#[test]
 fn statuses_map_to_the_runners_words() {
     let s = |state: Value| status_of(&term(json!({ "status": state })));
     assert_eq!(s(json!({ "state": "idle" })), AgentStatus::Idle);

@@ -9,8 +9,8 @@ use tokio::time::Instant;
 use super::link::{Handler, mask};
 use crate::hub::service::SessionService;
 use crate::proto::{
-    CAP_ACTIVITY, CAP_DIFF, CAP_HC, CAP_START_BACKEND, CAP_SUMMARY, Event, Frame, Hello, Outcome,
-    PROTOCOL_VERSION, Resp,
+    CAP_ACTIVITY, CAP_DIFF, CAP_HC, CAP_MANAGE, CAP_START_BACKEND, CAP_SUMMARY, Event, Frame,
+    Hello, Outcome, PROTOCOL_VERSION, Resp,
 };
 
 const EXPIRE_TICK: Duration = Duration::from_secs(1);
@@ -33,6 +33,7 @@ pub async fn run<H: Handler>(
             CAP_ACTIVITY.into(),
             CAP_DIFF.into(),
             CAP_HC.into(),
+            CAP_MANAGE.into(),
             CAP_START_BACKEND.into(),
             CAP_SUMMARY.into(),
         ],

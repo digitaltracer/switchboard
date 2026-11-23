@@ -1216,6 +1216,251 @@
         ]
       }
     },
+    "/app/v1/sessions/{id}/rename": {
+      "post": {
+        "tags": [
+          "sessions"
+        ],
+        "operationId": "rename_session",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenameSessionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RenameResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Something else already answers to the name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
+    "/app/v1/agents/rename": {
+      "post": {
+        "tags": [
+          "agents"
+        ],
+        "operationId": "rename_agent",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenameAgentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RenameResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad name, or a name that can't be changed from here",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such agent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The name is taken, or the machine's runner is too old",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Machine offline",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Outcome unknown",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
+    "/app/v1/spaces/rename": {
+      "post": {
+        "tags": [
+          "agents"
+        ],
+        "operationId": "rename_space",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenameSpaceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RenameResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such space",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The name is taken, or the machine's runner is too old",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Machine offline",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Outcome unknown",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
     "/app/v1/approvals/{id}/challenge": {
       "post": {
         "tags": [
@@ -2616,6 +2861,14 @@
           "backend": {
             "type": "string",
             "description": "`herdr` for a Herdr TUI agent, `hc` for one in the Herdr app, named `hc/<agent>`. Older\nhubs leave it out."
+          },
+          "space_id": {
+            "type": "string",
+            "description": "The id of the space it runs in, as on a session. Absent from an older hub or runner, and\nfor an agent in the Herdr app outside every space."
+          },
+          "can_rename": {
+            "type": "boolean",
+            "description": "`POST /agents/rename` can rename it. False for one in the Herdr app whose name was fixed\nwhen it started or that shares its tab; rename those at the machine. Older hubs leave\nit out."
           }
         }
       },
@@ -4305,6 +4558,90 @@
           }
         }
       },
+      "RenameAgentRequest": {
+        "type": "object",
+        "required": [
+          "machine_id",
+          "agent",
+          "name"
+        ],
+        "properties": {
+          "machine_id": {
+            "type": "string"
+          },
+          "agent": {
+            "type": "string",
+            "description": "The agent's name as listed."
+          },
+          "name": {
+            "type": "string",
+            "description": "In a Herdr terminal: a lowercase letter, then lowercase letters, digits, `-` or `_`, at\nmost 32. In the Herdr app: as for a session, since it names the agent's tab."
+          },
+          "request_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A lost response can be retried with this id."
+          }
+        }
+      },
+      "RenameResponse": {
+        "type": "object",
+        "description": "The name as it is now listed; for a session, its label.",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "RenameSessionRequest": {
+        "type": "object",
+        "description": "A new name: one line of 1 to 40 characters, without `/`. Masked like any other text.",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "RenameSpaceRequest": {
+        "type": "object",
+        "required": [
+          "machine_id",
+          "space_id",
+          "name"
+        ],
+        "properties": {
+          "machine_id": {
+            "type": "string"
+          },
+          "herdr_session": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The `herdr_session` of the session or agent that listed the space; `hc` for the Herdr app."
+          },
+          "space_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "Session": {
         "type": "object",
         "required": [
@@ -4415,6 +4752,14 @@
           "space": {
             "type": "string",
             "description": "The Herdr app space, or Herdr workspace, its agent was last seen in, as in `AgentView`.\nUntrusted text. Absent until the hub has seen it, and from older hubs."
+          },
+          "space_id": {
+            "type": "string",
+            "description": "That space's id on its machine, for `POST /spaces/rename` and a start's `space_id`.\nAbsent until the hub has seen it, from an older hub or runner, and for an agent in the\nHerdr app outside every space."
+          },
+          "can_rename": {
+            "type": "boolean",
+            "description": "`POST /sessions/{id}/rename` can name it. Older hubs leave it out."
           },
           "pending_approvals": {
             "type": "array",
@@ -4627,6 +4972,13 @@
               "null"
             ],
             "description": "Where it opens on the machine: `hc` for the Herdr app, `herdr` for a Herdr terminal\nsession. Omitted, the machine's runner chooses as it always has. A choice the machine\ncan't serve fails with `backend_unavailable`; it never falls back or moves machine."
+          },
+          "space_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A Herdr app space, by the `space_id` a session or agent listed, for the session's tab to\nopen in instead of a new space. Only with the Herdr app: with `backend` `herdr` it is a\nbad request. A space that has gone fails with `not_found` before anything is created."
           }
         }
       },

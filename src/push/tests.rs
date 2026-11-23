@@ -83,6 +83,7 @@ impl Rig {
                 herdr_session: None,
                 name: None,
                 space: None,
+                space_id: None,
             })
             .await
             .unwrap();

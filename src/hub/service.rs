@@ -19,9 +19,9 @@ use crate::agents::claude::answers;
 use crate::cli::Agent;
 use crate::config::{HubConfig, ProjectConfig};
 use crate::proto::{
-    AgentActivity, AgentPromptOutcome, AgentSummary, CAP_ACTIVITY, CAP_DIFF, CAP_START_BACKEND,
-    DialogView, ErrorCode, Event, Frame, Hello, Op, OwnedSession, ProtoError, SkillInfo,
-    StartBackend, StartOptions, TranscriptPage,
+    AgentActivity, AgentPromptOutcome, AgentSummary, CAP_ACTIVITY, CAP_DIFF, CAP_MANAGE,
+    CAP_START_BACKEND, DialogView, ErrorCode, Event, Frame, Hello, Op, OwnedSession, ProtoError,
+    SkillInfo, StartBackend, StartOptions, TranscriptPage,
 };
 use crate::redact::{redact, redact_as, redact_str};
 use crate::runner::random_id;
@@ -67,6 +67,8 @@ const KIND_DECIDE: &str = "session_decide";
 const KIND_STOP: &str = "session_stop";
 const KIND_DELETE: &str = "session_delete";
 const KIND_ANSWER: &str = "session_answer";
+const KIND_RENAME_AGENT: &str = "agent_rename";
+const KIND_RENAME_SPACE: &str = "space_rename";
 
 /// Unix milliseconds; manual in tests so deadlines are exact.
 #[derive(Clone)]
@@ -181,6 +183,12 @@ pub enum HubError {
         "machine {0:?} can't choose where a session opens; update its runner, or start without choosing"
     )]
     BackendUnsupported(String),
+    /// Renaming, or starting into a space, needs a runner that can.
+    #[error("machine {0:?}'s runner is too old for this; update it")]
+    RunnerTooOld(String),
+    /// Another session, agent or space already goes by the name.
+    #[error("{0}")]
+    NameTaken(String),
     #[error("unknown session {0:?}")]
     UnknownSession(String),
     #[error("unknown approval {0:?} for this session")]
@@ -225,6 +233,8 @@ impl HubError {
             HubError::MachineOffline(_) => "machine_offline".into(),
             HubError::Reconciling(_) => "reconciling".into(),
             HubError::BackendUnsupported(_) => "backend_unavailable".into(),
+            HubError::RunnerTooOld(_) => "runner_too_old".into(),
+            HubError::NameTaken(_) => "name_taken".into(),
             HubError::UnknownSession(_) => "unknown_session".into(),
             HubError::UnknownApproval(_) => "unknown_approval".into(),
             HubError::ApproveNotAllowed(_) => "approve_not_allowed".into(),
@@ -333,6 +343,9 @@ pub struct StartRequest {
     pub request_id: Option<String>,
     /// Where it opens on the machine; none leaves it to the runner's `new_sessions`.
     pub backend: Option<StartBackend>,
+    /// A Herdr app space, by the id a listing gave, for its tab to open in instead of a new
+    /// space. It implies the Herdr app.
+    pub space_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -437,6 +450,8 @@ pub struct SessionView {
     pub name: Option<String>,
     /// The space its agent was last seen in. Untrusted text.
     pub space: Option<String>,
+    /// That space's id on its machine.
+    pub space_id: Option<String>,
 }
 
 /// Every session, newest first, at one list revision.
@@ -1091,6 +1106,19 @@ impl SessionService {
             return Err(HubError::BadRequest("prompt is empty".into()));
         }
         let agent = req.agent.unwrap_or(project.default_agent);
+        let space = req.space_id.as_deref().map(str::trim);
+        if space.is_some_and(|s| s.is_empty() || s.len() > 80 || s.contains('/')) {
+            return Err(HubError::BadRequest("not a space on that machine".into()));
+        }
+        let backend = match (space, req.backend) {
+            (Some(_), Some(StartBackend::Herdr)) => {
+                return Err(HubError::BadRequest(
+                    "a session can only join a space in the Herdr app".into(),
+                ));
+            }
+            (Some(_), _) => Some(StartBackend::Hc),
+            (None, b) => b,
+        };
         let prompt_sha256 = sha256_hex(&prompt);
         let mut fp_args = json!({
             "project": project.id, "machine": machine, "agent": agent.as_str(),
@@ -1098,6 +1126,9 @@ impl SessionService {
         });
         if let Some(b) = req.backend {
             fp_args["backend"] = json!(b.as_str());
+        }
+        if let Some(s) = space {
+            fp_args["space"] = json!(s);
         }
         let fp = fingerprint(&fp_args);
         let rid = req.request_id.as_deref();
@@ -1112,8 +1143,11 @@ impl SessionService {
             }
             Readiness::Ready => {}
         }
-        if req.backend.is_some() && !self.runners.can(&machine, CAP_START_BACKEND) {
+        if backend.is_some() && !self.runners.can(&machine, CAP_START_BACKEND) {
             return Err(HubError::BackendUnsupported(machine));
+        }
+        if space.is_some() && !self.runners.can(&machine, CAP_MANAGE) {
+            return Err(HubError::RunnerTooOld(machine));
         }
 
         let guard = self.start_lock.lock().await;
@@ -1159,6 +1193,7 @@ impl SessionService {
             herdr_session: None,
             name,
             space: None,
+            space_id: None,
         };
         let op_id = rid
             .map(str::to_owned)
@@ -1181,7 +1216,8 @@ impl SessionService {
             json!({
                 "project_id": project.id, "machine_id": machine, "agent": agent.as_str(),
                 "branch": record.branch, "notify": req.notify, "prompt": prompt,
-                "backend": req.backend.map(StartBackend::as_str),
+                "backend": backend.map(StartBackend::as_str),
+                "space_id": space,
                 "name": record.name,
                 "operation_id": op_id,
             }),
@@ -1196,7 +1232,8 @@ impl SessionService {
             agent,
             prompt: prompt.clone(),
             deny_patterns: project.deny_patterns.clone(),
-            backend: req.backend,
+            backend,
+            space: space.map(str::to_owned),
         };
         match self.runners.call(&machine, op, START_TIMEOUT).await {
             Ok(v) => {
@@ -1921,6 +1958,186 @@ impl SessionService {
         serde_json::from_value(v).map_err(|e| HubError::BadRequest(format!("runner prompt: {e}")))
     }
 
+    // Renames the owner asks for.
+
+    /// Gives a session the owner's name for it, as "name it x" does at the start. It is the
+    /// hub's own label, so it works whatever its machine is doing; in the Herdr app the
+    /// session's tab is then renamed to match, on a best effort.
+    pub async fn rename_session(
+        self: &Arc<Self>,
+        caller: &Caller,
+        session_id: &str,
+        name: &str,
+    ) -> Result<SessionView, HubError> {
+        let name = clean_name(name)?;
+        let s = self.session(session_id).await?;
+        if s.lifecycle == Lifecycle::Deleted {
+            return Err(HubError::UnknownSession(s.id));
+        }
+        // Against what the lists show: other sessions' labels and other agents' names.
+        let wanted = route::norm(&name);
+        let taken = self.live().await?.into_iter().any(|l| {
+            !matches!(&l.target, Target::Session { id, .. } if *id == s.id)
+                && route::norm(l.target.label()) == wanted
+        });
+        if taken {
+            return Err(HubError::NameTaken(format!(
+                "something else already answers to {name:?}"
+            )));
+        }
+        let renamed = self
+            .store
+            .rename_session(&s.id, &name)
+            .await?
+            .ok_or_else(|| HubError::UnknownSession(s.id.clone()))?;
+        self.changed();
+        self.audit(
+            &caller.actor,
+            Some(&s.id),
+            "session_rename",
+            json!({ "name": name, "was": s.name }),
+        )
+        .await?;
+        let on_core = s.herdr_session.as_deref() == Some(crate::proto::CORE_SERVER);
+        if on_core
+            && s.lifecycle == Lifecycle::Running
+            && self.runners.can(&s.machine_id, CAP_MANAGE)
+        {
+            let op = Op::RenameSessionTab {
+                session_id: s.id.clone(),
+                name: name.clone(),
+            };
+            // The hub's name stands whether or not the Mac's tab follows.
+            if let Err(e) = self.runners.call(&s.machine_id, op, CALL_TIMEOUT).await {
+                tracing::info!(session = %s.id, error = %e, "renaming the session's tab");
+            }
+        }
+        self.view(renamed).await
+    }
+
+    /// Renames an agent Switchboard didn't start, where it runs: `agent.rename` in a Herdr
+    /// terminal, its tab's name in the Herdr app. Its watch and mute settings follow. Returns
+    /// its name as now listed.
+    pub async fn rename_agent(
+        &self,
+        caller: &Caller,
+        machine: &str,
+        agent: &str,
+        name: &str,
+        request_id: Option<&str>,
+    ) -> Result<String, HubError> {
+        self.known_machine(machine)?;
+        let name = clean_name(name)?;
+        let fp = fingerprint(&json!({ "machine": machine, "agent": agent, "name": name }));
+        if let Some(v) = self.replayed(request_id, KIND_RENAME_AGENT, &fp).await? {
+            return renamed_to(v);
+        }
+        if self.store.get_session_by_agent_name(agent).await?.is_some() {
+            return Err(HubError::BadRequest(format!(
+                "{agent} is a Switchboard session; rename the session"
+            )));
+        }
+        self.can_manage(machine)?;
+        let op_id = match self.begin(request_id, KIND_RENAME_AGENT, &fp, None).await? {
+            Ok(id) => id,
+            Err(v) => return renamed_to(v),
+        };
+        self.audit(
+            &caller.actor,
+            None,
+            "agent_rename",
+            json!({ "machine_id": machine, "agent": agent, "name": name, "operation_id": op_id }),
+        )
+        .await?;
+        let op = Op::RenameAgent {
+            agent: agent.to_owned(),
+            name: name.clone(),
+        };
+        let v = match self.runners.call(machine, op, CALL_TIMEOUT).await {
+            Ok(v) => v,
+            Err(e) => return Err(self.settle_err(&op_id, None, machine, e).await),
+        };
+        let listed = renamed_to(v.clone())?;
+        if let Err(e) = self
+            .store
+            .rename_notify_agent(agent, &listed, self.now())
+            .await
+        {
+            tracing::warn!(agent, error = %e, "moving a renamed agent's watch settings");
+        }
+        {
+            let mut states = self.agent_states.lock().unwrap();
+            if let Some(state) = states.remove(&(machine.to_owned(), agent.to_owned())) {
+                states.insert((machine.to_owned(), listed.clone()), state);
+            }
+        }
+        self.finish(&op_id, OpState::Done, None, &v).await?;
+        self.list_changed().await;
+        Ok(listed)
+    }
+
+    /// Renames a Herdr app space or a Herdr workspace, by the id a listing gave.
+    pub async fn rename_space(
+        &self,
+        caller: &Caller,
+        machine: &str,
+        herdr_session: Option<&str>,
+        space_id: &str,
+        name: &str,
+        request_id: Option<&str>,
+    ) -> Result<String, HubError> {
+        self.known_machine(machine)?;
+        let name = clean_name(name)?;
+        if space_id.is_empty() || space_id.len() > 80 || space_id.contains('/') {
+            return Err(HubError::BadRequest("not a space on that machine".into()));
+        }
+        let fp = fingerprint(&json!({
+            "machine": machine, "herdr_session": herdr_session, "space": space_id, "name": name,
+        }));
+        if let Some(v) = self.replayed(request_id, KIND_RENAME_SPACE, &fp).await? {
+            return renamed_to(v);
+        }
+        self.can_manage(machine)?;
+        let op_id = match self.begin(request_id, KIND_RENAME_SPACE, &fp, None).await? {
+            Ok(id) => id,
+            Err(v) => return renamed_to(v),
+        };
+        self.audit(
+            &caller.actor,
+            None,
+            "space_rename",
+            json!({
+                "machine_id": machine, "herdr_session": herdr_session, "space_id": space_id,
+                "name": name, "operation_id": op_id,
+            }),
+        )
+        .await?;
+        let op = Op::RenameSpace {
+            herdr_session: herdr_session.map(str::to_owned),
+            space_id: space_id.to_owned(),
+            name,
+        };
+        let v = match self.runners.call(machine, op, CALL_TIMEOUT).await {
+            Ok(v) => v,
+            Err(e) => return Err(self.settle_err(&op_id, None, machine, e).await),
+        };
+        let listed = renamed_to(v.clone())?;
+        self.finish(&op_id, OpState::Done, None, &v).await?;
+        self.list_changed().await;
+        Ok(listed)
+    }
+
+    /// A rename on `machine` needs it connected, with a runner that knows how.
+    fn can_manage(&self, machine: &str) -> Result<(), HubError> {
+        if self.runners.readiness(machine) == Readiness::Offline {
+            return Err(HubError::MachineOffline(machine.to_owned()));
+        }
+        if !self.runners.can(machine, CAP_MANAGE) {
+            return Err(HubError::RunnerTooOld(machine.to_owned()));
+        }
+        Ok(())
+    }
+
     // Routing, shared by every front door.
 
     /// Sessions that are starting or running, then named agents Switchboard didn't create.
@@ -2029,7 +2246,7 @@ impl SessionService {
             };
             match self
                 .store
-                .set_session_space(machine, id, &redact_str(space))
+                .set_session_space(machine, id, &redact_str(space), a.space_id.as_deref())
                 .await
             {
                 Ok(c) => changed |= c,
@@ -2928,6 +3145,7 @@ impl SessionService {
             herdr_session: s.herdr_session,
             name: s.name,
             space: s.space,
+            space_id: s.space_id,
         })
     }
 
@@ -3831,6 +4049,21 @@ fn shown(reply: &Value) -> Option<DialogView> {
     let mut view: DialogView = serde_json::from_value(reply.get("dialog")?.clone()).ok()?;
     remask(&mut view);
     Some(view)
+}
+
+/// A name the owner typed, trimmed, checked and masked like everything that leaves the machine.
+fn clean_name(name: &str) -> Result<String, HubError> {
+    route::check_name(name)
+        .map(redact_str)
+        .map_err(|e| HubError::BadRequest(e.into()))
+}
+
+/// The `name` a rename op answered with.
+fn renamed_to(v: Value) -> Result<String, HubError> {
+    v.get("name")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| HubError::BadRequest("the runner's rename answer has no name".into()))
 }
 
 fn runner_error(machine: &str, e: ProtoError) -> HubError {

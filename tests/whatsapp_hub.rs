@@ -393,6 +393,7 @@ impl World {
                     notify: true,
                     request_id: None,
                     backend: None,
+                    space_id: None,
                 },
             )
             .await

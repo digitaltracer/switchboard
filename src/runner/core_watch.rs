@@ -12,7 +12,7 @@ use tokio::time::Instant;
 use super::backend::Facts;
 use crate::agents::codex::screen::{Screen, classify};
 use crate::hc::events::{Change, Item};
-use crate::hc::types::{LAYOUT_DOC, SpaceView, Terminal, spaces};
+use crate::hc::types::{LAYOUT_DOC, SpaceView, TabView, Terminal, spaces};
 use crate::hc::{self, Client};
 use crate::herdr::types::AgentStatus;
 
@@ -109,6 +109,11 @@ impl Core {
 
     pub fn set_layout(&self, doc: &serde_json::Value) {
         self.inner.lock().unwrap().spaces = spaces(doc);
+    }
+
+    /// The layout's spaces as the mirror last read them.
+    pub fn layout(&self) -> Vec<SpaceView> {
+        self.inner.lock().unwrap().spaces.clone()
     }
 
     pub fn install(&self, seq: u64, terminals: Vec<Terminal>) {
@@ -374,21 +379,39 @@ fn space_name(spaces: &[SpaceView], id: &str, all: &BTreeMap<String, Terminal>) 
         .or_else(|| s.folder.as_deref().and_then(base))
 }
 
-/// The space a terminal shows in: its own, else its parent's, else none.
-fn space_of(
-    t: &Terminal,
-    spaces: &[SpaceView],
-    all: &BTreeMap<String, Terminal>,
-) -> Option<String> {
+/// The id of the space a terminal shows in: its own, else its parent's, else none.
+fn space_label<'a>(t: &'a Terminal, all: &'a BTreeMap<String, Terminal>) -> Option<&'a str> {
     let mut cur = Some(t);
     for _ in 0..8 {
         let here = cur?;
         if let Some(id) = here.labels.get("herdr.space") {
-            return space_name(spaces, id, all);
+            return Some(id);
         }
         cur = here.parent.as_deref().and_then(|p| all.get(p));
     }
     None
+}
+
+/// A space of this machine in the layout, which can be renamed and take a new tab.
+pub fn local_space<'a>(spaces: &'a [SpaceView], id: &str) -> Option<&'a SpaceView> {
+    spaces
+        .iter()
+        .find(|s| s.id == id && s.machine.is_none() && !id.contains('/'))
+}
+
+/// The tab whose name an agent goes by, when renaming it renames only that agent: the terminal
+/// has no name of its own and is alone in a tab of this machine.
+pub fn own_tab<'a>(t: &Terminal, spaces: &'a [SpaceView]) -> Option<&'a TabView> {
+    if t.name.as_deref().is_some_and(|n| !n.is_empty()) {
+        return None;
+    }
+    let id = t.labels.get("herdr.tab")?;
+    spaces
+        .iter()
+        .filter(|s| s.machine.is_none())
+        .flat_map(|s| &s.tabs)
+        .find(|tab| &tab.id == id)
+        .filter(|tab| tab.terminals.len() == 1 && tab.terminals[0] == t.address)
 }
 
 fn tab_name(t: &Terminal, spaces: &[SpaceView]) -> Option<String> {
@@ -423,6 +446,7 @@ pub fn listing<'a>(
                 .filter(|n| !n.is_empty())
                 .or_else(|| tab_name(t, spaces))
                 .unwrap_or_else(|| t.address.clone());
+            let space = space_label(t, all);
             Some(Facts {
                 server: Some(SERVER.into()),
                 target: t.address.clone(),
@@ -434,7 +458,15 @@ pub fn listing<'a>(
                     .filter(|c| !c.is_empty())
                     .or_else(|| Some(t.cwd.clone()).filter(|c| !c.is_empty())),
                 title: Some(t.title.clone()).filter(|s| !s.is_empty()),
-                space: Some(space_of(t, spaces, all).unwrap_or_else(|| NO_SPACE.into())),
+                space: Some(
+                    space
+                        .and_then(|id| space_name(spaces, id, all))
+                        .unwrap_or_else(|| NO_SPACE.into()),
+                ),
+                space_id: space
+                    .and_then(|id| local_space(spaces, id))
+                    .map(|s| s.id.clone()),
+                can_rename: own_tab(t, spaces).is_some(),
                 tab: tab_name(t, spaces),
                 identity: Some(identity),
                 reported_session: None,

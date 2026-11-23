@@ -65,6 +65,9 @@ pub fn routes(state: AppState) -> Router {
         .route("/sessions/{id}/stop", post(stop_session))
         .route("/sessions/{id}/delete", post(delete_session))
         .route("/sessions/{id}/mute", put(mute_session))
+        .route("/sessions/{id}/rename", post(rename_session))
+        .route("/agents/rename", post(rename_agent))
+        .route("/spaces/rename", post(rename_space))
         .route("/operations/{request_id}", get(get_operation))
         .route("/approvals/{id}/challenge", post(approval_challenge))
         .route("/approvals/{id}/decision", post(decide_approval))
@@ -146,7 +149,9 @@ fn status_for(code: &str) -> StatusCode {
         | "answer_in_herdr"
         | "agent_blocked"
         | "dialog_changed"
-        | "backend_unavailable" => StatusCode::CONFLICT,
+        | "backend_unavailable"
+        | "name_taken"
+        | "runner_too_old" => StatusCode::CONFLICT,
         "rate_limited" | "busy" => StatusCode::TOO_MANY_REQUESTS,
         "machine_offline" | "reconciling" => StatusCode::SERVICE_UNAVAILABLE,
         "outcome_unknown" | "deadline_exceeded" => StatusCode::GATEWAY_TIMEOUT,
@@ -417,6 +422,7 @@ pub async fn start_session(
                 notify: req.notify,
                 request_id: Some(req.request_id),
                 backend,
+                space_id: req.space_id,
             },
         )
         .await?;
@@ -758,6 +764,7 @@ async fn follow(
                         notify: true,
                         request_id: Some(request_id.to_owned()),
                         backend: None,
+                        space_id: None,
                     },
                 )
                 .await?;
@@ -886,6 +893,8 @@ pub async fn list_agents(
             agent_status: a.agent_status,
             title: a.title,
             space: a.space,
+            space_id: a.space_id,
+            can_rename: a.can_rename,
         })
         .collect();
     let ended = st
@@ -1007,6 +1016,72 @@ pub async fn mute_session(
         muted: r.muted,
         notifies: r.notifies,
     }))
+}
+
+#[utoipa::path(post, path = "/app/v1/sessions/{id}/rename", tag = "sessions",
+    security(("device_token" = [])), params(("id" = String, Path)), request_body = RenameSessionRequest,
+    responses((status = 200, description = "OK", body = RenameResponse), (status = 400, description = "Bad name", body = ApiError),
+              (status = 404, description = "Not found", body = ApiError),
+              (status = 409, description = "Something else already answers to the name", body = ApiError)))]
+pub async fn rename_session(
+    State(st): State<AppState>,
+    d: DeviceAuth,
+    Path(id): Path<String>,
+    Json(req): Json<RenameSessionRequest>,
+) -> ApiResult<RenameResponse> {
+    let s = st.svc.rename_session(&d.caller(), &id, &req.name).await?;
+    Ok(Json(RenameResponse {
+        name: Session::from(s).label,
+    }))
+}
+
+#[utoipa::path(post, path = "/app/v1/agents/rename", tag = "agents",
+    security(("device_token" = [])), request_body = RenameAgentRequest,
+    responses((status = 200, description = "OK", body = RenameResponse), (status = 400, description = "Bad name, or a name that can't be changed from here", body = ApiError),
+              (status = 404, description = "No such agent", body = ApiError),
+              (status = 409, description = "The name is taken, or the machine's runner is too old", body = ApiError),
+              (status = 503, description = "Machine offline", body = ApiError), (status = 504, description = "Outcome unknown", body = ApiError)))]
+pub async fn rename_agent(
+    State(st): State<AppState>,
+    d: DeviceAuth,
+    Json(req): Json<RenameAgentRequest>,
+) -> ApiResult<RenameResponse> {
+    let name = st
+        .svc
+        .rename_agent(
+            &d.caller(),
+            &req.machine_id,
+            &req.agent,
+            &req.name,
+            req.request_id.as_deref(),
+        )
+        .await?;
+    Ok(Json(RenameResponse { name }))
+}
+
+#[utoipa::path(post, path = "/app/v1/spaces/rename", tag = "agents",
+    security(("device_token" = [])), request_body = RenameSpaceRequest,
+    responses((status = 200, description = "OK", body = RenameResponse), (status = 400, description = "Bad name", body = ApiError),
+              (status = 404, description = "No such space", body = ApiError),
+              (status = 409, description = "The name is taken, or the machine's runner is too old", body = ApiError),
+              (status = 503, description = "Machine offline", body = ApiError), (status = 504, description = "Outcome unknown", body = ApiError)))]
+pub async fn rename_space(
+    State(st): State<AppState>,
+    d: DeviceAuth,
+    Json(req): Json<RenameSpaceRequest>,
+) -> ApiResult<RenameResponse> {
+    let name = st
+        .svc
+        .rename_space(
+            &d.caller(),
+            &req.machine_id,
+            req.herdr_session.as_deref(),
+            &req.space_id,
+            &req.name,
+            req.request_id.as_deref(),
+        )
+        .await?;
+    Ok(Json(RenameResponse { name }))
 }
 
 #[utoipa::path(post, path = "/app/v1/approvals/{id}/challenge", tag = "approvals",

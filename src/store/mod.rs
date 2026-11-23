@@ -137,6 +137,8 @@ pub struct SessionRecord {
     pub name: Option<String>,
     /// The space its agent was last seen in; recorded from agent listings, never at insert.
     pub space: Option<String>,
+    /// That space's id on its machine, recorded with `space`.
+    pub space_id: Option<String>,
 }
 
 /// Fields to change on a session; `None` leaves a field as it is. Every update bumps the revision.
@@ -638,14 +640,22 @@ impl Store {
 
     /// Records the space a session's agent is in; true when it changed, which bumps the revision
     /// but leaves `updated_at`, since nothing happened to the session.
-    pub async fn set_session_space(&self, machine: &str, id: &str, space: &str) -> Result<bool> {
+    pub async fn set_session_space(
+        &self,
+        machine: &str,
+        id: &str,
+        space: &str,
+        space_id: Option<&str>,
+    ) -> Result<bool> {
         let (machine, id, space) = (machine.to_owned(), id.to_owned(), space.to_owned());
+        let space_id = space_id.map(str::to_owned);
         self.call(move |c| {
             let tx = c.transaction()?;
             let same: Option<bool> = tx
                 .query_row(
-                    "SELECT space IS ?2 FROM sessions WHERE id = ?1 AND machine_id = ?3",
-                    params![id, space, machine],
+                    "SELECT space IS ?2 AND space_id IS ?4 FROM sessions
+                     WHERE id = ?1 AND machine_id = ?3",
+                    params![id, space, machine, space_id],
                     |r| r.get(0),
                 )
                 .optional()?;
@@ -654,11 +664,52 @@ impl Store {
             }
             let revision = bump(&tx)?;
             tx.execute(
-                "UPDATE sessions SET space = ?2, revision = ?3 WHERE id = ?1",
-                params![id, space, revision],
+                "UPDATE sessions SET space = ?2, space_id = ?4, revision = ?3 WHERE id = ?1",
+                params![id, space, revision, space_id],
             )?;
             tx.commit()?;
             Ok(true)
+        })
+        .await
+    }
+
+    /// Gives a session the owner's name for it. Bumps the revision but leaves `updated_at`,
+    /// since nothing happened to the session. None when there is no such session.
+    pub async fn rename_session(&self, id: &str, name: &str) -> Result<Option<SessionRecord>> {
+        let (key, name) = (id.to_owned(), name.to_owned());
+        self.call(move |c| {
+            let tx = c.transaction()?;
+            let revision = bump(&tx)?;
+            tx.execute(
+                "UPDATE sessions SET name = ?2, revision = ?3 WHERE id = ?1",
+                params![key, name, revision],
+            )?;
+            tx.commit()?;
+            Ok(())
+        })
+        .await?;
+        self.get_session(id).await
+    }
+
+    /// Moves an agent's watch and mute settings to its new name, replacing any left under it.
+    pub async fn rename_notify_agent(&self, old: &str, new: &str, now: i64) -> Result<()> {
+        let (old, new) = (old.to_owned(), new.to_owned());
+        self.call(move |c| {
+            let tx = c.transaction()?;
+            let had: bool = tx.query_row(
+                "SELECT EXISTS (SELECT 1 FROM notify_agents WHERE name = ?1)",
+                params![old],
+                |r| r.get(0),
+            )?;
+            if had && old != new {
+                tx.execute("DELETE FROM notify_agents WHERE name = ?1", params![new])?;
+                tx.execute(
+                    "UPDATE notify_agents SET name = ?2, updated_at = ?3 WHERE name = ?1",
+                    params![old, new, now],
+                )?;
+            }
+            tx.commit()?;
+            Ok(())
         })
         .await
     }
@@ -1390,6 +1441,7 @@ fn raw_session(r: &Row<'_>) -> rusqlite::Result<RawSession> {
             herdr_session: r.get("herdr_session")?,
             name: r.get("name")?,
             space: r.get("space")?,
+            space_id: r.get("space_id")?,
         },
         r.get("lifecycle")?,
     ))

@@ -233,7 +233,7 @@ impl Sessions {
     }
 
     /// Every server that answers: the running Herdr sessions, then the core when it's up.
-    async fn servers(&self) -> Vec<Server> {
+    pub(super) async fn servers(&self) -> Vec<Server> {
         let mut out: Vec<Server> = self
             .herdrs
             .running()
@@ -277,7 +277,10 @@ impl Sessions {
     }
 
     /// Where a named agent lives: `<session>/<agent>`, a task's own agent, or the legacy server.
-    fn resolve_agent<'a>(&self, name: &'a str) -> (Server, &'a str, Option<RunnerSession>) {
+    pub(super) fn resolve_agent<'a>(
+        &self,
+        name: &'a str,
+    ) -> (Server, &'a str, Option<RunnerSession>) {
         let (session, agent) = split_qualified(name);
         let owned = self.all().into_iter().find(|s| {
             s.agent_name == agent && (session.is_none() || s.herdr_session.as_deref() == session)
@@ -519,6 +522,7 @@ impl Sessions {
                 prompt,
                 deny_patterns,
                 backend,
+                space,
             } => {
                 self.start(StartRequest {
                     session_id,
@@ -529,8 +533,21 @@ impl Sessions {
                     prompt,
                     deny_patterns,
                     backend,
+                    space,
                 })
                 .await
+            }
+            Op::RenameAgent { agent, name } => self.rename_agent(&agent, &name).await,
+            Op::RenameSpace {
+                herdr_session,
+                space_id,
+                name,
+            } => {
+                self.rename_space(herdr_session.as_deref(), &space_id, &name)
+                    .await
+            }
+            Op::RenameSessionTab { session_id, name } => {
+                self.rename_session_tab(&session_id, &name).await
             }
             Op::Prompt { session_id, text } => self.prompt(&session_id, &text).await,
             Op::Read { session_id, lines } => self.read(&session_id, lines).await,
@@ -1020,6 +1037,9 @@ impl Sessions {
             Agent::Claude => None,
         };
         let on_core = self.choose_core(req.backend).await?;
+        if let Some(space) = &req.space {
+            self.check_space(on_core.as_deref(), space).await?;
+        }
 
         let dir = self.dir(&req.session_id);
         create_private_dir(&dir)
@@ -1088,7 +1108,9 @@ impl Sessions {
             terminal_identity: None,
         };
         if let Some(core) = on_core {
-            return self.start_on_core(session, core, args, req.prompt).await;
+            return self
+                .start_on_core(session, core, args, req.prompt, req.space)
+                .await;
         }
         // Each task gets a Herdr session of its own, named after the project.
         let name = self.herdrs.free_name(&herdr_base, &req.session_id);
@@ -1505,6 +1527,8 @@ pub struct StartRequest {
     pub deny_patterns: Vec<String>,
     /// Overrides `new_sessions` for this start.
     pub backend: Option<crate::proto::StartBackend>,
+    /// The Herdr app space its tab opens in, instead of a new space.
+    pub space: Option<String>,
 }
 
 fn started_json(s: &RunnerSession) -> Value {

@@ -188,6 +188,7 @@ fn start_req(machine: &str, prompt: &str, request_id: Option<&str>) -> StartRequ
         notify: true,
         request_id: request_id.map(str::to_owned),
         backend: None,
+        space_id: None,
     }
 }
 
@@ -2748,7 +2749,8 @@ async fn a_sessions_space_comes_from_its_agent_in_the_listing() {
     assert_eq!(before.space, None);
     let list = |space: &str, session: &str| {
         json!([{"name": "sb-x", "pane_id": "t3", "kind": "claude", "agent_status": "working",
-                "session_id": session, "herdr_session": "hc", "space": space}])
+                "session_id": session, "herdr_session": "hc", "space": space,
+                "space_id": format!("sp-{space}")}])
     };
     for (space, session) in [
         ("kraft", id.as_str()),
@@ -2767,11 +2769,314 @@ async fn a_sessions_space_comes_from_its_agent_in_the_listing() {
     }
     let after = r.svc.get(&id, None, Duration::ZERO).await.unwrap();
     assert_eq!(after.space.as_deref(), Some("kraft"));
+    assert_eq!(after.space_id.as_deref(), Some("sp-kraft"));
     assert_eq!(
         after.updated_at, before.updated_at,
         "seeing it changes nothing else"
     );
     assert!(after.revision > before.revision, "the phone hears of it");
+}
+
+// Renames, and a start into a space the owner already has.
+
+fn managing() -> Vec<String> {
+    vec![CAP_START_BACKEND.into(), CAP_MANAGE.into()]
+}
+
+#[tokio::test]
+async fn a_start_into_a_space_goes_to_the_herdr_app_on_a_runner_that_can() {
+    let into = |space: &str, rid: Option<&str>| StartRequest {
+        space_id: Some(space.into()),
+        ..start_req("mac", "fix the bug", rid)
+    };
+    let r = rig().await;
+    let mut mac = connect_with(&r.svc, "mac", vec![], vec![CAP_START_BACKEND.into()]).await;
+    let e = r.svc.start(&r.bot, into("sp1", None)).await.unwrap_err();
+    assert_eq!(e.code(), "runner_too_old", "{e:?}");
+    mac.no_req().await;
+    assert!(r.svc.list().await.unwrap().is_empty(), "nothing recorded");
+
+    let r = rig().await;
+    let mut mac = connect_with(&r.svc, "mac", vec![], managing()).await;
+    let in_a_terminal = StartRequest {
+        backend: Some(StartBackend::Herdr),
+        ..into("sp1", None)
+    };
+    for bad in [in_a_terminal, into("vps/sp1", None), into(" ", None)] {
+        let e = r.svc.start(&r.bot, bad).await.unwrap_err();
+        assert_eq!(e.code(), "bad_request", "{e:?}");
+    }
+    mac.no_req().await;
+
+    let task = spawn_start(&r, into("sp1", Some("rq-s1")));
+    let req = mac.req().await;
+    let Op::StartSession { backend, space, .. } = &req.op else {
+        panic!("{:?}", req.op);
+    };
+    assert_eq!(*backend, Some(StartBackend::Hc), "a space means the app");
+    assert_eq!(space.as_deref(), Some("sp1"));
+    mac.ok(req.id, json!({"workspace_id": "sp1", "pane_id": "t4"}))
+        .await;
+    let sid = task.await.unwrap().unwrap().session_id;
+    let audit = r.svc.audit_log(Some(&sid), 50).await.unwrap();
+    let start = audit.iter().find(|a| a.kind == "session_start").unwrap();
+    assert_eq!(start.detail["space_id"], "sp1");
+
+    // The same request id for another space is another call, not a replay.
+    let e = r
+        .svc
+        .start(&r.bot, into("sp2", Some("rq-s1")))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), "request_id_reused", "{e:?}");
+    // A space the runner no longer finds fails the start, and the session with it.
+    let task = spawn_start(
+        &r,
+        StartRequest {
+            space_id: Some("sp9".into()),
+            ..start_req("mac", "another bug", None)
+        },
+    );
+    let req = mac.req().await;
+    mac.reply(
+        req.id,
+        Outcome::Err(ProtoError::new(ErrorCode::NotFound, "that space is gone")),
+    )
+    .await;
+    assert_eq!(task.await.unwrap().unwrap_err().code(), "not_found");
+}
+
+#[tokio::test]
+async fn a_session_is_renamed_in_the_hub_even_with_its_machine_offline() {
+    let r = rig().await;
+    let mut mac = connect(&r.svc, "mac", vec![]).await;
+    let (a, b) = (running(&r, &mut mac).await, running(&r, &mut mac).await);
+    mac.drop_conn().await;
+    let before = r.svc.get(&a, None, Duration::ZERO).await.unwrap();
+
+    for bad in ["", "   ", "two\nlines", "a/b", &"x".repeat(41)] {
+        let e = r.svc.rename_session(&r.bot, &a, bad).await.unwrap_err();
+        assert_eq!(e.code(), "bad_request", "{bad:?}: {e:?}");
+    }
+    let e = r.svc.rename_session(&r.bot, "nope", "x").await.unwrap_err();
+    assert_eq!(e.code(), "unknown_session");
+
+    let got = r
+        .svc
+        .rename_session(&r.bot, &a, "  login fix  ")
+        .await
+        .unwrap();
+    assert_eq!(got.name.as_deref(), Some("login fix"));
+    assert!(got.revision > before.revision, "the phone hears of it");
+    assert_eq!(got.updated_at, before.updated_at);
+    let audit = r.svc.audit_log(Some(&a), 50).await.unwrap();
+    let entry = audit.iter().find(|e| e.kind == "session_rename").unwrap();
+    assert_eq!(entry.actor, "mcp:test");
+    assert_eq!(entry.detail["name"], "login fix");
+
+    // Another session can't take the name this one shows, whatever the capitals.
+    let e = r
+        .svc
+        .rename_session(&r.bot, &b, "Login Fix")
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), "name_taken", "{e:?}");
+    // Its own name again is fine.
+    r.svc.rename_session(&r.bot, &a, "login fix").await.unwrap();
+
+    // A name that looks like a secret is masked before it is stored or audited.
+    let secret = "sk-ant-abcdefghijklmnopqrstuv";
+    let got = r.svc.rename_session(&r.bot, &b, secret).await.unwrap();
+    assert!(
+        !got.name.as_deref().unwrap().contains("abcdefgh"),
+        "{got:?}"
+    );
+    let audit = r.svc.audit_log(Some(&b), 50).await.unwrap();
+    assert!(!format!("{audit:?}").contains("abcdefgh"));
+}
+
+#[tokio::test]
+async fn a_herdr_app_sessions_tab_follows_its_new_name() {
+    let r = rig().await;
+    let mut mac = connect_with(&r.svc, "mac", vec![], managing()).await;
+    let task = spawn_start(&r, start_req("mac", "fix the bug", None));
+    let req = mac.req().await;
+    mac.ok(
+        req.id,
+        json!({"workspace_id": "sp1", "pane_id": "t4", "herdr_session": "hc"}),
+    )
+    .await;
+    let sid = task.await.unwrap().unwrap().session_id;
+
+    let (svc, bot, id) = (r.svc.clone(), r.bot.clone(), sid.clone());
+    let rename = tokio::spawn(async move { svc.rename_session(&bot, &id, "login fix").await });
+    // The listing behind the clash check, then the tab.
+    let req = mac.req().await;
+    assert_eq!(req.op, Op::Agents);
+    mac.ok(req.id, json!([])).await;
+    let req = mac.req().await;
+    assert_eq!(
+        req.op,
+        Op::RenameSessionTab {
+            session_id: sid.clone(),
+            name: "login fix".into()
+        }
+    );
+    // The Mac's tab failing to follow doesn't undo the hub's name.
+    mac.reply(
+        req.id,
+        Outcome::Err(ProtoError::new(ErrorCode::Busy, "the layout kept changing")),
+    )
+    .await;
+    let got = rename.await.unwrap().unwrap();
+    assert_eq!(got.name.as_deref(), Some("login fix"));
+}
+
+#[tokio::test]
+async fn an_agent_is_renamed_where_it_runs_and_its_watch_follows() {
+    let r = rig().await;
+    let e = r
+        .svc
+        .rename_agent(&r.bot, "mac", "main/old", "new", None)
+        .await
+        .unwrap_err();
+    assert!(matches!(e, HubError::MachineOffline(_)), "{e:?}");
+    let e = r
+        .svc
+        .rename_agent(&r.bot, "nowhere", "main/old", "new", None)
+        .await
+        .unwrap_err();
+    assert!(matches!(e, HubError::UnknownMachine(_)), "{e:?}");
+
+    let mut old = connect(&r.svc, "vps", vec![]).await;
+    let e = r
+        .svc
+        .rename_agent(&r.bot, "vps", "main/old", "new", None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), "runner_too_old", "{e:?}");
+    old.no_req().await;
+
+    let mut mac = connect_with(&r.svc, "mac", vec![], managing()).await;
+    r.svc
+        .set_agent_watched(&r.bot, "main/old", true)
+        .await
+        .unwrap();
+    r.svc
+        .set_agent_muted(&r.bot, "main/old", true)
+        .await
+        .unwrap();
+    let (svc, bot) = (r.svc.clone(), r.bot.clone());
+    let rename = tokio::spawn(async move {
+        svc.rename_agent(&bot, "mac", "main/old", " reviewer ", Some("rq-r1"))
+            .await
+    });
+    let req = mac.req().await;
+    assert_eq!(
+        req.op,
+        Op::RenameAgent {
+            agent: "main/old".into(),
+            name: "reviewer".into()
+        }
+    );
+    mac.ok(req.id, json!({"name": "main/reviewer"})).await;
+    assert_eq!(rename.await.unwrap().unwrap(), "main/reviewer");
+    let agents = r.svc.store().notify_settings().await.unwrap().agents;
+    assert_eq!(agents.len(), 1, "{agents:?}");
+    assert_eq!(agents[0].name, "main/reviewer");
+    assert!(agents[0].watched && agents[0].muted);
+    let audit = r.svc.audit_log(None, 50).await.unwrap();
+    let entry = audit.iter().find(|e| e.kind == "agent_rename").unwrap();
+    assert_eq!(entry.detail["agent"], "main/old");
+    assert_eq!(entry.detail["name"], "reviewer");
+
+    // A retry with the same id gets the recorded answer and reaches no runner.
+    let again = r
+        .svc
+        .rename_agent(&r.bot, "mac", "main/old", "reviewer", Some("rq-r1"))
+        .await
+        .unwrap();
+    assert_eq!(again, "main/reviewer");
+    mac.no_req().await;
+
+    // The runner's refusals come back as they are, and are recorded for a retry.
+    let (svc, bot) = (r.svc.clone(), r.bot.clone());
+    let rename = tokio::spawn(async move {
+        svc.rename_agent(&bot, "mac", "main/reviewer", "tester", Some("rq-r2"))
+            .await
+    });
+    let req = mac.req().await;
+    mac.reply(
+        req.id,
+        Outcome::Err(ProtoError::new(ErrorCode::NameTaken, "tester is in use")),
+    )
+    .await;
+    assert_eq!(rename.await.unwrap().unwrap_err().code(), "name_taken");
+    let e = r
+        .svc
+        .rename_agent(&r.bot, "mac", "main/reviewer", "tester", Some("rq-r2"))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), "name_taken");
+    mac.no_req().await;
+
+    // A session's agent is renamed through the session.
+    let sid = running(&r, &mut mac).await;
+    let agent = agent_name(&sid);
+    let e = r
+        .svc
+        .rename_agent(&r.bot, "mac", &agent, "x", None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), "bad_request", "{e:?}");
+    mac.no_req().await;
+}
+
+#[tokio::test]
+async fn a_space_is_renamed_by_its_id_on_its_machine() {
+    let r = rig().await;
+    let mut mac = connect_with(&r.svc, "mac", vec![], managing()).await;
+    for (space, name) in [("", "x"), ("vps/sp1", "x"), ("sp1", " "), ("sp1", "a/b")] {
+        let e = r
+            .svc
+            .rename_space(&r.bot, "mac", Some("hc"), space, name, None)
+            .await
+            .unwrap_err();
+        assert_eq!(e.code(), "bad_request", "{space:?} {name:?}: {e:?}");
+    }
+    mac.no_req().await;
+
+    let (svc, bot) = (r.svc.clone(), r.bot.clone());
+    let rename = tokio::spawn(async move {
+        svc.rename_space(&bot, "mac", Some("hc"), "sp1", "billing", None)
+            .await
+    });
+    let req = mac.req().await;
+    assert_eq!(
+        req.op,
+        Op::RenameSpace {
+            herdr_session: Some("hc".into()),
+            space_id: "sp1".into(),
+            name: "billing".into()
+        }
+    );
+    mac.ok(req.id, json!({"name": "billing"})).await;
+    assert_eq!(rename.await.unwrap().unwrap(), "billing");
+    let audit = r.svc.audit_log(None, 50).await.unwrap();
+    let entry = audit.iter().find(|e| e.kind == "space_rename").unwrap();
+    assert_eq!(entry.detail["space_id"], "sp1");
+    assert_eq!(entry.detail["name"], "billing");
+
+    // A reply that never comes is "outcome unknown", not a silent success.
+    let (svc, bot) = (r.svc.clone(), r.bot.clone());
+    let rename = tokio::spawn(async move {
+        svc.rename_space(&bot, "mac", None, "w2", "kraft", Some("rq-sp"))
+            .await
+    });
+    let _unanswered = mac.req().await;
+    mac.drop_conn().await;
+    let e = rename.await.unwrap().unwrap_err();
+    assert_eq!(e.code(), "outcome_unknown", "{e:?}");
 }
 
 #[test]

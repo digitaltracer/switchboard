@@ -33,9 +33,13 @@ pub fn summaries(facts: Vec<Facts>, sessions: &HashMap<String, String>) -> Vec<A
         .into_iter()
         .map(|a| {
             let name = a.local_name();
+            let session_id = sessions.get(&name).cloned();
             AgentSummary {
                 space: a.space,
-                session_id: sessions.get(&name).cloned(),
+                space_id: a.space_id,
+                // A session is renamed in the hub; its agent's own name never changes.
+                can_rename: a.can_rename && session_id.is_none(),
+                session_id,
                 herdr_session: None,
                 agent_status: status_str(a.status),
                 error: a.error,

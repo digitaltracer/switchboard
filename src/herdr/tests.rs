@@ -250,6 +250,40 @@ async fn agent_start_validates_before_sending() {
 }
 
 #[tokio::test]
+async fn rename_requests_and_refusals() {
+    let fake = Fake::start(|req| match req["params"]["name"].as_str() {
+        Some("taken") => Reply::Lines(vec![json!({"id": "$ID", "error":
+            {"code": "agent_name_taken", "message": "agent name taken is already used"}})]),
+        // The real answers carry `agent_info` and `workspace_info`.
+        Some(_) => ok(json!({"type": "agent_info", "agent": pane("w1:p1", "w1", "idle")})),
+        None => ok(json!({"type": "workspace_info", "workspace": {"workspace_id": "w1"}})),
+    });
+    let client = fake.client();
+    client.agent_rename("w1:p1", "reviewer").await.unwrap();
+    client.workspace_rename("w1", "my space").await.unwrap();
+    let taken = client.agent_rename("w1:p1", "taken").await.unwrap_err();
+    assert_eq!(taken.server_code(), Some("agent_name_taken"));
+
+    let reqs = fake.requests();
+    assert_eq!(reqs[0]["method"], "agent.rename");
+    assert_eq!(
+        reqs[0]["params"],
+        json!({"target": "w1:p1", "name": "reviewer"})
+    );
+    assert_eq!(reqs[1]["method"], "workspace.rename");
+    assert_eq!(
+        reqs[1]["params"],
+        json!({"workspace_id": "w1", "label": "my space"})
+    );
+    // A name Herdr would refuse is never sent.
+    assert!(matches!(
+        client.agent_rename("w1:p1", "My Agent").await,
+        Err(HerdrError::InvalidArgument(_))
+    ));
+    assert_eq!(fake.requests().len(), 3);
+}
+
+#[tokio::test]
 async fn subscription_streams_events_then_signals_loss() {
     let fake = Fake::start(|_| {
         Reply::Lines(vec![

@@ -347,6 +347,7 @@ impl World {
                     notify: true,
                     request_id: Some(request_id.into()),
                     backend: None,
+                    space_id: None,
                 },
             )
             .await
@@ -556,6 +557,7 @@ async fn connection_dropped_mid_start_reconciles_without_a_second_agent() {
                 notify: true,
                 request_id: Some("rq-2".into()),
                 backend: None,
+                space_id: None,
             },
         )
         .await

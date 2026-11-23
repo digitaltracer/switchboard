@@ -34,6 +34,7 @@ fn start_op() -> Op {
         prompt: "fix it".into(),
         deny_patterns: vec!["git push".into()],
         backend: None,
+        space: None,
     }
 }
 
@@ -424,6 +425,35 @@ fn an_older_runners_hello_decodes_with_no_capabilities() {
     let mut without = new.clone();
     without.as_object_mut().unwrap().remove("capabilities");
     assert!(decode(&without.to_string()).is_ok());
+}
+
+#[test]
+fn a_start_without_a_space_and_an_older_listing_are_the_old_wire_format() {
+    let v = serde_json::to_value(start_op()).unwrap();
+    assert!(v.get("space").is_none(), "{v}");
+    let mut into = v.clone();
+    into["space"] = json!("sp1");
+    let Op::StartSession { space, .. } = serde_json::from_value(into).unwrap() else {
+        panic!("not a start");
+    };
+    assert_eq!(space.as_deref(), Some("sp1"));
+
+    let old = json!({"name": "main/a", "pane_id": "w1:p1", "kind": "claude",
+                     "agent_status": "idle", "session_id": null});
+    let a: AgentSummary = serde_json::from_value(old.clone()).unwrap();
+    assert_eq!((a.space_id.as_deref(), a.can_rename), (None, false));
+    let back = serde_json::to_value(&a).unwrap();
+    assert!(back.get("space_id").is_none() && back.get("can_rename").is_none());
+
+    let rename = Op::RenameAgent {
+        agent: "hc/2".into(),
+        name: "x".into(),
+    };
+    assert!(rename.is_mutating() && rename.targets_core());
+    assert_eq!(
+        serde_json::to_value(ErrorCode::NameTaken).unwrap(),
+        json!("name_taken")
+    );
 }
 
 #[test]

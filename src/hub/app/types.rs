@@ -359,6 +359,15 @@ pub struct Session {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(nullable = false)]
     pub space: Option<String>,
+    /// That space's id on its machine, for `POST /spaces/rename` and a start's `space_id`.
+    /// Absent until the hub has seen it, from an older hub or runner, and for an agent in the
+    /// Herdr app outside every space.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    pub space_id: Option<String>,
+    /// `POST /sessions/{id}/rename` can name it. Older hubs leave it out.
+    #[schema(required = false)]
+    pub can_rename: bool,
     pub pending_approvals: Vec<Approval>,
 }
 
@@ -387,6 +396,8 @@ impl From<SessionView> for Session {
             backend: backend(s.herdr_session.as_deref()).into(),
             herdr_session: s.herdr_session,
             space: s.space,
+            space_id: s.space_id,
+            can_rename: s.lifecycle != crate::store::Lifecycle::Deleted,
         }
     }
 }
@@ -426,6 +437,11 @@ pub struct StartRequest {
     /// can't serve fails with `backend_unavailable`; it never falls back or moves machine.
     #[serde(default)]
     pub backend: Option<String>,
+    /// A Herdr app space, by the `space_id` a session or agent listed, for the session's tab to
+    /// open in instead of a new space. Only with the Herdr app: with `backend` `herdr` it is a
+    /// bad request. A space that has gone fails with `not_found` before anything is created.
+    #[serde(default)]
+    pub space_id: Option<String>,
 }
 
 fn yes() -> bool {
@@ -1061,6 +1077,16 @@ pub struct AgentView {
     /// hubs leave it out.
     #[schema(required = false)]
     pub backend: String,
+    /// The id of the space it runs in, as on a session. Absent from an older hub or runner, and
+    /// for an agent in the Herdr app outside every space.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    pub space_id: Option<String>,
+    /// `POST /agents/rename` can rename it. False for one in the Herdr app whose name was fixed
+    /// when it started or that shares its tab; rename those at the machine. Older hubs leave
+    /// it out.
+    #[schema(required = false)]
+    pub can_rename: bool,
 }
 
 /// Which Herdr hosts an agent, from the session it runs in.
@@ -1226,6 +1252,43 @@ impl From<StopResult> for StopResponse {
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct MuteRequest {
     pub muted: bool,
+}
+
+/// A new name: one line of 1 to 40 characters, without `/`. Masked like any other text.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct RenameSessionRequest {
+    pub name: String,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct RenameAgentRequest {
+    pub machine_id: String,
+    /// The agent's name as listed.
+    pub agent: String,
+    /// In a Herdr terminal: a lowercase letter, then lowercase letters, digits, `-` or `_`, at
+    /// most 32. In the Herdr app: as for a session, since it names the agent's tab.
+    pub name: String,
+    /// A lost response can be retried with this id.
+    #[serde(default)]
+    pub request_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct RenameSpaceRequest {
+    pub machine_id: String,
+    /// The `herdr_session` of the session or agent that listed the space; `hc` for the Herdr app.
+    #[serde(default)]
+    pub herdr_session: Option<String>,
+    pub space_id: String,
+    pub name: String,
+    #[serde(default)]
+    pub request_id: Option<String>,
+}
+
+/// The name as it is now listed; for a session, its label.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RenameResponse {
+    pub name: String,
 }
 
 #[derive(Debug, Serialize, ToSchema)]

@@ -388,6 +388,28 @@ impl Client {
             .map(drop)
     }
 
+    /// Gives an agent a new name. Herdr refuses one in use with `agent_name_taken`.
+    pub async fn agent_rename(&self, target: &str, name: &str) -> Result<()> {
+        check_agent_target(target)?;
+        check_agent_name(name)?;
+        let params = AgentRenameParams {
+            target: target.to_owned(),
+            name: name.to_owned(),
+        };
+        self.call(Method::AgentRename(params), None).await.map(drop)
+    }
+
+    /// Relabels a workspace. Herdr accepts a label another workspace has.
+    pub async fn workspace_rename(&self, workspace_id: &str, label: &str) -> Result<()> {
+        let params = WorkspaceRenameParams {
+            workspace_id: workspace_id.to_owned(),
+            label: label.to_owned(),
+        };
+        self.call(Method::WorkspaceRename(params), None)
+            .await
+            .map(drop)
+    }
+
     /// Opens a subscription and waits for its acknowledgement.
     pub async fn subscribe(&self, subscriptions: Vec<Subscription>) -> Result<EventStream> {
         const NAME: &str = "events.subscribe";

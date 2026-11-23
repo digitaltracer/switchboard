@@ -382,6 +382,7 @@ impl Relay {
             notify: true,
             request_id: Some(rid.to_owned()),
             backend: None,
+            space_id: None,
         };
         let (svc, caller, tx, to) = (
             self.svc.clone(),

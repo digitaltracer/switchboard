@@ -50,6 +50,10 @@ pub struct Facts {
     pub turn: Option<u64>,
     /// The core says the program stopped on an error; its status reads as done.
     pub error: bool,
+    /// The Herdr workspace's id, or the Herdr app space's when the layout holds it here.
+    pub space_id: Option<String>,
+    /// Its name can be changed: always in Herdr, on core when it goes by a tab of its own.
+    pub can_rename: bool,
 }
 
 impl Facts {
@@ -135,6 +139,8 @@ pub fn herdr_facts(
     Facts {
         server: session.map(str::to_owned),
         space: spaces.get(&a.workspace_id).cloned(),
+        space_id: Some(a.workspace_id.clone()).filter(|w| !w.is_empty()),
+        can_rename: true,
         tab: None,
         ready: a.interactive_ready && !a.launch_pending,
         target: a.pane_id,

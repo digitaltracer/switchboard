@@ -3,6 +3,7 @@
 //! Each test starts its own core under a unique HC_SESSION, with every HC_ variable of the
 //! caller's own core removed, then stops it and deletes its state folder. Worktrees go to a temp
 //! folder. The Claude runs pre-trust a scratch repo in ~/.claude.json and remove that key after.
+//! The rename test needs no agent and no account: SWITCHBOARD_LIVE_HC=1 alone runs it.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -359,6 +360,7 @@ async fn a_claude_session_starts_runs_and_stops_on_core() {
                         .into(),
                 deny_patterns: vec![],
                 backend: None,
+                space: None,
             })
             .await
             .unwrap();
@@ -719,6 +721,7 @@ async fn a_codex_session_starts_on_core_and_its_denied_command_never_runs() {
                     .into(),
                 deny_patterns: vec![],
                 backend: None,
+                space: None,
             })
             .await
             .unwrap();
@@ -750,4 +753,104 @@ async fn a_codex_session_starts_on_core_and_its_denied_command_never_runs() {
     if let Err(panic) = outcome {
         std::panic::resume_unwind(panic);
     }
+}
+
+/// The renames and the start label against a real core's `doc` and `terminal.run`. A program
+/// called `claude` that only sleeps stands in for an agent, so no CLI or account is used. It
+/// can't show the app adopting a terminal: a throwaway core has no window.
+#[tokio::test]
+async fn renames_are_layout_writes_a_real_core_takes() {
+    if !std::env::var("SWITCHBOARD_LIVE_HC").is_ok_and(|v| v == "1") {
+        eprintln!("skipped: SWITCHBOARD_LIVE_HC=1");
+        return;
+    }
+    use std::os::unix::fs::PermissionsExt;
+    let scratch = tempfile::tempdir().unwrap();
+    let bin = scratch.path().join("claude");
+    std::fs::write(&bin, "#!/bin/sh\nexec sleep 600\n").unwrap();
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let l = live(scratch.path().join("claude.json")).await;
+    let client = l.core.client();
+    let run = |labels: Value| {
+        let (client, bin, cwd) = (client.clone(), bin.clone(), scratch.path().to_owned());
+        async move {
+            client
+                .call(
+                    "terminal.run",
+                    json!({ "argv": [bin], "cwd": cwd, "labels": labels, "no_parent": true }),
+                )
+                .await
+                .unwrap()
+        }
+    };
+    let t = run(json!({ "herdr.space": "sp1", "herdr.tab": "tb1" })).await;
+    let address = t["address"].as_str().unwrap().to_owned();
+    assert!(
+        t["name"].is_null(),
+        "unnamed, as the app's own terminals are"
+    );
+
+    // The app's side: a layout holding that terminal in a tab of its own.
+    let layout = "herdr-app";
+    let doc = json!({ "spaces": [
+        { "id": "sp1", "name": "repo", "tabs": [
+            { "id": "tb1", "name": null, "root": { "content": { "terminal": address } } } ] },
+        { "id": "sp2", "name": "billing", "tabs": [] },
+    ], "app_owned": { "keep": true } });
+    let v0 = client.doc_get(layout).await.unwrap().version;
+    client.doc_set(layout, &doc, v0).await.unwrap();
+    // A stale write is refused the way the retry expects.
+    let stale = client.doc_set(layout, &doc, v0).await.unwrap_err();
+    assert_eq!(stale.kind(), Some("conflict"), "{stale:?}");
+    wait_until("listed in its space, renamable", || {
+        l.core.facts().is_some_and(|f| {
+            f.iter().any(|f| {
+                f.target == address && f.space_id.as_deref() == Some("sp1") && f.can_rename
+            })
+        })
+    })
+    .await;
+
+    let v = l
+        .sessions
+        .handle(Op::RenameAgent {
+            agent: format!("hc/{address}"),
+            name: "fix login".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(v["name"], "hc/fix login");
+    let space = |name: &str| Op::RenameSpace {
+        herdr_session: Some("hc".into()),
+        space_id: "sp1".into(),
+        name: name.into(),
+    };
+    let taken = l.sessions.handle(space("billing")).await.unwrap_err();
+    assert_eq!(
+        taken.code,
+        switchboard::proto::ErrorCode::NameTaken,
+        "{taken:?}"
+    );
+    l.sessions.handle(space("kraft")).await.unwrap();
+    let now = client.doc_get(layout).await.unwrap().value;
+    assert_eq!(now["spaces"][0]["tabs"][0]["name"], "fix login");
+    assert_eq!(now["spaces"][0]["name"], "kraft");
+    assert_eq!(now["spaces"][1]["name"], "billing");
+    assert_eq!(
+        now["app_owned"],
+        json!({ "keep": true }),
+        "the rest is kept"
+    );
+    let listed = l.agents().await;
+    let me = listed.iter().find(|a| a.pane_id == address).unwrap();
+    assert_eq!(
+        (me.name.as_str(), me.space.as_deref()),
+        ("hc/fix login", Some("kraft"))
+    );
+
+    // What a start into an existing space sends: the space's label and no tab. The core takes it.
+    let second = run(json!({ "herdr.space": "sp1", "herdr.seen": "0" })).await;
+    assert_eq!(second["labels"]["herdr.space"], "sp1");
+    assert!(second["labels"].get("herdr.tab").is_none());
+    drop(l.core_process);
 }

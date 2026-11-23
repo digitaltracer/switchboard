@@ -6,6 +6,7 @@
 //!
 //! Usage: cargo run --example fake_runner -- <hub ws url> <machine id> <token>
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -29,8 +30,12 @@ struct Fake {
     events: mpsc::Sender<Event>,
     /// The Codex agent's permission dialog was answered.
     answered: AtomicBool,
-    /// Sessions started in the Herdr app, which list as its agents.
-    in_app: Mutex<Vec<String>>,
+    /// Sessions started in the Herdr app, which list as its agents, each with the space it
+    /// was started into.
+    in_app: Mutex<Vec<(String, Option<String>)>>,
+    /// Agents renamed from the phone, by pane, and spaces, by id.
+    agent_names: Mutex<HashMap<String, String>>,
+    space_names: Mutex<HashMap<String, String>>,
     /// Each ship skill sent: the conversation's end after it, and the user and reply items.
     shipped: Mutex<Vec<(u64, Vec<Value>)>>,
 }
@@ -122,11 +127,15 @@ impl Handler for Fake {
                 session_id,
                 branch,
                 backend,
+                space,
                 ..
             } => {
                 let herdr_session = match backend {
                     Some(StartBackend::Hc) => {
-                        self.in_app.lock().unwrap().push(session_id.clone());
+                        self.in_app
+                            .lock()
+                            .unwrap()
+                            .push((session_id.clone(), space));
                         Some("hc".to_owned())
                     }
                     Some(StartBackend::Herdr) => Some(format!("demo-{}", &session_id[..4])),
@@ -284,28 +293,86 @@ impl Handler for Fake {
                 } else {
                     "blocked"
                 };
+                let agent = |session: &str, pane: &str, name: &str| {
+                    let names = self.agent_names.lock().unwrap();
+                    format!("{session}/{}", names.get(pane).map_or(name, String::as_str))
+                };
+                let space = |id: &str, name: &str| {
+                    let names = self.space_names.lock().unwrap();
+                    names.get(id).cloned().unwrap_or_else(|| name.to_owned())
+                };
                 let mut list = vec![
-                    json!({"name": "crm/orchestrator", "pane_id": "w1:p1", "kind": "claude",
+                    json!({"name": agent("crm", "w1:p1", "orchestrator"), "pane_id": "w1:p1", "kind": "claude",
                      "agent_status": "blocked", "session_id": null, "herdr_session": "crm",
-                     "space": "Imports"}),
-                    json!({"name": "crm/w1:p2", "pane_id": "w1:p2", "kind": "codex", "agent_status": codex,
+                     "space": space("w1", "Imports"), "space_id": "w1", "can_rename": true}),
+                    json!({"name": agent("crm", "w2:p2", "w1:p2"), "pane_id": "w1:p2", "kind": "codex", "agent_status": codex,
                      "session_id": null, "herdr_session": "crm", "title": "Review the import",
-                     "space": "1"}),
-                    json!({"name": "hc/search", "pane_id": "t2", "kind": "claude", "agent_status": "working",
+                     "space": space("w2", "1"), "space_id": "w2", "can_rename": true}),
+                    json!({"name": agent("hc", "t2", "search"), "pane_id": "t2", "kind": "claude", "agent_status": "working",
                      "session_id": null, "herdr_session": "hc", "title": "Add typeahead to the search bar",
-                     "space": "atlas-web"}),
+                     "space": space("sp-atlas", "atlas-web"), "space_id": "sp-atlas", "can_rename": true}),
+                    // Named when it started, as `hc run --name docs` does: read-only from the phone.
                     json!({"name": "hc/docs", "pane_id": "t3", "kind": "claude", "agent_status": "done",
                      "session_id": null, "herdr_session": "hc", "title": "README covers the new search API",
-                     "space": "atlas-web"}),
-                    json!({"name": "hc/migrations", "pane_id": "t4", "kind": "codex", "agent_status": "idle",
-                     "session_id": null, "herdr_session": "hc", "space": "ledger-api"}),
+                     "space": space("sp-atlas", "atlas-web"), "space_id": "sp-atlas"}),
+                    json!({"name": agent("hc", "t4", "migrations"), "pane_id": "t4", "kind": "codex", "agent_status": "idle",
+                     "session_id": null, "herdr_session": "hc", "space": space("sp-ledger", "ledger-api"),
+                     "space_id": "sp-ledger", "can_rename": true}),
                 ];
-                for (i, id) in self.in_app.lock().unwrap().iter().enumerate() {
+                for (i, (id, into)) in self.in_app.lock().unwrap().iter().enumerate() {
+                    let (space_id, name) = match into.as_deref() {
+                        Some("sp-atlas") => ("sp-atlas", "atlas-web"),
+                        Some("sp-ledger") => ("sp-ledger", "ledger-api"),
+                        _ => ("sp-demo", "demo"),
+                    };
                     list.push(json!({"name": format!("sb-{id}"), "pane_id": format!("t{}", 10 + i), "kind": "claude",
-                        "agent_status": "working", "session_id": id, "herdr_session": "hc", "space": "demo"}));
+                        "agent_status": "working", "session_id": id, "herdr_session": "hc",
+                        "space": space(space_id, name), "space_id": space_id}));
                 }
                 Ok(Value::Array(list))
             }
+            Op::RenameAgent { agent, name } => {
+                let Some((session, old)) = agent.split_once('/') else {
+                    return Err(ProtoError::new(ErrorCode::NotFound, "no such agent"));
+                };
+                if name == "taken" {
+                    return Err(ProtoError::new(
+                        ErrorCode::NameTaken,
+                        "another agent is already called taken",
+                    ));
+                }
+                let mut names = self.agent_names.lock().unwrap();
+                let pane = [
+                    ("w1:p1", "orchestrator"),
+                    ("w2:p2", "w1:p2"),
+                    ("t2", "search"),
+                    ("t4", "migrations"),
+                ]
+                .into_iter()
+                .find(|(pane, first)| names.get(*pane).map_or(*first, String::as_str) == old)
+                .map(|(pane, _)| pane);
+                match pane {
+                    Some(pane) => {
+                        names.insert(pane.to_owned(), name.clone());
+                        Ok(json!({ "name": format!("{session}/{name}") }))
+                    }
+                    None => Err(ProtoError::new(ErrorCode::NotFound, "no such agent")),
+                }
+            }
+            Op::RenameSpace { space_id, name, .. } => {
+                if name == "taken" {
+                    return Err(ProtoError::new(
+                        ErrorCode::NameTaken,
+                        "another space already has that name",
+                    ));
+                }
+                self.space_names
+                    .lock()
+                    .unwrap()
+                    .insert(space_id, name.clone());
+                Ok(json!({ "name": name }))
+            }
+            Op::RenameSessionTab { .. } => Ok(json!({ "renamed": true })),
             Op::Dialog { agent } => Ok(dialog(&agent, self.answered.load(Ordering::SeqCst))),
             Op::StartOptions => Ok(json!({"default": "hc", "backends": [
                 {"backend": "hc", "available": true}, {"backend": "herdr", "available": true}]})),
@@ -374,6 +441,8 @@ async fn main() -> anyhow::Result<()> {
         events: tx,
         answered: AtomicBool::new(false),
         in_app: Mutex::new(Vec::new()),
+        agent_names: Mutex::default(),
+        space_names: Mutex::default(),
         shipped: Mutex::new(Vec::new()),
     };
     link::run(cfg, Arc::new(fake), rx).await;

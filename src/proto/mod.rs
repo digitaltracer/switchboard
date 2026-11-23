@@ -22,6 +22,9 @@ pub const CAP_HC: &str = "hc";
 pub const CORE_SERVER: &str = "hc";
 /// A runner that takes `backend` on `Op::StartSession` and answers `Op::StartOptions`.
 pub const CAP_START_BACKEND: &str = "start_backend";
+/// A runner that lists `space_id` and `can_rename`, takes `space` on `Op::StartSession`, and
+/// answers `Op::RenameAgent`, `Op::RenameSpace` and `Op::RenameSessionTab`.
+pub const CAP_MANAGE: &str = "manage";
 
 /// Where one session starts: a Herdr TUI session of its own, or the Herdr app (herdr-core).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -126,6 +129,10 @@ pub enum Op {
         /// `CAP_START_BACKEND`. A backend the runner can't serve fails the start.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         backend: Option<StartBackend>,
+        /// The Herdr app space the session's tab opens in, by id, instead of a new space; only
+        /// sent to runners advertising `CAP_MANAGE`, and only for the Herdr app.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
     },
     Prompt {
         session_id: String,
@@ -239,6 +246,26 @@ pub enum Op {
     Dialog {
         agent: String,
     },
+    /// Renames an agent Switchboard didn't start: `agent.rename` in a Herdr terminal, the tab's
+    /// name in the Herdr app. Returns `{ "name": <as listed> }`. `CAP_MANAGE`.
+    RenameAgent {
+        agent: String,
+        name: String,
+    },
+    /// Renames a Herdr app space or a Herdr workspace, by the id the listing gave.
+    /// Returns `{ "name": … }`. `CAP_MANAGE`.
+    RenameSpace {
+        #[serde(default)]
+        herdr_session: Option<String>,
+        space_id: String,
+        name: String,
+    },
+    /// Renames the tab a Herdr app session's terminal sits in, to match the hub's name for it.
+    /// Returns `{ "renamed": bool }`; a Herdr terminal session has nothing to rename. `CAP_MANAGE`.
+    RenameSessionTab {
+        session_id: String,
+        name: String,
+    },
 }
 
 impl Op {
@@ -270,7 +297,8 @@ impl Op {
             | Op::PromptAgent { agent, .. }
             | Op::Transcript { agent, .. }
             | Op::Skills { agent }
-            | Op::Dialog { agent } => Some(agent),
+            | Op::Dialog { agent }
+            | Op::RenameAgent { agent, .. } => Some(agent),
             _ => None,
         }
     }
@@ -395,6 +423,13 @@ pub struct AgentSummary {
     /// It stopped on an error (herdr-core only); `agent_status` says done.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub error: bool,
+    /// The id of the space it runs in: a Herdr app space in the layout, or a Herdr workspace.
+    /// `Op::RenameSpace` and a start's `space` take it. `CAP_MANAGE`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space_id: Option<String>,
+    /// `Op::RenameAgent` can rename it. `CAP_MANAGE`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub can_rename: bool,
 }
 
 /// One agent from `Op::Activity`: the first line of the last thing it said or did, masked.
@@ -480,6 +515,8 @@ pub enum ErrorCode {
     ApproveNotAllowed,
     /// The dialog changed, was answered, or isn't one the runner may answer; nothing was sent.
     DialogChanged,
+    /// Another agent or space already has the name; nothing was renamed.
+    NameTaken,
     Herdr,
     BadRequest,
     Internal,

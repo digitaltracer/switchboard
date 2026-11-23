@@ -27,6 +27,7 @@ fn session(id: &str, created_at: i64) -> SessionRecord {
         herdr_session: None,
         name: None,
         space: None,
+        space_id: None,
     }
 }
 

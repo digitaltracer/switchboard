@@ -20,6 +20,9 @@ pub enum LayoutError {
     NotFound(&'static str),
     #[error("{0}")]
     Refused(&'static str),
+    /// Another tab or space already shows the name.
+    #[error("{0}")]
+    Taken(&'static str),
     #[error(transparent)]
     Hc(#[from] HcError),
 }
@@ -80,14 +83,25 @@ pub fn set_name(doc: &mut Value, which: Which<'_>, name: &str) -> Result<(), Lay
 
 /// Reads the layout, renames, and writes it back if no one else wrote in between.
 pub async fn rename(client: &Client, which: Which<'_>, name: &str) -> Result<(), LayoutError> {
+    update(client, |doc| set_name(doc, which, name))
+        .await
+        .map(drop)
+}
+
+/// Reads the layout, lets `change` rename in it through `set_name`, and writes it back if no one
+/// else wrote in between. Returns the layout as written.
+pub async fn update(
+    client: &Client,
+    change: impl FnOnce(&mut Value) -> Result<(), LayoutError>,
+) -> Result<Value, LayoutError> {
     let doc = client.doc_get(LAYOUT_DOC).await?;
     if doc.version == 0 {
         return Err(LayoutError::Missing);
     }
     let mut value = doc.value;
-    set_name(&mut value, which, name)?;
+    change(&mut value)?;
     match client.doc_set(LAYOUT_DOC, &value, doc.version).await {
-        Ok(_) => Ok(()),
+        Ok(_) => Ok(value),
         Err(e) if e.kind() == Some("conflict") => Err(LayoutError::Conflict),
         Err(e) => Err(e.into()),
     }

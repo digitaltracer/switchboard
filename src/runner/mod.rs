@@ -12,6 +12,7 @@ pub mod link;
 pub mod local;
 pub mod logcache;
 pub mod logwatch;
+pub(crate) mod manage;
 pub mod sessions;
 pub mod skills;
 pub mod summary;

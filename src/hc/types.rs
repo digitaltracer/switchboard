@@ -160,6 +160,8 @@ pub struct SpaceView {
     pub id: String,
     pub name: Option<String>,
     pub folder: Option<String>,
+    /// The machine it lives on, when that isn't this one.
+    pub machine: Option<String>,
     pub tabs: Vec<TabView>,
 }
 
@@ -188,6 +190,7 @@ pub fn spaces(doc: &Value) -> Vec<SpaceView> {
                 id: text(s, "id")?,
                 name: text(s, "name"),
                 folder: text(s, "folder"),
+                machine: text(s, "machine"),
                 tabs: s
                     .get("tabs")
                     .and_then(Value::as_array)

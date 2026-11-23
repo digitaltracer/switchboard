@@ -65,6 +65,10 @@ pub enum Method {
     PaneProcessInfo(PaneProcessInfoParams),
     #[serde(rename = "workspace.close")]
     WorkspaceClose(WorkspaceCloseParams),
+    #[serde(rename = "agent.rename")]
+    AgentRename(AgentRenameParams),
+    #[serde(rename = "workspace.rename")]
+    WorkspaceRename(WorkspaceRenameParams),
     #[serde(rename = "events.subscribe")]
     EventsSubscribe(EventsSubscribeParams),
 }
@@ -86,6 +90,8 @@ impl Method {
             Method::WorkspaceCreate(_) => "workspace.create",
             Method::PaneProcessInfo(_) => "pane.process_info",
             Method::WorkspaceClose(_) => "workspace.close",
+            Method::AgentRename(_) => "agent.rename",
+            Method::WorkspaceRename(_) => "workspace.rename",
             Method::EventsSubscribe(_) => "events.subscribe",
         }
     }
@@ -219,6 +225,19 @@ pub struct WorkspaceCreateParams {
 #[derive(Debug, Clone, Serialize)]
 pub struct WorkspaceCloseParams {
     pub workspace_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentRenameParams {
+    /// The agent's name or pane id.
+    pub target: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WorkspaceRenameParams {
+    pub workspace_id: String,
+    pub label: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

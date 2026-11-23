@@ -102,6 +102,21 @@ pub fn label(project_id: &str, session_id: &str, name: Option<&str>) -> String {
 /// Longest name a session can be given.
 const MAX_NAME: usize = 40;
 
+/// A name the owner gives a session, an agent's tab or a space, trimmed: one line of 1 to 40
+/// characters. No `/`, which separates a Herdr session from its agent.
+pub fn check_name(name: &str) -> Result<&str, &'static str> {
+    let name = name.trim();
+    if name.is_empty() {
+        Err("the name is empty")
+    } else if name.chars().count() > MAX_NAME {
+        Err("the name is longer than 40 characters")
+    } else if name.chars().any(|c| c.is_control() || c == '/') {
+        Err("the name can't contain a line break or a slash")
+    } else {
+        Ok(name)
+    }
+}
+
 /// Words after "name it" that start a sentence rather than name a session.
 const NOT_NAMES: &[&str] = &[
     "a",
