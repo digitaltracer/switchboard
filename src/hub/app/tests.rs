@@ -1454,7 +1454,10 @@ async fn a_conversation_comes_from_the_runner_a_page_at_a_time_masked() {
         json!({"items": [
             {"id": "u1:0", "kind": "user", "text": "fix the flaky test", "done": false, "failed": false},
             {"id": "t1", "kind": "tool", "text": format!("Ran export GITHUB_TOKEN={SECRET}"), "tool": "Bash",
-             "input": "{}", "output": "ok", "done": true, "failed": false, "at": "2026-10-26T09:00:00Z"}
+             "input": "{}", "output": "ok", "done": true, "failed": false, "at": "2026-10-26T09:00:00Z"},
+            {"id": "u2:0", "kind": "peer", "text": "review done", "from": "reviewer", "done": false, "failed": false}
+        ], "queued": [
+            {"id": "queued:900", "kind": "user", "text": format!("use {SECRET}"), "done": false, "failed": false}
         ], "start": 1024, "end": 4096}),
     )
     .await;
@@ -1467,6 +1470,12 @@ async fn a_conversation_comes_from_the_runner_a_page_at_a_time_masked() {
     assert_eq!(got.body["items"][0]["text"], "fix the flaky test");
     assert!(got.body["items"][0].get("tool").is_none());
     assert_eq!(got.body["items"][1]["done"], true);
+    assert_eq!(
+        (&got.body["items"][2]["kind"], &got.body["items"][2]["from"]),
+        (&json!("peer"), &json!("reviewer"))
+    );
+    assert!(got.body["items"][0].get("from").is_none());
+    assert_eq!(got.body["queued"][0]["id"], "queued:900");
     assert!(!got.body.to_string().contains(SECRET), "{}", got.body);
 
     let call = r.call_later(

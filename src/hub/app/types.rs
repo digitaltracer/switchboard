@@ -738,12 +738,18 @@ pub struct Transcript {
     /// Pass as `after` for what comes next. A page asked for with `after` that doesn't start
     /// there skipped some: replace what's shown instead of appending.
     pub end: u64,
+    /// Messages waiting for the agent to take them in, oldest first, as of `end`: what to show
+    /// as queued now, replacing any shown before. Only on pages that reach the conversation's
+    /// end; absent when none wait. Older hubs leave it out.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub queued: Vec<TranscriptItem>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct TranscriptItem {
     pub id: String,
-    /// `user`, `assistant`, `tool` or `note`.
+    /// `user`, `assistant`, `tool`, `note`, or `peer` for a message another terminal sent the
+    /// agent. Show a kind you don't know as a note.
     pub kind: String,
     /// What was said, in Markdown; for a tool, a one-line summary. Absent on a tool result
     /// whose call is on an earlier page.
@@ -773,14 +779,15 @@ pub struct TranscriptItem {
     /// else started. Older hubs leave it out.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub ends_turn: bool,
+    /// Who sent a `peer` message: the sending terminal's agent name, else its id.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
 }
 
 impl From<TranscriptPage> for Transcript {
     fn from(p: TranscriptPage) -> Self {
-        Self {
-            items: p
-                .items
-                .into_iter()
+        let items = |v: Vec<crate::proto::TranscriptItem>| {
+            v.into_iter()
                 .map(|i| TranscriptItem {
                     id: i.id,
                     kind: i.kind,
@@ -794,10 +801,15 @@ impl From<TranscriptPage> for Transcript {
                     added: i.added,
                     removed: i.removed,
                     ends_turn: i.ends_turn,
+                    from: i.from,
                 })
-                .collect(),
+                .collect()
+        };
+        Self {
+            items: items(p.items),
             start: p.start,
             end: p.end,
+            queued: items(p.queued),
         }
     }
 }
