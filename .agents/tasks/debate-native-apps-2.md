@@ -434,3 +434,10 @@ Chosen from the design canvas's options A to E, on iOS and Android alike.
   - **The fix, on Android:** the relay client pings every 10 s, turns OkHttp's retry off, and retries a request that failed on its connection once, sealed afresh.
   - **iOS** uses URLSession, which doesn't resend POSTs.
 - **Connecting.** Before its first answer the home screen says "Connecting…", not "Can't reach the hub".
+
+## As built (2026-11-23): messages sent while the agent works, and messages from other terminals
+
+- **Taken in mid-turn.** A message sent while Claude works waits in Claude's queue. If the turn ends first, it's logged as a normal user line; if Claude takes it in at a break between steps, it's logged only as a `queued_command` attachment, which the conversation skipped. Those now show as your message where Claude took them in. Attachments of the same shape that are task notifications or subagent hand-backs stay hidden.
+- **Queued.** Claude logs its queue (`queue-operation`: enqueue, dequeue, remove, popAll). The runner plays it per log from where it last stopped, up to the page's end, so a message is either queued or in the conversation, never both. A remove that names no message takes the oldest; across every local log that leaves none of the owner's messages behind. Further back than a window, it starts again from empty, which can only leave some out. Pages that reach the log's end carry `queued`; the apps show it faded under the status line, "Queued", until the next page says otherwise.
+- **Other terminals.** `<hc from="t6t">…</hc>` lines were hidden as Claude's own tags. They're now `peer` items with `from`, the sending terminal's listed agent name, else its terminal name, else its id; another machine's address is never looked up. The apps head them "From …" in an outlined bubble. Older apps show the new kind as a note. Peer messages aren't the agent's last line.
+- Additive in `/app/v1`: `Transcript.queued`, `TranscriptItem.from`, kind `peer`.
