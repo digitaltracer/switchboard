@@ -5,6 +5,8 @@ import Foundation
 public enum Turns {
     public enum Entry: Identifiable, Equatable, Sendable {
         case user(Conversation.Item)
+        /// A message another terminal sent the agent.
+        case peer(Conversation.Item)
         case reply(Conversation.Item)
         /// Something the agent said with more work after it before your next message: a note on the way.
         case progress(Conversation.Item)
@@ -13,7 +15,7 @@ public enum Turns {
 
         public var id: String {
             switch self {
-            case .user(let i), .reply(let i), .progress(let i), .note(let i): i.id
+            case .user(let i), .peer(let i), .reply(let i), .progress(let i), .note(let i): i.id
             case .work(let w): "work:\(w.items.first?.id ?? "")"
             }
         }
@@ -46,6 +48,7 @@ public enum Turns {
             switch item.kind {
             case "tool": steps.append(item)
             case "user": flush(); out.append(.user(item))
+            case "peer": flush(); out.append(.peer(item))
             case "assistant": flush(); out.append(.reply(item))
             default: flush(); out.append(.note(item))
             }
@@ -56,7 +59,7 @@ public enum Turns {
         var followed = false
         for i in out.indices.reversed() {
             switch out[i] {
-            case .user, .note: followed = false
+            case .user, .peer, .note: followed = false
             case .work: followed = true
             case .reply(let item):
                 if followed && item.endsTurn != true { out[i] = .progress(item) } else { followed = true }

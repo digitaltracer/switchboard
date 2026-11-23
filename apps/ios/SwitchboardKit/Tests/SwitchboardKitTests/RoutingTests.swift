@@ -121,3 +121,22 @@ private func page(_ json: String) throws -> Schemas.Transcript { try decode(json
     """#), askedAfter: 1100)
     #expect(c.items.map(\.id) == ["a9"] && c.start == 5000)
 }
+
+@Test func whatWaitsInTheQueueIsWhatTheLatestPageSays() throws {
+    var c = Conversation()
+    c.replace(with: try page(#"""
+    {"start":0,"end":100,"items":[{"id":"u1","kind":"user","text":"fix it","done":false,"failed":false}],
+     "queued":[{"id":"queued:90","kind":"user","text":"also run clippy","done":false,"failed":false}]}
+    """#))
+    #expect(c.queued.map(\.text) == ["also run clippy"])
+
+    // An earlier page says nothing about the queue now.
+    c.prepend(try page(#"{"start":0,"end":0,"items":[]}"#))
+    #expect(c.queued.count == 1)
+
+    // Taken in: it's in the conversation and waits no more.
+    c.append(try page(#"""
+    {"start":100,"end":200,"items":[{"id":"q1:0","kind":"user","text":"also run clippy","done":false,"failed":false}]}
+    """#), askedAfter: 100)
+    #expect(c.queued.isEmpty && c.items.map(\.id) == ["u1", "q1:0"])
+}
