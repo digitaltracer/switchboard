@@ -103,6 +103,17 @@ struct HomeView: View {
             }
         }
         .environment(\.goHome, path.count > 1 ? { path = NavigationPath() } : nil)
+        .environment(\.replaceTop) { renamed in
+            var quiet = Transaction()
+            quiet.disablesAnimations = true
+            withTransaction(quiet) {
+                if !path.isEmpty { path.removeLast() }
+                switch renamed {
+                case .agent(let ref): path.append(ref)
+                case .space(let key): path.append(key)
+                }
+            }
+        }
         .scaleEffect(voice.squeeze ? 0.982 : 1, anchor: .bottom)
         .animation(.spring(response: 0.3, dampingFraction: 1), value: voice.squeeze)
         .overlay(alignment: .top) {

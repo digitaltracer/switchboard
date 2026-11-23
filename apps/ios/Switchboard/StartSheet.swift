@@ -8,6 +8,13 @@ struct StartSheet: View {
     @Environment(AppModel.self) private var model
     @Environment(Voice.self) private var voice
     let done: (String?) -> Void
+    /// A Herdr app space the session's tab opens in, instead of a new space.
+    struct Into {
+        let spaceId: String
+        let title: String
+        let machine: String
+    }
+    var into: Into?
     @State private var projects: [Schemas.Project] = []
     @State private var machines: [Schemas.Machine] = []
     @State private var project: String
@@ -27,8 +34,9 @@ struct StartSheet: View {
     @State private var startTask: Task<Void, Never>?
     @FocusState private var focused: Bool
 
-    init(project: String? = nil, done: @escaping (String?) -> Void) {
+    init(project: String? = nil, into: Into? = nil, done: @escaping (String?) -> Void) {
         self.done = done
+        self.into = into
         _project = State(initialValue: project ?? "")
     }
 
@@ -57,7 +65,7 @@ struct StartSheet: View {
                     promptBox
                     dictationState
                     SectionHead("Open it in").padding(.top, -6)
-                    backends
+                    if let into { fixedSpace(into) } else { backends }
                     SectionHead("What runs").padding(.top, -6)
                     fields
                     HStack {
@@ -78,7 +86,7 @@ struct StartSheet: View {
                 if sending { ProgressView().tint(Ink.inv) } else { Text("Start") }
             }
             .buttonStyle(BigButtonStyle())
-            .disabled(project.isEmpty || blank || sending || voice.dictating)
+            .disabled(project.isEmpty || blank || sending || voice.dictating || (into != nil && !appOpen))
             .padding(.horizontal, 20)
             .padding(.bottom, 8)
             .accessibilityIdentifier("submitStart")
@@ -94,7 +102,7 @@ struct StartSheet: View {
         .onChange(of: project) { _, id in
             agent = projects.first { $0.id == id }?.defaultAgent ?? "claude"
             let available = projects.first { $0.id == id }?.machines ?? []
-            if !available.contains(machine) { machine = available.first ?? "" }
+            if into == nil, !available.contains(machine) { machine = available.first ?? "" }
         }
         // Dictation ends in review; its words come here, where they stay editable.
         .onChange(of: voice.phase) { _, phase in
@@ -174,6 +182,26 @@ struct StartSheet: View {
         }
     }
 
+    /// The Herdr app answers on the machine, so a session can open in one of its spaces.
+    private var appOpen: Bool { options?.backends.first { $0.backend == "hc" }?.available == true }
+
+    /// The space a start from its page goes to; there is no choice to make.
+    @ViewBuilder
+    private func fixedSpace(_ into: Into) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            FieldRow("Space", value: into.title, first: true)
+            if hubTooOld || optionsError != nil || (options != nil && !appOpen) {
+                Note(text: describe("hc", options?.backends.first { $0.backend == "hc" }), color: Ink.warn)
+                    .padding(.bottom, 11)
+            } else {
+                Note(text: "A new tab in this space in the Herdr window on \(into.machine), on its own branch.")
+                    .padding(.bottom, 11)
+            }
+            Hairline()
+        }
+        .accessibilityIdentifier("startInto")
+    }
+
     private func describe(_ b: String, _ o: Schemas.BackendOption?) -> String {
         let m = machine.isEmpty ? "the machine" : machine
         if hubTooOld {
@@ -230,7 +258,11 @@ struct StartSheet: View {
     }
 
     private var eligible: [Schemas.Machine] {
-        machines.filter { m in projects.first { $0.id == project }?.machines.contains(m.id) ?? true }
+        machines.filter { m in
+            // A space is on one machine; a start into it runs there or not at all.
+            if let into { return m.id == into.machine }
+            return projects.first { $0.id == project }?.machines.contains(m.id) ?? true
+        }
     }
 
     private func field<V: View>(_ label: String, @ViewBuilder value: () -> V) -> some View {
@@ -261,11 +293,13 @@ struct StartSheet: View {
         do {
             projects = try await hub.projects()
             machines = try await hub.machines()
+            // Only projects with a repo on the space's machine can start there.
+            if let into { projects = projects.filter { $0.machines.contains(into.machine) } }
             if project.isEmpty || !projects.contains(where: { $0.id == project }), let first = projects.first { project = first.id }
             agent = projects.first { $0.id == project }?.defaultAgent ?? "claude"
             let available = projects.first { $0.id == project }?.machines ?? []
             let preferred = machines.first(where: \._default)?.id ?? machines.first?.id ?? ""
-            machine = available.contains(preferred) ? preferred : available.first ?? preferred
+            machine = into?.machine ?? (available.contains(preferred) ? preferred : available.first ?? preferred)
         } catch {
             loadError = error.localizedDescription
         }
@@ -283,7 +317,7 @@ struct StartSheet: View {
             guard !Task.isCancelled else { return }
             options = o
             let available = o.backends.filter(\.available).map(\.backend)
-            backend = o._default.flatMap { available.contains($0) ? $0 : nil } ?? available.first
+            backend = into != nil ? "hc" : o._default.flatMap { available.contains($0) ? $0 : nil } ?? available.first
         } catch let e as HubError where e.code == "http_404" {
             hubTooOld = true
         } catch {
@@ -297,7 +331,8 @@ struct StartSheet: View {
         defer { sending = false }
         let requestId = UUID().uuidString
         state = await StartFlow.run(hub: hub, project: project, prompt: prompt, machine: machine.isEmpty ? nil : machine,
-                                    agent: agent, notify: notify, requestId: requestId, backend: canChoose ? backend : nil)
+                                    agent: agent, notify: notify, requestId: requestId,
+                                    backend: into != nil ? "hc" : canChoose ? backend : nil, spaceId: into?.spaceId)
         // Reconcile an unknown outcome by asking the hub about the request, for up to five minutes.
         var tries = 0
         while case .unknown = state, tries < 150, !Task.isCancelled {

@@ -150,7 +150,12 @@ struct SpacesList: View {
 /// One space: its agents, those that ended today, and where to find it at your desk.
 struct SpacePage: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.replaceTop) private var replaceTop
     let key: AgentSpace.Key
+    @State private var renaming = false
+    @State private var starting = false
+    /// One request id per name tried, so a retry after a lost answer is the same request.
+    @State private var renameIds: [String: String] = [:]
 
     private var space: AgentSpace? {
         model.spaces(machine: key.machine, since: HerdrSession.startOfToday()).first { $0.key == key }
@@ -183,6 +188,15 @@ struct SpacePage: View {
                             ForEach(Array(space.ended.enumerated()), id: \.element) { i, a in row(a, first: i == 0) }
                         }
                         if space.agents.isEmpty { StateRow(text: "No agents in this space.") }
+                        if space.newAgent == .yes {
+                            Button { starting = true } label: {
+                                Row(title: "New agent here", subtitle: "A new session, in this space", first: space.agents.isEmpty) {
+                                    Image(systemName: "plus").font(.body.weight(.medium)).foregroundStyle(Ink.ac).frame(width: 22)
+                                } trailing: { Chevron() }
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("newAgentHere")
+                        }
                     } else {
                         StateRow(text: "No agents in this space.")
                     }
@@ -197,6 +211,13 @@ struct SpacePage: View {
                             Text("herdr session attach \(key.session)").font(Face.mono(12.5)).textSelection(.enabled)
                         }
                     }
+                    if let space {
+                        NameRow(name: key.space ?? space.title, offer: space.rename) { renaming = true }
+                        if case .no(let why) = space.newAgent {
+                            Hairline()
+                            Note(text: why, color: Ink.sub).padding(.vertical, 11).accessibilityIdentifier("newAgentBlocked")
+                        }
+                    }
                     Hairline()
                 }
                 .padding(.horizontal, 20)
@@ -205,12 +226,34 @@ struct SpacePage: View {
             .refreshable { await model.refreshAgents() }
         }
         .inboxPage()
+        .sheet(isPresented: $renaming) {
+            let name = key.space ?? space?.title ?? ""
+            RenameSheet(title: "Rename \(name)", current: name) { try await rename(to: $0) }
+        }
+        .sheet(isPresented: $starting) {
+            if let space, let id = space.spaceId {
+                StartSheet(project: space.project, into: .init(spaceId: id, title: space.title, machine: key.machine)) { _ in
+                    starting = false
+                    Task { await model.refreshAgents() }
+                }
+            }
+        }
         .task(id: model.followKey) {
             while model.followKey != nil, !Task.isCancelled {
                 await model.refreshAgents()
                 try? await Task.sleep(for: .seconds(6))
             }
         }
+    }
+
+    private func rename(to name: String) async throws {
+        guard let hub = model.hub, let id = space?.spaceId else { return }
+        let requestId = renameIds[name] ?? UUID().uuidString
+        renameIds[name] = requestId
+        let listed = try await hub.renameSpace(machine: key.machine, herdrSession: key.session, spaceId: id, name: name,
+                                               requestId: requestId)
+        await model.refreshAgents()
+        replaceTop?(.space(.init(machine: key.machine, session: key.session, space: listed)))
     }
 
     @ViewBuilder

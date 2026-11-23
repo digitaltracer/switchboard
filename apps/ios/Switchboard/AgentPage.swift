@@ -34,6 +34,10 @@ struct AgentPage: View {
     @State private var notice: String?
     @State private var lifecycle = false
     @State private var details = false
+    @State private var renaming = false
+    /// One request id per name tried, so a retry after a lost answer is the same request.
+    @State private var renameIds: [String: String] = [:]
+    @Environment(\.replaceTop) private var replaceTop
 
     init(source: ConversationSource, tab: AgentTab = .summary) {
         self.source = source
@@ -139,6 +143,36 @@ struct AgentPage: View {
             }
         }
         .sheet(isPresented: $lifecycle) { lifecycleSheet }
+        .sheet(isPresented: $renaming) {
+            RenameSheet(title: "Rename \(ownName)", current: ownName, herdrAgent: me?.isHerdrAgent ?? false) {
+                try await rename(to: $0)
+            }
+        }
+    }
+
+    /// This page's agent as the lists have it.
+    private var me: HerdrSession.Agent? {
+        if let s = session { return .task(s) }
+        return info.map { .live($0) }
+    }
+    /// The name a rename changes: a session's label, or an agent's own name without its space.
+    private var ownName: String { session?.label ?? info?.agentLabel ?? title }
+
+    private func rename(to name: String) async throws {
+        guard let hub = model.hub else { return }
+        if let id = sessionId {
+            _ = try await hub.renameSession(id, name: name)
+            await refresh()
+            if let s = session { model.renamed(session: s) }
+            return
+        }
+        guard let a = agentRef else { return }
+        let requestId = renameIds[name] ?? UUID().uuidString
+        renameIds[name] = requestId
+        let listed = try await hub.renameAgent(machine: a.machine, agent: a.name, name: name, requestId: requestId)
+        model.renamed(agent: a.name, to: listed, machine: a.machine)
+        await model.refreshAgents()
+        replaceTop?(.agent(AgentRef(machine: a.machine, name: listed)))
     }
 
     private var header: some View {
@@ -341,6 +375,7 @@ struct AgentPage: View {
                     Text("herdr session attach \(attach)").font(Face.mono(12.5)).textSelection(.enabled)
                 }
             }
+            if let me { NameRow(name: ownName, offer: me.rename) { renaming = true } }
             Hairline()
         }
     }

@@ -359,6 +359,24 @@ final class AppModel {
         settleAwaiting()
     }
 
+    /// An agent Switchboard didn't start goes by a new name: what this phone keeps under the
+    /// old one follows it.
+    func renamed(agent old: String, to new: String, machine: String) {
+        let key = { (name: String) in "agent:\(machine)/\(name)" }
+        if let was = said.removeValue(forKey: key(old)) {
+            said[key(new)] = was
+            UserDefaults.standard.set(try? JSONEncoder().encode(said), forKey: Self.saidStore)
+        }
+        if let c = current, c.sessionId == nil, c.machineId == machine, c.agent == old {
+            current = .agent(machine: machine, name: new)
+        }
+    }
+
+    /// A session goes by a new label: text that names nothing still goes to it.
+    func renamed(session s: Schemas.Session) {
+        if current?.sessionId == s.id { current = .session(s) }
+    }
+
     /// Every space with its agents, the Herdr app's and the Herdr terminal's alike.
     func spaces(machine: String? = nil, since: Int64?) -> [AgentSpace] {
         AgentSpace.group(sessions: sessions, agents: agents, ended: ended, machine: machine, since: since)

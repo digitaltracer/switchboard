@@ -592,9 +592,17 @@ struct PageTop<Trailing: View>: View {
     }
 }
 
+/// What a page shows, under the name it was just given.
+enum Renamed {
+    case agent(AgentRef)
+    case space(AgentSpace.Key)
+}
+
 extension EnvironmentValues {
     /// Empties the navigation stack; nil when one back already gets home.
     @Entry var goHome: (() -> Void)? = nil
+    /// Swaps the page on top for the same thing under its new name.
+    @Entry var replaceTop: ((Renamed) -> Void)? = nil
 }
 
 extension PageTop where Trailing == Text {

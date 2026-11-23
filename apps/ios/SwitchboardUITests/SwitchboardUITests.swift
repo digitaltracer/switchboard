@@ -202,6 +202,55 @@ final class SwitchboardUITests: XCTestCase {
         XCTAssertTrue(no.waitForNonExistence(timeout: 20), "the answered dialog is gone")
         snapshot(app, "agent-answered")
         goHome(app)
+
+        // A Herdr app space takes a new session from its page, with the space given and not chosen.
+        app.buttons["Spaces"].tap()
+        let atlas = app.buttons["space-atlas-web"]
+        XCTAssertTrue(atlas.waitForExistence(timeout: 15), app.debugDescription)
+        atlas.tap()
+        let here = app.buttons["newAgentHere"]
+        XCTAssertTrue(here.waitForExistence(timeout: 10), app.debugDescription)
+        here.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["startInto"].waitForExistence(timeout: 10), app.debugDescription)
+        XCTAssertFalse(app.buttons["backend-herdr"].exists, "no choice of where it opens")
+        snapshot(app, "start-into-space")
+        app.buttons["Cancel"].firstMatch.tap()
+
+        // Renaming it: a name another space has is refused in words, and the page follows a good one.
+        let rename = app.buttons["rename"]
+        for _ in 0..<3 where !(rename.exists && rename.isHittable) { app.swipeUp() }
+        XCTAssertTrue(rename.waitForExistence(timeout: 5), app.debugDescription)
+        rename.tap()
+        let nameField = app.textFields["renameField"]
+        XCTAssertTrue(nameField.waitForExistence(timeout: 5), app.debugDescription)
+        let erase = { (n: Int) in String(repeating: XCUIKeyboardKey.delete.rawValue, count: n) }
+        let caretAtEnd = { nameField.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap() }
+        XCTAssertFalse(app.buttons["renameSave"].isEnabled, "the same name is nothing to save")
+        caretAtEnd()
+        nameField.typeText(erase("atlas-web".count) + "taken")
+        app.buttons["renameSave"].tap()
+        let refused = app.staticTexts["renameError"]
+        XCTAssertTrue(refused.waitForExistence(timeout: 10), app.debugDescription)
+        XCTAssertEqual(refused.label, "That name is taken.")
+        snapshot(app, "rename-taken")
+        caretAtEnd()
+        nameField.typeText(erase("taken".count) + "web")
+        app.buttons["renameSave"].tap()
+        XCTAssertTrue(nameField.waitForNonExistence(timeout: 10), app.debugDescription)
+        XCTAssertTrue(app.staticTexts["search"].waitForExistence(timeout: 10), "the page is the same space, under its new name")
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH 'web.'")).firstMatch.waitForExistence(timeout: 5),
+                      app.debugDescription)
+        snapshot(app, "space-renamed")
+
+        // One of its agents was named when it started: the phone says so and offers no rename.
+        app.staticTexts["docs"].tap()
+        let fixed = app.staticTexts["renameBlocked"]
+        for _ in 0..<4 where !fixed.exists { app.swipeUp() }
+        XCTAssertTrue(fixed.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertEqual(fixed.label, "Rename it at the Mac.")
+        XCTAssertFalse(app.buttons["rename"].exists)
+        snapshot(app, "agent-name-fixed")
+        goHome(app)
         app.buttons["Now"].tap()
 
         if env["SB_EXPECT_PROJECT"] != nil { try cloudVoice(app) }
