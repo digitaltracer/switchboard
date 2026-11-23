@@ -336,6 +336,7 @@ fn parse<'a>(lines: impl IntoIterator<Item = (u64, &'a str)>) -> Vec<(u64, Trans
             "\"type\":\"user\"",
             "\"type\":\"assistant\"",
             "\"type\":\"system\"",
+            "\"queued_command\"",
         ]
         .iter()
         .any(|t| line.contains(t))
@@ -368,8 +369,13 @@ fn parse<'a>(lines: impl IntoIterator<Item = (u64, &'a str)>) -> Vec<(u64, Trans
             removed: None,
             ends_turn: false,
         };
-        let content = d.pointer("/message/content");
-        match d.get("type").and_then(Value::as_str) {
+        let queued = queued_prompt(&d);
+        let content = queued.or_else(|| d.pointer("/message/content"));
+        let kind = match queued {
+            Some(_) => Some("user"),
+            None => d.get("type").and_then(Value::as_str),
+        };
+        match kind {
             Some("system") => {
                 if d.get("subtype").and_then(Value::as_str) == Some("compact_boundary") {
                     out.push((
@@ -503,6 +509,19 @@ fn parse<'a>(lines: impl IntoIterator<Item = (u64, &'a str)>) -> Vec<(u64, Trans
         }
     }
     out
+}
+
+/// A message the owner sent while Claude worked, logged when Claude takes it in mid-turn;
+/// task notifications and subagent hand-backs arrive the same way and are Claude's own.
+fn queued_prompt(d: &Value) -> Option<&Value> {
+    let a = d.get("attachment")?;
+    let s = |k: &str| a.pointer(k).and_then(Value::as_str);
+    (d.get("type").and_then(Value::as_str) == Some("attachment")
+        && s("/type") == Some("queued_command")
+        && s("/commandMode") == Some("prompt")
+        && matches!(s("/origin/kind"), None | Some("human")))
+    .then(|| a.get("prompt"))
+    .flatten()
 }
 
 /// One Codex log entry: a message, or a tool call or its result. Reasoning and the context
