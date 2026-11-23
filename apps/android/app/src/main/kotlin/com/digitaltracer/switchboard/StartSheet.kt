@@ -62,14 +62,18 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
+/** A Herdr app space the session's tab opens in, instead of a new space. */
+data class StartInto(val spaceId: String, val title: String, val machine: String)
+
 /**
  * New session: the prompt, typed or dictated; whether it opens in the Herdr app or a Herdr
  * terminal; and the project, machine and agent. A lost answer becomes "outcome unknown" and is
  * reconciled by request id; the same start within a minute comes back as "already running".
+ * With [into], it opens in that space and there is no choice of where.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun StartSheet(model: AppModel, voice: Voice, initialProject: String?, done: (String?) -> Unit) {
+fun StartSheet(model: AppModel, voice: Voice, initialProject: String?, into: StartInto? = null, done: (String?) -> Unit) {
     var projects by remember { mutableStateOf<List<Project>>(emptyList()) }
     var machines by remember { mutableStateOf<List<Machine>>(emptyList()) }
     var project by remember { mutableStateOf(initialProject.orEmpty()) }
@@ -93,6 +97,8 @@ fun StartSheet(model: AppModel, voice: Voice, initialProject: String?, done: (St
         if (granted) voice.dictate(prompt) else voice.denied()
     }
     val canChoose = options?.default != null
+    // The Herdr app answers on the machine, so a session can open in one of its spaces.
+    val appOpen = options?.backends?.firstOrNull { it.backend == "hc" }?.available == true
 
     fun takeDictation() {
         voice.text.trim().takeIf { it.isNotEmpty() }?.let { prompt = it }
@@ -102,14 +108,15 @@ fun StartSheet(model: AppModel, voice: Voice, initialProject: String?, done: (St
     LaunchedEffect(Unit) {
         val hub = model.hub ?: return@LaunchedEffect
         try {
-            projects = hub.projects()
+            // Only projects with a repo on the space's machine can start there.
+            projects = hub.projects().filter { into == null || into.machine in it.machines }
             machines = hub.machines()
             val p = projects.firstOrNull { it.id == project } ?: projects.firstOrNull()
             p?.let {
                 project = it.id
                 agent = it.defaultAgent
                 val preferred = machines.firstOrNull { m -> m.default }?.id ?: machines.firstOrNull()?.id.orEmpty()
-                machine = if (preferred in it.machines) preferred else it.machines.firstOrNull() ?: preferred
+                machine = into?.machine ?: if (preferred in it.machines) preferred else it.machines.firstOrNull() ?: preferred
             }
         } catch (e: CancellationException) {
             throw e
@@ -129,7 +136,7 @@ fun StartSheet(model: AppModel, voice: Voice, initialProject: String?, done: (St
             val o = hub.startOptions(machine)
             options = o
             val available = o.backends.filter { it.available }.map { it.backend }
-            backend = o.default?.takeIf { it in available } ?: available.firstOrNull()
+            backend = if (into != null) "hc" else o.default?.takeIf { it in available } ?: available.firstOrNull()
         } catch (e: CancellationException) {
             throw e
         } catch (e: HubError) {
@@ -148,7 +155,10 @@ fun StartSheet(model: AppModel, voice: Voice, initialProject: String?, done: (St
         startJob = scope.launch {
             sending = true
             val requestId = UUID.randomUUID().toString()
-            state = StartFlow.run(hub, project, prompt, machine.ifEmpty { null }, agent, notify, requestId, if (canChoose) backend else null)
+            state = StartFlow.run(
+                hub, project, prompt, machine.ifEmpty { null }, agent, notify, requestId,
+                backend = if (into != null) "hc" else if (canChoose) backend else null, spaceId = into?.spaceId,
+            )
             // Reconcile an unknown outcome by asking the hub about the request, for up to five minutes.
             var tries = 0
             while (state is StartState.Unknown && tries < 150 && isActive) {
@@ -226,7 +236,18 @@ fun StartSheet(model: AppModel, voice: Voice, initialProject: String?, done: (St
                         }
                     }
                     SectionHead("Open it in", top = 16.dp)
-                    listOf("hc", "herdr").forEachIndexed { i, b ->
+                    if (into != null) {
+                        // The space a start from its page goes to; there is no choice to make.
+                        Column(Modifier.testTag("startInto")) {
+                            FieldRow("Space", into.title, first = true)
+                            val hc = options?.backends?.firstOrNull { it.backend == "hc" }
+                            if (hubTooOld || optionsError != null || (options != null && !appOpen)) {
+                                Note(describe("hc", machine, options, hc, optionsError, hubTooOld), Modifier.padding(bottom = 11.dp), palette.warn)
+                            } else {
+                                Note("A new tab in this space in the Herdr window on ${into.machine}, on its own branch.", Modifier.padding(bottom = 11.dp))
+                            }
+                        }
+                    } else listOf("hc", "herdr").forEachIndexed { i, b ->
                         val opt = options?.backends?.firstOrNull { it.backend == b }
                         val offered = canChoose && opt?.available == true
                         RadioRow(
@@ -241,10 +262,11 @@ fun StartSheet(model: AppModel, voice: Voice, initialProject: String?, done: (St
                         projects.firstOrNull { it.id == id }?.let { p ->
                             project = p.id
                             agent = p.defaultAgent
-                            if (machine !in p.machines) machine = p.machines.firstOrNull() ?: machine
+                            if (into == null && machine !in p.machines) machine = p.machines.firstOrNull() ?: machine
                         }
                     }
-                    val available = projects.firstOrNull { it.id == project }?.machines
+                    // A space is on one machine; a start into it runs there or not at all.
+                    val available = into?.let { listOf(it.machine) } ?: projects.firstOrNull { it.id == project }?.machines
                     val status = machines.firstOrNull { it.id == machine }?.status
                     Field(
                         "Machine", if (machine.isEmpty()) "Choose" else "$machine · ${status ?: "unknown"}",
@@ -267,7 +289,7 @@ fun StartSheet(model: AppModel, voice: Voice, initialProject: String?, done: (St
                 }
                 BigButton(
                     "Start", Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 8.dp).testTag("submitStart"),
-                    enabled = project.isNotEmpty() && prompt.isNotBlank() && !sending && !voice.dictating, busy = sending,
+                    enabled = project.isNotEmpty() && prompt.isNotBlank() && !sending && !voice.dictating && (into == null || appOpen), busy = sending,
                 ) { start() }
             }
             if (voice.dictating) VoiceOverlay(voice)

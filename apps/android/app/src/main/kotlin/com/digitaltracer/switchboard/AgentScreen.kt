@@ -52,6 +52,9 @@ import com.digitaltracer.switchboard.core.agentLabel
 import com.digitaltracer.switchboard.core.agentTarget
 import com.digitaltracer.switchboard.core.displayName
 import com.digitaltracer.switchboard.core.holding
+import com.digitaltracer.switchboard.core.isHerdrAgent
+import com.digitaltracer.switchboard.core.rename
+import java.util.UUID
 import com.digitaltracer.switchboard.core.sessionTarget
 import com.digitaltracer.switchboard.core.shownTitle
 import kotlinx.coroutines.CancellationException
@@ -78,6 +81,9 @@ fun AgentScreen(model: AppModel, voice: Voice, listen: Listen, source: Conversat
     var notice by remember(source) { mutableStateOf<String?>(null) }
     var lifecycle by remember { mutableStateOf(false) }
     var details by remember { mutableStateOf(false) }
+    var renaming by remember(source) { mutableStateOf(false) }
+    // One request id per name tried, so a retry after a lost answer is the same request.
+    val renameIds = remember(source) { mutableMapOf<String, String>() }
     val scope = rememberCoroutineScope()
     val scroll = rememberScrollState()
     val pager = rememberPagerState(initialPage = tab.ordinal) { AgentTab.entries.size }
@@ -297,8 +303,30 @@ fun AgentScreen(model: AppModel, voice: Voice, listen: Listen, source: Conversat
                         s.branch?.let { FieldRow("Branch", it, mono = true) }
                         Hairline()
                     }
-                    AtYourDesk(backend, machine, space, s?.herdrSession ?: info?.herdrSession, live = s?.live ?: true)
+                    // The name a rename changes: a session's label, or an agent's own name without its space.
+                    val own = s?.let { HerdrSession.Agent.Task(it) } ?: info?.let { HerdrSession.Agent.Live(it) }
+                    AtYourDesk(backend, machine, space, s?.herdrSession ?: info?.herdrSession, live = s?.live ?: true) {
+                        own?.let { NameRow(s?.label ?: info?.agentLabel ?: title, it.rename) { renaming = true } }
+                    }
                 }
+            }
+        }
+    }
+
+    if (renaming) {
+        val name = s?.label ?: info?.agentLabel ?: title
+        val herdrAgent = info?.let { HerdrSession.Agent.Live(it).isHerdrAgent } ?: false
+        RenameSheet("Rename $name", name, herdrAgent, dismiss = { renaming = false }) { new ->
+            val hub = model.hub ?: return@RenameSheet
+            if (sessionId != null) {
+                hub.renameSession(sessionId, new)
+                refresh()
+                session?.let(model::renamedSession)
+            } else if (agentRef != null) {
+                val listed = hub.renameAgent(agentRef.machine, agentRef.name, new, renameIds.getOrPut(new) { UUID.randomUUID().toString() })
+                model.renamedAgent(agentRef.machine, agentRef.name, listed)
+                model.refreshAgents()
+                model.replaceTop(Route.AgentPage(agentRef.machine, listed))
             }
         }
     }
@@ -361,7 +389,10 @@ private fun ConversationRows(convo: ConversationModel, conversation: () -> Unit,
 
 /** Where it runs, the space to look under, and for a terminal the command to attach. */
 @Composable
-fun AtYourDesk(backend: String, machine: String, space: AgentSpace?, herdrSession: String?, live: Boolean = true) {
+fun AtYourDesk(
+    backend: String, machine: String, space: AgentSpace?, herdrSession: String?, live: Boolean = true,
+    more: @Composable () -> Unit = {},
+) {
     val app = backend == "hc"
     SectionHead("At your desk")
     FieldRow("Where", "${if (app) "Herdr app" else "Herdr terminal"} on $machine", first = true)
@@ -373,6 +404,7 @@ fun AtYourDesk(backend: String, machine: String, space: AgentSpace?, herdrSessio
             FieldRow("Attach", "") { SelectionContainer { Text("herdr session attach $attach", style = Type.mono(12.5f), color = palette.sub, maxLines = 1) } }
         }
     }
+    more()
     Hairline()
 }
 

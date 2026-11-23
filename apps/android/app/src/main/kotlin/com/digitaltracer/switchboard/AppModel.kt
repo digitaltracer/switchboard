@@ -223,6 +223,31 @@ class AppModel(context: Context, val keys: DeviceKeys) {
         if (path.isNotEmpty()) path.removeAt(path.lastIndex)
     }
 
+    /** Reads the agent list again without the caller waiting for it. */
+    fun refreshAgentsSoon() {
+        scope.launch { refreshAgents() }
+    }
+
+    /** Swaps the page on top for the same thing under its new name. */
+    fun replaceTop(route: Route) {
+        if (path.isNotEmpty()) path[path.lastIndex] = route else path.add(route)
+    }
+
+    /** An agent Switchboard didn't start goes by a new name: what this phone keeps under the old one follows it. */
+    fun renamedAgent(machine: String, old: String, new: String) {
+        val (was, now) = "agent:$machine/$old" to "agent:$machine/$new"
+        said[was]?.let {
+            said = said - was + (now to it)
+            prefs.edit().putString(SAID, Json.encodeToString(saidSerializer, said)).apply()
+        }
+        current?.let { c -> if (c.sessionId == null && c.machineId == machine && c.agent == old) current = com.digitaltracer.switchboard.core.agentTarget(machine, new) }
+    }
+
+    /** A session goes by a new label: text that names nothing still goes to it. */
+    fun renamedSession(s: com.digitaltracer.switchboard.api.models.Session) {
+        if (current?.sessionId == s.id) current = com.digitaltracer.switchboard.core.sessionTarget(s)
+    }
+
     /** What the back button is called: where it goes. */
     val backLabel: String
         get() = when (val under = path.getOrNull(path.size - 2)) {

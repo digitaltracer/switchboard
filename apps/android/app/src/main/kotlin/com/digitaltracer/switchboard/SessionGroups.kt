@@ -12,8 +12,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -30,7 +35,13 @@ import com.digitaltracer.switchboard.core.agentStatus
 import com.digitaltracer.switchboard.core.isNamed
 import com.digitaltracer.switchboard.core.nameInSpace
 import com.digitaltracer.switchboard.core.needsYou
+import com.digitaltracer.switchboard.core.newAgent
+import com.digitaltracer.switchboard.core.Offer
+import com.digitaltracer.switchboard.core.project
+import com.digitaltracer.switchboard.core.rename
 import com.digitaltracer.switchboard.core.shownTitle
+import com.digitaltracer.switchboard.core.spaceId
+import java.util.UUID
 import kotlinx.coroutines.delay
 
 /** "3 agents · 1 needs you · 1 working", or when it ended. */
@@ -141,7 +152,11 @@ fun SpacesList(model: AppModel, machine: String? = null) {
 
 /** One space: its agents, those that ended today, and where to find it at your desk. */
 @Composable
-fun SpaceScreen(model: AppModel, key: AgentSpace.Key) {
+fun SpaceScreen(model: AppModel, voice: Voice, key: AgentSpace.Key) {
+    var renaming by remember(key) { mutableStateOf(false) }
+    var starting by remember(key) { mutableStateOf(false) }
+    // One request id per name tried, so a retry after a lost answer is the same request.
+    val renameIds = remember(key) { mutableMapOf<String, String>() }
     LaunchedEffect(key, model.wakes, model.foreground) {
         while (model.foreground) {
             model.refreshAgents()
@@ -171,6 +186,14 @@ fun SpaceScreen(model: AppModel, key: AgentSpace.Key) {
                 space.ended.forEachIndexed { i, a -> AgentRow(model, a, i == 0) }
             }
             if (space == null || space.agents.isEmpty()) StateRow("No agents in this space.")
+            if (space != null && space.newAgent == Offer.Yes) {
+                InboxRow(
+                    "New agent here", "A new session, in this space", Modifier.testTag("newAgentHere"), first = space.agents.isEmpty(),
+                    onClick = { starting = true },
+                    leading = { Icon(Icons.Filled.Add, null, Modifier.size(22.dp), tint = palette.ac) },
+                    trailing = { Chevron() },
+                )
+            }
             SectionHead("At your desk")
             FieldRow("Where", "${if (app) "Herdr app" else "Herdr terminal"} on ${key.machine}", first = true)
             if (app) {
@@ -179,7 +202,30 @@ fun SpaceScreen(model: AppModel, key: AgentSpace.Key) {
                 key.space?.let { FieldRow("Workspace", it) }
                 FieldRow("Attach", "") { SelectionContainer { Text("herdr session attach ${key.session}", style = Type.mono(12.5f), color = palette.sub) } }
             }
+            if (space != null) {
+                NameRow(key.space ?: space.title, space.rename) { renaming = true }
+                (space.newAgent as? Offer.No)?.let {
+                    Hairline()
+                    Note(it.why, Modifier.padding(vertical = 11.dp).testTag("newAgentBlocked"), palette.sub)
+                }
+            }
             Hairline()
+        }
+    }
+    val id = space?.spaceId
+    if (renaming && space != null && id != null) {
+        val name = key.space ?: space.title
+        RenameSheet("Rename $name", name, dismiss = { renaming = false }) { new ->
+            val hub = model.hub ?: return@RenameSheet
+            val listed = hub.renameSpace(key.machine, key.session, id, new, renameIds.getOrPut(new) { UUID.randomUUID().toString() })
+            model.refreshAgents()
+            model.replaceTop(Route.Space(key.copy(space = listed)))
+        }
+    }
+    if (starting && space != null && id != null) {
+        StartSheet(model, voice, space.project, StartInto(id, space.title, key.machine)) {
+            starting = false
+            model.refreshAgentsSoon()
         }
     }
 }

@@ -73,7 +73,7 @@ fun PairedRoot(model: AppModel, voice: Voice) {
             is Route.SessionPage -> AgentScreen(model, voice, listen, ConversationSource.Session(route.id))
             is Route.AgentPage -> AgentScreen(model, voice, listen, ConversationSource.Agent(route.machine, route.name))
             is Route.Decision -> DecisionScreen(model, route)
-            is Route.Space -> SpaceScreen(model, route.key)
+            is Route.Space -> SpaceScreen(model, voice, route.key)
             is Route.MachinePage -> MachineSpacesScreen(model, route.machine)
             is Route.Diff -> DiffScreen(model, voice, route)
             Route.ShipSettings -> ShipSettingsScreen(model)
