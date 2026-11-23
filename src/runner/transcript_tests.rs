@@ -679,3 +679,82 @@ fn a_message_from_another_terminal_shows_who_sent_it() {
         "it isn't the agent's own line"
     );
 }
+
+fn queue_op(op: &str, content: Option<&str>) -> String {
+    let mut v =
+        json!({"type": "queue-operation", "operation": op, "timestamp": "2026-11-22T19:20:00Z"});
+    if let Some(c) = content {
+        v["content"] = json!(c);
+    }
+    line(v)
+}
+
+fn waiting(path: &Path) -> Vec<(String, Option<String>)> {
+    let end = std::fs::metadata(path).unwrap().len();
+    let mut q = Vec::new();
+    play_queue(path, 0, end, &mut q).unwrap();
+    queued_items(&q)
+        .into_iter()
+        .map(|i| (i.kind, i.text))
+        .collect()
+}
+
+#[test]
+fn the_queue_is_what_claude_has_yet_to_take_in() {
+    let s = |k: &str, t: &str| (k.to_owned(), Some(t.to_owned()));
+    let note = "<task-notification><task-id>a1</task-id></task-notification>";
+    let (_d, path) = log(&[
+        queue_op("enqueue", Some("first")),
+        queue_op("enqueue", Some(note)),
+        queue_op("enqueue", Some("<hc from=\"t9\">from a peer</hc>")),
+        queue_op("enqueue", Some("! git status")),
+    ]
+    .concat());
+    assert_eq!(
+        waiting(&path),
+        [
+            s("user", "first"),
+            s("peer", "from a peer"),
+            s("user", "! git status")
+        ],
+        "Claude's own notifications wait unseen"
+    );
+    let mut text = std::fs::read_to_string(&path).unwrap();
+    for op in [
+        queue_op("dequeue", None),
+        queue_op("remove", Some("! git status")),
+        queue_op("remove", None),
+    ] {
+        text.push_str(&op);
+    }
+    std::fs::write(&path, &text).unwrap();
+    assert_eq!(
+        waiting(&path),
+        [s("peer", "from a peer")],
+        "taken at the turn's end, absorbed mid-turn, and taken without saying which"
+    );
+    text.push_str(&queue_op("enqueue", Some("second")));
+    text.push_str(&queue_op("popAll", None));
+    std::fs::write(&path, &text).unwrap();
+    assert!(waiting(&path).is_empty(), "pulled back to edit");
+}
+
+#[test]
+fn a_queue_further_back_than_a_window_starts_again() {
+    let pad = line(json!({"type": "progress", "pad": "x".repeat(WINDOW as usize)}));
+    let (_d, path) = log(&[
+        queue_op("enqueue", Some("old")),
+        pad,
+        queue_op("enqueue", Some("new")),
+    ]
+    .concat());
+    let end = std::fs::metadata(&path).unwrap().len();
+    let mut q = Vec::new();
+    play_queue(&path, 0, end, &mut q).unwrap();
+    let texts: Vec<_> = queued_items(&q)
+        .into_iter()
+        .filter_map(|i| i.text)
+        .collect();
+    assert_eq!(texts, ["new"]);
+    assert!(queued_items(&q)[0].id.starts_with("queued:"));
+}

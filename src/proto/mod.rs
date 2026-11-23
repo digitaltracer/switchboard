@@ -289,6 +289,10 @@ pub struct TranscriptPage {
     pub items: Vec<TranscriptItem>,
     pub start: u64,
     pub end: u64,
+    /// Messages waiting in the agent's queue as of `end`, oldest first, on pages that reach the
+    /// log's end. Older runners leave it out.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub queued: Vec<TranscriptItem>,
 }
 
 /// One entry of a conversation. Items with the same id replace each other: a tool call shows

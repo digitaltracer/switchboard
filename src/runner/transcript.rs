@@ -231,6 +231,94 @@ pub fn pending_call(path: &Path) -> Option<String> {
     (!last.done).then(|| last.id.clone())
 }
 
+/// A message waiting in Claude's queue: where the line that queued it starts, and what it says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Waiting {
+    offset: u64,
+    content: Option<String>,
+    at: Option<String>,
+}
+
+/// Plays the queue lines of `path` from `from`, a line start, to `to`, a page's end, onto
+/// `queue`, as Claude's own queue went: queued last, taken first, or pulled back. Further back
+/// than a window starts again from an empty queue, which can only leave some out. The bytes read.
+pub fn play_queue(path: &Path, from: u64, to: u64, queue: &mut Vec<Waiting>) -> io::Result<u64> {
+    let mut file = File::open(path)?;
+    let from = match to.checked_sub(from) {
+        Some(n) if n <= WINDOW => from,
+        _ => {
+            queue.clear();
+            line_start(&mut file, to.saturating_sub(WINDOW))?
+        }
+    };
+    let buf = read_range(&mut file, from, to)?;
+    let mut offset = from;
+    for line in buf.split(|&b| b == b'\n') {
+        let at = offset;
+        offset += line.len() as u64 + 1;
+        let Ok(line) = std::str::from_utf8(line) else {
+            continue;
+        };
+        if !line.contains("\"type\":\"queue-operation\"") {
+            continue;
+        }
+        let Ok(d) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let s = |k: &str| d.get(k).and_then(Value::as_str);
+        let oldest = |q: &mut Vec<Waiting>| {
+            if !q.is_empty() {
+                q.remove(0);
+            }
+        };
+        match s("operation") {
+            Some("enqueue") => queue.push(Waiting {
+                offset: at,
+                content: s("content").map(str::to_owned),
+                at: s("timestamp").map(str::to_owned),
+            }),
+            Some("dequeue") => oldest(queue),
+            Some("remove") => match s("content") {
+                Some(c) => {
+                    if let Some(i) = queue.iter().position(|w| w.content.as_deref() == Some(c)) {
+                        queue.remove(i);
+                    }
+                }
+                None => oldest(queue),
+            },
+            Some("popAll") => queue.clear(),
+            _ => {}
+        }
+    }
+    Ok(buf.len() as u64)
+}
+
+/// The waiting messages a conversation shows: the person's own and other terminals', not
+/// Claude's task notifications.
+pub fn queued_items(queue: &[Waiting]) -> Vec<TranscriptItem> {
+    queue
+        .iter()
+        .filter_map(|w| {
+            let m = said(w.content.as_deref()?)?;
+            Some(TranscriptItem {
+                id: format!("queued:{}", w.offset),
+                kind: m.kind.into(),
+                text: Some(clip(&m.text, MAX_TEXT)),
+                tool: None,
+                input: None,
+                output: None,
+                done: false,
+                failed: false,
+                at: w.at.clone(),
+                added: None,
+                removed: None,
+                ends_turn: false,
+                from: m.from,
+            })
+        })
+        .collect()
+}
+
 /// A log's last line and when it was written.
 pub type LastLine = (String, Option<String>);
 
@@ -297,6 +385,7 @@ fn page(start: u64, end: u64, body: &[u8]) -> TranscriptPage {
         items: items.into_iter().map(|(_, i)| i).collect(),
         start,
         end,
+        queued: Vec::new(),
     }
 }
 

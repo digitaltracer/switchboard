@@ -357,3 +357,37 @@ fn the_process_record_wins_over_a_stale_reported_session() {
     };
     assert_eq!(c.search(stale, vec![PID]).map(|f| f.log), Some(mine));
 }
+
+#[test]
+fn a_queue_plays_only_what_the_log_added_since() {
+    let d = dirs();
+    let c = d.cache();
+    let log = d.claude.join("q.jsonl");
+    let op = |op: &str, content: &str| {
+        format!(
+            "{}\n",
+            json!({"type": "queue-operation", "operation": op, "content": content})
+        )
+    };
+    std::fs::write(&log, op("enqueue", "also run clippy")).unwrap();
+    let end = std::fs::metadata(&log).unwrap().len();
+    let texts =
+        |items: Vec<TranscriptItem>| items.into_iter().filter_map(|i| i.text).collect::<Vec<_>>();
+    assert_eq!(texts(c.queued(&log, end)), ["also run clippy"]);
+    let read = c.bytes_read();
+    let more = op("remove", "also run clippy");
+    let mut f = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
+    std::io::Write::write_all(&mut f, more.as_bytes()).unwrap();
+    let end2 = std::fs::metadata(&log).unwrap().len();
+    assert!(c.queued(&log, end2).is_empty());
+    assert_eq!(
+        c.bytes_read() - read,
+        more.len() as u64,
+        "only the new line"
+    );
+    assert_eq!(
+        texts(c.queued(&log, end)),
+        ["also run clippy"],
+        "an older end plays again"
+    );
+}

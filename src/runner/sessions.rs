@@ -703,13 +703,18 @@ impl Sessions {
                 .await
             }
         };
+        let logs = self.logs.clone();
         let mut page = tokio::task::spawn_blocking(move || {
-            transcript::read_page(&path, after, before).map_err(|e| {
+            let mut page = transcript::read_page(&path, after, before).map_err(|e| {
                 err(
                     ErrorCode::Internal,
                     format!("reading the conversation: {e}"),
                 )
-            })
+            })?;
+            if before.is_none() {
+                page.queued = logs.queued(&path, page.end);
+            }
+            Ok::<_, ProtoError>(page)
         })
         .await
         .map_err(|e| err(ErrorCode::Internal, e.to_string()))??;
@@ -722,7 +727,12 @@ impl Sessions {
         let Some(core) = self.core() else {
             return;
         };
-        for from in page.items.iter_mut().filter_map(|i| i.from.as_mut()) {
+        for from in page
+            .items
+            .iter_mut()
+            .chain(&mut page.queued)
+            .filter_map(|i| i.from.as_mut())
+        {
             if let Some(n) = core.sender(from) {
                 *from = n;
             }

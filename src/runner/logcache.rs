@@ -11,6 +11,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use super::logwatch::{self, Found, Switch};
 use super::transcript::{self, LastLine};
+use crate::proto::TranscriptItem;
 
 /// How long an entry is trusted before a full search checks it again.
 pub const REVALIDATE: Duration = Duration::from_secs(60);
@@ -93,6 +94,8 @@ pub struct LogCache {
     headers: transcript::CodexHeaders,
     /// Each log's last line, by the log's stamp when it was read.
     lines: Mutex<HashMap<PathBuf, (Stamp, Option<LastLine>)>>,
+    /// Each log's queue as of an offset, so the next page plays only what came after it.
+    queues: Mutex<HashMap<PathBuf, Queue>>,
     searches: AtomicU64,
     parses: AtomicU64,
     bytes: AtomicU64,
@@ -115,6 +118,7 @@ impl LogCache {
             entries: Mutex::default(),
             headers: Default::default(),
             lines: Mutex::default(),
+            queues: Mutex::default(),
             searches: AtomicU64::new(0),
             parses: AtomicU64::new(0),
             bytes: AtomicU64::new(0),
@@ -330,10 +334,39 @@ impl LogCache {
         line
     }
 
-    /// Forgets the last lines of logs not in `logs`.
+    /// The messages waiting in `log`'s queue as of `end`, a page's end.
+    pub fn queued(&self, log: &Path, end: u64) -> Vec<TranscriptItem> {
+        let ino = std::fs::metadata(log).ok().map(|m| m.ino());
+        let mut q = match self.queues.lock().unwrap().get(log) {
+            Some(q) if Some(q.ino) == ino && q.end <= end => q.clone(),
+            _ => Queue {
+                ino: ino.unwrap_or_default(),
+                end: 0,
+                waiting: Vec::new(),
+            },
+        };
+        match transcript::play_queue(log, q.end, end, &mut q.waiting) {
+            Ok(read) => self.bytes.fetch_add(read, Ordering::Relaxed),
+            Err(_) => return Vec::new(),
+        };
+        q.end = end;
+        let items = transcript::queued_items(&q.waiting);
+        self.queues.lock().unwrap().insert(log.to_owned(), q);
+        items
+    }
+
+    /// Forgets the last lines and queues of logs not in `logs`.
     pub fn keep_lines(&self, logs: &HashSet<PathBuf>) {
         self.lines.lock().unwrap().retain(|p, _| logs.contains(p));
+        self.queues.lock().unwrap().retain(|p, _| logs.contains(p));
     }
+}
+
+#[derive(Debug, Clone)]
+struct Queue {
+    ino: u64,
+    end: u64,
+    waiting: Vec<transcript::Waiting>,
 }
 
 fn modified(path: &Path) -> Option<SystemTime> {
