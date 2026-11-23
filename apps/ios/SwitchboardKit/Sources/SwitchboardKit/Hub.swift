@@ -322,14 +322,40 @@ public final class Hub: Sendable {
         try await Self.unwrap { try await client.getDiff(path: .init(id: id), query: .init(path: path, from: Int32(from))).ok.body.json }
     }
 
-    /// `backend` is `hc` or `herdr`; nil leaves it to the machine's runner.
+    /// `backend` is `hc` or `herdr`; nil leaves it to the machine's runner. `spaceId` is a Herdr
+    /// app space for its tab to open in, instead of a new space.
     public func start(project: String, prompt: String, machine: String?, agent: String?, notify: Bool, requestId: String,
-                      backend: String? = nil) async throws -> Schemas.StartResponse {
+                      backend: String? = nil, spaceId: String? = nil) async throws -> Schemas.StartResponse {
         try await Self.unwrap {
             try await client.startSession(body: .json(.init(
                 projectId: project, prompt: prompt, machineId: machine, agent: agent, notify: notify, requestId: requestId,
-                backend: backend
+                backend: backend, spaceId: spaceId
             ))).ok.body.json
+        }
+    }
+
+    // Renames. Each answers with the name as it is now listed.
+
+    public func renameSession(_ id: String, name: String) async throws -> String {
+        try await Self.unwrap {
+            try await client.renameSession(path: .init(id: id), body: .json(.init(name: name))).ok.body.json.name
+        }
+    }
+
+    /// An agent Switchboard didn't start, by its name as listed.
+    public func renameAgent(machine: String, agent: String, name: String, requestId: String) async throws -> String {
+        try await Self.unwrap {
+            try await client.renameAgent(body: .json(.init(machineId: machine, agent: agent, name: name, requestId: requestId)))
+                .ok.body.json.name
+        }
+    }
+
+    /// A Herdr app space or a Herdr workspace, by the id its agents list.
+    public func renameSpace(machine: String, herdrSession: String?, spaceId: String, name: String, requestId: String) async throws -> String {
+        try await Self.unwrap {
+            try await client.renameSpace(body: .json(.init(
+                machineId: machine, herdrSession: herdrSession, spaceId: spaceId, name: name, requestId: requestId
+            ))).ok.body.json.name
         }
     }
 
