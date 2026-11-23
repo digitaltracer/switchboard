@@ -260,7 +260,7 @@ pub fn last_line(path: &Path) -> io::Result<(Option<LastLine>, u64)> {
         .items
         .into_iter()
         .rev()
-        .find(|i| i.kind != "user" && i.text.is_some());
+        .find(|i| !matches!(i.kind.as_str(), "user" | "peer") && i.text.is_some());
     let line = last.and_then(|i| {
         let text = crate::redact::redact_str(i.text.as_deref()?);
         let line = text.lines().find(|l| !l.trim().is_empty())?;
@@ -368,6 +368,7 @@ fn parse<'a>(lines: impl IntoIterator<Item = (u64, &'a str)>) -> Vec<(u64, Trans
             added: None,
             removed: None,
             ends_turn: false,
+            from: None,
         };
         let queued = queued_prompt(&d);
         let content = queued.or_else(|| d.pointer("/message/content"));
@@ -409,8 +410,14 @@ fn parse<'a>(lines: impl IntoIterator<Item = (u64, &'a str)>) -> Vec<(u64, Trans
                     match b.get("type").and_then(Value::as_str) {
                         Some("text") => {
                             let text = b.get("text").and_then(Value::as_str).unwrap_or_default();
-                            if let Some((kind, text)) = said(text) {
-                                out.push((offset, item(id, kind, clip(&text, MAX_TEXT))));
+                            if let Some(m) = said(text) {
+                                out.push((
+                                    offset,
+                                    TranscriptItem {
+                                        from: m.from,
+                                        ..item(id, m.kind, clip(&m.text, MAX_TEXT))
+                                    },
+                                ));
                             }
                         }
                         Some("image") => {
@@ -554,6 +561,7 @@ fn codex(
         added: None,
         removed: None,
         ends_turn: false,
+        from: None,
     };
     match s("type") {
         Some("message") => {
@@ -564,15 +572,18 @@ fn codex(
                 let text = b.get("text").and_then(Value::as_str).unwrap_or_default();
                 let shown = match s("role") {
                     Some("user") if !text.trim_start().starts_with("# AGENTS.md") => said(text),
-                    Some("assistant") if !text.trim().is_empty() => {
-                        Some(("assistant", text.trim().to_owned()))
-                    }
+                    Some("assistant") if !text.trim().is_empty() => Some(Said {
+                        kind: "assistant",
+                        text: text.trim().to_owned(),
+                        from: None,
+                    }),
                     _ => None,
                 };
-                if let Some((kind, text)) = shown {
+                if let Some(m) = shown {
                     let item = TranscriptItem {
-                        ends_turn: kind == "assistant" && s("phase") == Some("final_answer"),
-                        ..new(format!("{id}:{i}"), kind, Some(clip(&text, MAX_TEXT)))
+                        ends_turn: m.kind == "assistant" && s("phase") == Some("final_answer"),
+                        from: m.from,
+                        ..new(format!("{id}:{i}"), m.kind, Some(clip(&m.text, MAX_TEXT)))
                     };
                     out.push((offset, item));
                 }
@@ -677,16 +688,39 @@ fn codex_output(o: Option<&Value>) -> String {
     }
 }
 
+/// A message as a user line shows it.
+struct Said {
+    kind: &'static str,
+    text: String,
+    /// The terminal that sent a `peer` message.
+    from: Option<String>,
+}
+
 /// What a user line shows: a prompt, a `!` command or a slash command, all the person's own
-/// messages. Other tagged lines (command output, reminders, notifications) are Claude's own and
-/// shown nowhere.
-fn said(text: &str) -> Option<(&'static str, String)> {
+/// messages, or a message another terminal sent with `hc`. Other tagged lines (command output,
+/// reminders, notifications) are Claude's own and shown nowhere.
+fn said(text: &str) -> Option<Said> {
     let text = text.trim();
+    let user = |text: String| {
+        Some(Said {
+            kind: "user",
+            text,
+            from: None,
+        })
+    };
     if text.is_empty() {
         return None;
     }
     if !text.starts_with('<') {
-        return Some(("user", text.to_owned()));
+        return user(text.to_owned());
+    }
+    if let Some(m) = PEER.captures(text) {
+        let body = m["body"].trim();
+        return (!body.is_empty()).then(|| Said {
+            kind: "peer",
+            text: body.to_owned(),
+            from: Some(m["from"].to_owned()),
+        });
     }
     let tag = |name: &str| {
         let open = format!("<{name}>");
@@ -694,12 +728,17 @@ fn said(text: &str) -> Option<(&'static str, String)> {
         Some(rest[..rest.find(&format!("</{name}>"))?].trim().to_owned())
     };
     if let Some(cmd) = tag("bash-input") {
-        return Some(("user", format!("! {cmd}")));
+        return user(format!("! {cmd}"));
     }
     let name = tag("command-name")?;
     let args = tag("command-args").unwrap_or_default();
-    Some(("user", format!("{name} {args}").trim().to_owned()))
+    user(format!("{name} {args}").trim().to_owned())
 }
+
+/// A message `hc send` delivered, `<hc from="t6t">…</hc>`, as the whole line.
+static PEER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?s)\A<hc\s+from="(?P<from>[^"]+)"[^>]*>(?P<body>.*)</hc>\z"#).unwrap()
+});
 
 fn result_text(content: Option<&Value>) -> String {
     match content {

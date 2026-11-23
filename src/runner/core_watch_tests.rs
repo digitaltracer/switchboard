@@ -596,3 +596,33 @@ async fn a_silent_stream_is_followed_again_though_the_core_answers() {
     assert!(fake.hellos() > 10, "the core kept answering");
     task.abort();
 }
+
+#[test]
+fn a_message_is_signed_with_its_terminals_agent_else_its_name() {
+    let core = Core::new("/nonexistent");
+    core.up("core-a");
+    core.install(
+        1,
+        vec![
+            term(json!({ "address": "t1", "name": "planner", "reported": true,
+                         "status": { "state": "idle", "app": "claude-code" } })),
+            term(json!({ "address": "t2", "name": "notes", "argv": ["/bin/zsh"],
+                         "foreground": { "pid": 9, "name": "-zsh", "argv": ["zsh"], "cwd": "/" } })),
+            term(json!({ "address": "t3", "argv": ["/bin/zsh"],
+                         "foreground": { "pid": 9, "name": "-zsh", "argv": ["zsh"], "cwd": "/" } })),
+        ],
+    );
+    assert_eq!(core.sender("t1").as_deref(), Some("planner"));
+    assert_eq!(
+        core.sender("t2").as_deref(),
+        Some("notes"),
+        "a shell by its name"
+    );
+    assert_eq!(core.sender("t3"), None, "nothing to call it");
+    assert_eq!(core.sender("t9"), None);
+    assert_eq!(
+        core.sender("vps/t1"),
+        None,
+        "another machine's is never looked up"
+    );
+}

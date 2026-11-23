@@ -640,3 +640,42 @@ fn the_last_line_reads_only_the_end_of_a_big_log() {
     assert_eq!(line.unwrap().0, "Latest");
     assert!(read <= TAIL + 1, "{read}");
 }
+
+#[test]
+fn a_message_from_another_terminal_shows_who_sent_it() {
+    let text = [
+        user(
+            "h1",
+            json!("<hc from=\"t6t\">Change of order: check first.</hc>"),
+        ),
+        queued(
+            "h2",
+            "prompt",
+            json!({"kind": "human"}),
+            json!("<hc from=\"t9\">\nreview done\n</hc>"),
+        ),
+        user("h3", json!("<hc from=\"t6t\"></hc>")),
+        user("h4", json!("<hc from=\"t6t\">half <hc")),
+    ]
+    .concat();
+    let (_d, path) = log(&text);
+    let page = read_page(&path, None, None).unwrap();
+    let got: Vec<_> = page
+        .items
+        .iter()
+        .map(|i| (i.kind.as_str(), i.text.as_deref(), i.from.as_deref()))
+        .collect();
+    assert_eq!(
+        got,
+        [
+            ("peer", Some("Change of order: check first."), Some("t6t")),
+            ("peer", Some("review done"), Some("t9")),
+        ],
+        "an empty or unclosed one shows nothing"
+    );
+    assert_eq!(
+        last_line(&path).unwrap().0,
+        None,
+        "it isn't the agent's own line"
+    );
+}

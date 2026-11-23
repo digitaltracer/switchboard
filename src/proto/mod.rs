@@ -296,7 +296,7 @@ pub struct TranscriptPage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TranscriptItem {
     pub id: String,
-    /// `user`, `assistant`, `tool` or `note`.
+    /// `user`, `assistant`, `tool`, `note`, or `peer` for a message from another terminal.
     pub kind: String,
     /// What was said; for a tool, a one-line summary. None on a result whose call came earlier.
     #[serde(default)]
@@ -323,6 +323,9 @@ pub struct TranscriptItem {
     /// A reply the agent ended its turn with, as its log says; work after it was started by something else.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub ends_turn: bool,
+    /// Who sent a `peer` message: the sending terminal's agent name, else its id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
 }
 
 /// A dialog on an agent's screen as the runner recognised it. Masked; the ids are opaque.
