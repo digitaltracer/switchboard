@@ -2,7 +2,7 @@ import SwiftUI
 import SwitchboardKit
 
 /// The Inbox card "While you were away": each agent that did something since the phone last had
-/// the app open, needs-you first, until "Mark as seen". An opt-in summary replaces the rows.
+/// the app open, needs-you first, until "Mark all read". An opt-in summary replaces the rows.
 struct AwayCard: View {
     @Environment(AppModel.self) private var model
     let activity: Schemas.Activity
@@ -14,7 +14,9 @@ struct AwayCard: View {
             HStack(alignment: .firstTextBaseline) {
                 Text("While you were away").font(Face.geist(17, .semibold)).foregroundStyle(Ink.ink)
                 Spacer()
-                Text(span).font(Face.meta).foregroundStyle(Ink.mut)
+                Button("Mark all read") { withAnimation(.snappy) { model.markAwaySeen() } }
+                    .font(Face.geist(14, .medium)).foregroundStyle(Ink.ac)
+                    .accessibilityIdentifier("markAwaySeen")
             }
             .padding(16)
             if let summary = model.awaySummary {
@@ -28,15 +30,10 @@ struct AwayCard: View {
                 }
             }
             Hairline()
-            HStack {
-                Text(model.awaySummary == nil ? "Since you last opened the app" : "Summarised by Claude, from the hub's facts")
-                    .font(Face.meta).foregroundStyle(Ink.mut)
-                Spacer()
-                Button("Mark as seen") { withAnimation(.snappy) { model.markAwaySeen() } }
-                    .font(Face.geist(14, .medium)).foregroundStyle(Ink.ac)
-                    .accessibilityIdentifier("markAwaySeen")
-            }
-            .padding(16)
+            Text("\(model.awaySummary == nil ? "Since you last opened the app" : "Summarised by Claude, from the hub's facts") · \(span)")
+                .font(Face.meta).foregroundStyle(Ink.mut)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(16)
         }
         .background(Ink.sf, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay { RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(Ink.line) }

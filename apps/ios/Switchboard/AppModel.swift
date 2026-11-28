@@ -50,7 +50,7 @@ final class AppModel {
     private(set) var agents: [Schemas.AgentView] = []
     /// Those that ended in the last day.
     private(set) var ended: [Schemas.EndedAgent] = []
-    /// What agents did while this phone was away, until "Mark as seen".
+    /// What agents did while this phone was away, until "Mark all read".
     private(set) var away: Schemas.Activity?
     /// The opt-in summary of `away`; on failure the facts stay.
     private(set) var awaySummary: String?
