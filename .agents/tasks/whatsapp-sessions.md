@@ -59,3 +59,7 @@ Locally, the hub and one runner run on the Mac, and the bridge runs inside the h
   - One-line comments at most.
   - Don't commit until the user asks.
 - Stop and report if this conflicts with the main plan. Update the plan and `whatsapp-bridge.md` where the design changes.
+
+## As built, 2026-11-28: what reports on WhatsApp
+
+Owner's call: WhatsApp no longer hears from every Switchboard session. A session reports there (finished, waiting at a dialog, approvals) when it was started from WhatsApp, read from the audit log's `session_start` by the `whatsapp` actor, so older ones count too. Anything messaged from WhatsApp is followed there until muted, and `watch <x>` takes a session's name as well as an agent's. Everything else stays with the phone app. A muted one stays muted when messaged; the reply says so.
