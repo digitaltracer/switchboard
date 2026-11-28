@@ -567,9 +567,11 @@ async fn use_reaches_sessions_and_agents_switchboard_didnt_create() {
         "2"
     };
     w.say(pick_b).await;
+    // The first message from here follows it here.
+    let lb = label("demo", &b);
     assert_eq!(
         w.heard(&mut seen).await,
-        format!("Sent to {}.", label("demo", &b))
+        format!("Sent to {lb}. You'll get its updates here; send mute {lb} to stop.")
     );
     w.say("use this session: and add a test").await;
     assert_eq!(
@@ -597,7 +599,10 @@ async fn use_reaches_sessions_and_agents_switchboard_didnt_create() {
     assert_eq!(w.herdr.prompts(&agent_a), ["first"]);
 
     w.say(&format!("use {FOREIGN}: how is it going?")).await;
-    assert_eq!(w.heard(&mut seen).await, format!("Sent to {FOREIGN}."));
+    assert_eq!(
+        w.heard(&mut seen).await,
+        format!("Sent to {FOREIGN}. You'll get its updates here; send mute {FOREIGN} to stop.")
+    );
     assert_eq!(w.herdr.prompts(FOREIGN), ["how is it going?"]);
 
     // Blocked at a dialog: nothing is sent, and the bridge says to answer it in the tab.
@@ -621,6 +626,18 @@ async fn approvals_arrive_by_number_and_are_decided_from_chat() {
     let mut w = World::new().await;
     let id = w.start("demo", "deploy").await;
     let mut seen = 0;
+    // Started outside WhatsApp, so its approvals come here once it's followed.
+    let agent = w
+        .svc()
+        .get(&id, None, Duration::ZERO)
+        .await
+        .unwrap()
+        .agent_name
+        .unwrap();
+    w.svc()
+        .set_agent_watched(&Caller::whatsapp(), &agent, true)
+        .await
+        .unwrap();
 
     let first = w.ask_permission(
         &id,

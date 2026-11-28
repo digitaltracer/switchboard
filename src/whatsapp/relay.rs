@@ -487,28 +487,37 @@ impl Relay {
 
     async fn send(&mut self, target: &Target, text: &str, rid: &str) -> String {
         match target {
-            Target::Session { id, label, .. } => {
-                match self.svc.prompt(&self.caller, id, text, Some(rid)).await {
-                    Ok(_) => format!("Sent to {label}."),
-                    Err(HubError::Runner(e)) if e.code == ErrorCode::AgentBlocked => {
-                        self.blocked_session(id, label).await
-                    }
-                    Err(e @ (HubError::NotRunning { .. } | HubError::UnknownSession(_))) => {
-                        self.current = None;
-                        format!(
-                            "{label} isn't running any more ({e}). Name a project to start a new session."
-                        )
-                    }
-                    Err(e) => format!("Couldn't send to {label}: {e}"),
+            Target::Session {
+                id, label, agent, ..
+            } => match self.svc.prompt(&self.caller, id, text, Some(rid)).await {
+                Ok(_) => {
+                    let note = match agent {
+                        Some(a) => self.keep_watching(a, label).await,
+                        None => String::new(),
+                    };
+                    format!("Sent to {label}.{note}")
                 }
-            }
+                Err(HubError::Runner(e)) if e.code == ErrorCode::AgentBlocked => {
+                    self.blocked_session(id, label).await
+                }
+                Err(e @ (HubError::NotRunning { .. } | HubError::UnknownSession(_))) => {
+                    self.current = None;
+                    format!(
+                        "{label} isn't running any more ({e}). Name a project to start a new session."
+                    )
+                }
+                Err(e) => format!("Couldn't send to {label}: {e}"),
+            },
             Target::Agent { machine, name } => {
                 match self
                     .svc
                     .prompt_agent(&self.caller, machine, name, text)
                     .await
                 {
-                    Ok(AgentPromptOutcome::Sent) => format!("Sent to {name}."),
+                    Ok(AgentPromptOutcome::Sent) => {
+                        let note = self.keep_watching(name, name).await;
+                        format!("Sent to {name}.{note}")
+                    }
                     Ok(AgentPromptOutcome::Blocked { screen }) => fit_one(&format!(
                         "{name} is waiting at a dialog, so I didn't send that. {FOREIGN_DIALOG}\n\n{}",
                         tail(&redact_str(&screen), EXCERPT_LINES)
@@ -519,6 +528,42 @@ impl Relay {
                     }
                     Err(e) => format!("Couldn't send to {name}: {e}"),
                 }
+            }
+        }
+    }
+
+    /// Messaging something from WhatsApp follows it there until it's muted; says so the first time.
+    async fn keep_watching(&self, agent: &str, label: &str) -> String {
+        // One without a name goes by its pane, which another agent may take later.
+        if agent.contains(':') {
+            return String::new();
+        }
+        let state = match self.svc.notify_state().await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(error = %e, "reading watch state");
+                return String::new();
+            }
+        };
+        let muted = if state.mute_all {
+            " Everything is muted, so you won't hear back here until you send unmute all."
+                .to_owned()
+        } else if state.muted.contains(agent) {
+            format!(" It's muted, so you won't hear back here until you send unmute {label}.")
+        } else {
+            String::new()
+        };
+        if state.is_watched(agent) {
+            return muted;
+        }
+        match self.svc.set_agent_watched(&self.caller, agent, true).await {
+            Ok(_) if muted.is_empty() => {
+                format!(" You'll get its updates here; send mute {label} to stop.")
+            }
+            Ok(_) => muted,
+            Err(e) => {
+                tracing::warn!(error = %e, "following an agent");
+                String::new()
             }
         }
     }
@@ -774,14 +819,20 @@ impl Relay {
                 }));
             }
         }
-        for name in state.watched.iter().filter(|n| !seen.contains(n)) {
+        // A session that ended stays watched, but isn't worth a line.
+        for name in state
+            .watched
+            .iter()
+            .filter(|n| !seen.contains(n) && !n.starts_with(SWITCHBOARD_PREFIX))
+        {
             lines.push(format!("{name}: not running · {}", state.describe(name)));
         }
         if lines.len() == usize::from(state.mute_all) {
-            lines.push(format!(
-                "No watched sessions or agents are running. Switchboard's sessions ({SWITCHBOARD_PREFIX}...) \
-                 are watched automatically; send watch <agent> to add another."
-            ));
+            lines.push(
+                "No watched sessions or agents are running. Sessions started here, and anything you \
+                 message from here, are watched; send watch <x> to add another."
+                    .into(),
+            );
         }
         lines.join("\n")
     }
@@ -877,15 +928,16 @@ impl Relay {
         }
     }
 
-    async fn opt_in(&mut self, name: &str) -> String {
-        if check_agent_name(name).is_err() {
-            return format!(
-                "Only named agents can be watched. Name it first: herdr agent rename {name} <name>."
-            );
-        }
-        if name.starts_with(SWITCHBOARD_PREFIX) {
-            return format!("{name} is a Switchboard agent, so it's watched already.");
-        }
+    async fn opt_in(&mut self, x: &str) -> String {
+        let name = match self.agent_for(x).await {
+            Ok(n) => n,
+            Err(_) => {
+                return format!(
+                    "Only a session or a named agent can be watched. Name it first: herdr agent rename {x} <name>."
+                );
+            }
+        };
+        let name = name.as_str();
         let running = self
             .live()
             .await
@@ -899,7 +951,13 @@ impl Relay {
         }
         match result {
             Ok(state) => {
-                let mut reply = format!("Watching {name}.");
+                // A session by the name the owner used, not its agent's `sb-` name.
+                let shown = if name.starts_with(SWITCHBOARD_PREFIX) {
+                    x
+                } else {
+                    name
+                };
+                let mut reply = format!("Watching {shown}.");
                 if !running {
                     reply.push_str(" It isn't running now; you'll hear from it once it is.");
                 }

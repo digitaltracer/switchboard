@@ -460,7 +460,7 @@ async fn use_picks_sessions_and_agents_and_asks_when_ambiguous() {
     // An agent Switchboard didn't create, reached through the runner.
     assert_eq!(
         reply(&mut r, "use switchboard-impl: status?").await,
-        "Sent to switchboard-impl."
+        "Sent to switchboard-impl. You'll get its updates here; send mute switchboard-impl to stop."
     );
     assert_eq!(
         rig.script.prompts.lock().unwrap().last().unwrap(),
@@ -680,6 +680,86 @@ async fn mutes_go_through_the_session_service() {
             .starts_with("Notifications are back on")
     );
     assert!(!rig.svc.notify_state().await.unwrap().mute_all);
+}
+
+#[tokio::test]
+async fn only_sessions_started_or_followed_here_report_here() {
+    let rig = Rig::new().await;
+    let mut r = rig.relay();
+    let elsewhere = |prompt: &str| StartRequest {
+        project_id: "hub".into(),
+        prompt: prompt.into(),
+        machine_id: None,
+        agent: None,
+        notify: true,
+        request_id: None,
+        backend: None,
+        space_id: None,
+    };
+    let phone = Caller::new("device:phone");
+    let id = rig
+        .svc
+        .start(&phone, elsewhere("one"))
+        .await
+        .unwrap()
+        .session_id;
+    let (agent, label) = (
+        crate::runner::sessions::agent_name(&id),
+        route::label("hub", &id, None),
+    );
+    assert!(
+        transition(&mut r, &agent, AgentStatus::Working, AgentStatus::Idle)
+            .await
+            .is_empty(),
+        "started elsewhere, so it stays off WhatsApp"
+    );
+
+    // Messaging it from here follows it, once.
+    assert_eq!(
+        reply(&mut r, &format!("use {label}: hi")).await,
+        format!("Sent to {label}. You'll get its updates here; send mute {label} to stop.")
+    );
+    assert_eq!(
+        reply(&mut r, "and again").await,
+        format!("Sent to {label}.")
+    );
+    let done = transition(&mut r, &agent, AgentStatus::Working, AgentStatus::Idle).await;
+    assert!(
+        done.len() == 1 && done[0].starts_with(&format!("{label} finished")),
+        "{done:?}"
+    );
+    let a = rig.ask(&id, "ap-1", "ls").await;
+    assert_eq!(r.approval(&id, &a).await.len(), 1, "and its approvals");
+
+    // Another one's approvals stay with the app until it's watched, by its session name.
+    let other = rig
+        .svc
+        .start(&phone, elsewhere("two"))
+        .await
+        .unwrap()
+        .session_id;
+    let (other_agent, other_label) = (
+        crate::runner::sessions::agent_name(&other),
+        route::label("hub", &other, None),
+    );
+    let b = rig.ask(&other, "ap-2", "ls").await;
+    assert!(r.approval(&other, &b).await.is_empty());
+    assert_eq!(
+        reply(&mut r, &format!("watch {other_label}")).await,
+        format!("Watching {other_label}.")
+    );
+    assert!(rig.svc.notify_state().await.unwrap().notifies(&other_agent));
+
+    // Muted, it stays quiet even when messaged.
+    reply(&mut r, &format!("mute {label}")).await;
+    // Its approval answered, so the next message goes through.
+    reply(&mut r, &format!("deny {}", a.number.unwrap())).await;
+    assert_eq!(
+        reply(&mut r, &format!("use {label}: still there?")).await,
+        format!(
+            "Sent to {label}. It's muted, so you won't hear back here until you send unmute {label}."
+        )
+    );
 }
 
 /// Drives one status transition through the debouncer and returns the notifications.

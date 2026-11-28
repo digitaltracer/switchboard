@@ -112,7 +112,7 @@ approve <n> / deny <n> - answer a permission request
 stop <x> - stop a session; its worktree and branch are kept
 mute <x> / mute all - stop notifications (mute all also covers sessions started later)
 unmute <x> / unmute all - resume them
-watch <agent> - get notifications from an agent Switchboard didn't start
+watch <x> - get a session's or agent's notifications here; sessions started here, and anything you message from here, are watched already
 help - this message
 
 When I ask with a numbered list, reply with the number. Agents Switchboard didn't start have no approvals here; answer their dialogs in the Herdr tab.";

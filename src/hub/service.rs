@@ -3255,7 +3255,8 @@ impl SessionService {
         })
     }
 
-    /// The bridge's view: opted-in agents, muted agent names and mute-all.
+    /// The bridge's view: agents followed on WhatsApp, muted agent names and mute-all. A
+    /// session started from WhatsApp is followed there.
     pub async fn notify_state(&self) -> Result<WatchState, HubError> {
         let settings = self.store.notify_settings().await?;
         let mut state = WatchState {
@@ -3270,8 +3271,16 @@ impl SessionService {
                 state.muted.insert(a.name);
             }
         }
+        let from_whatsapp = self
+            .store
+            .sessions_started_by(&Caller::whatsapp().actor)
+            .await?;
         for s in self.store.list_sessions().await? {
-            if let (true, Some(name)) = (s.muted, s.agent_name) {
+            let Some(name) = s.agent_name else { continue };
+            if from_whatsapp.contains(&s.id) {
+                state.watched.insert(name.clone());
+            }
+            if s.muted {
                 state.muted.insert(name);
             }
         }

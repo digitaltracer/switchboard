@@ -1211,6 +1211,23 @@ impl Store {
         .await
     }
 
+    /// The sessions `actor` started, as the audit log records them.
+    pub async fn sessions_started_by(
+        &self,
+        actor: &str,
+    ) -> Result<std::collections::HashSet<String>> {
+        let actor = actor.to_owned();
+        self.call(move |c| {
+            let mut stmt = c.prepare(
+                "SELECT DISTINCT session_id FROM audit
+                 WHERE kind = 'session_start' AND actor = ?1 AND session_id IS NOT NULL",
+            )?;
+            let rows = stmt.query_map(params![actor], |r| r.get::<_, String>(0))?;
+            Ok(rows.collect::<rusqlite::Result<_>>()?)
+        })
+        .await
+    }
+
     pub async fn list_audit(
         &self,
         session_id: Option<&str>,

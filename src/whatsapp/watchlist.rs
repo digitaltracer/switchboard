@@ -1,6 +1,6 @@
-//! Which agents notify: Switchboard's own `sb-` agents by default, others opted in with
-//! `watch`, minus mutes. The hub's store keeps these choices; the bridge's old file beside
-//! the WhatsApp store is imported once.
+//! Which agents notify on WhatsApp: sessions started there, and anything followed there by
+//! `watch` or by messaging it, minus mutes. The hub's store keeps these choices; the bridge's
+//! old file beside the WhatsApp store is imported once.
 
 use std::collections::BTreeSet;
 use std::io;
@@ -13,7 +13,7 @@ pub const SWITCHBOARD_PREFIX: &str = "sb-";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WatchState {
-    /// Agents outside Switchboard that were opted in.
+    /// Agents followed on WhatsApp, including the agents of sessions started there.
     #[serde(default)]
     pub watched: BTreeSet<String>,
     #[serde(default)]
@@ -25,7 +25,7 @@ pub struct WatchState {
 
 impl WatchState {
     pub fn is_watched(&self, agent: &str) -> bool {
-        agent.starts_with(SWITCHBOARD_PREFIX) || self.watched.contains(agent)
+        self.watched.contains(agent)
     }
 
     pub fn notifies(&self, agent: &str) -> bool {
@@ -42,8 +42,7 @@ impl WatchState {
             (false, _, _) => "not watched",
             (true, true, _) => "muted (all)",
             (true, false, true) => "muted",
-            (true, false, false) if agent.starts_with(SWITCHBOARD_PREFIX) => "watching",
-            (true, false, false) => "watching (opted in)",
+            (true, false, false) => "watching",
         }
     }
 }
@@ -73,12 +72,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn switchboard_agents_are_watched_by_default() {
+    fn only_followed_agents_notify() {
         let s = WatchState::default();
-        assert!(s.notifies("sb-3f9a"));
+        assert!(!s.notifies("sb-3f9a"), "a session started elsewhere");
         assert!(!s.notifies("switchboard-impl"));
-        assert_eq!(s.describe("sb-3f9a"), "watching");
-        assert_eq!(s.describe("switchboard-impl"), "not watched");
+        assert_eq!(s.describe("sb-3f9a"), "not watched");
     }
 
     #[test]
@@ -86,13 +84,14 @@ mod tests {
         let mut s = WatchState::default();
         s.watched.insert("switchboard-impl".into());
         assert!(s.notifies("switchboard-impl"));
-        assert_eq!(s.describe("switchboard-impl"), "watching (opted in)");
+        assert_eq!(s.describe("switchboard-impl"), "watching");
+        s.watched.insert("sb-1".into());
         s.muted.insert("sb-1".into());
         assert!(!s.notifies("sb-1"));
         assert_eq!(s.describe("sb-1"), "muted");
         s.mute_all = true;
         assert!(!s.notifies("sb-created-later") && !s.notifies("switchboard-impl"));
-        assert_eq!(s.describe("sb-created-later"), "muted (all)");
+        assert_eq!(s.describe("switchboard-impl"), "muted (all)");
         assert_eq!(s.describe("reviewer"), "not watched");
     }
 
