@@ -542,11 +542,16 @@ val AgentView.displayName: String
         return if (space.all { it in '0'..'9' }) agentLabel else "$space › $agentLabel"
     }
 
-/** Its Herdr name without the session; with none, its terminal title, then its kind, then its pane. */
+/**
+ * Its Herdr name without the session; with none, its terminal title, then its kind, then its pane.
+ * In the Herdr app, its own name, without the address added when another space shares it.
+ */
 val AgentView.agentLabel: String
     get() {
         val last = name.substringAfterLast('/')
+        val own = ownName?.trim().orEmpty()
         return when {
+            own.isNotEmpty() -> own
             isNamed -> last
             shownTitle != null -> shownTitle!!
             else -> kind?.replaceFirstChar { it.uppercase() } ?: last
