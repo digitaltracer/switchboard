@@ -122,7 +122,7 @@ class AppModel(context: Context, val keys: DeviceKeys) {
     var ended by mutableStateOf<List<EndedAgent>>(emptyList())
         private set
 
-    /** What agents did while this phone was away, until "Mark as seen". */
+    /** What agents did while this phone was away, until "Mark all read". */
     var away by mutableStateOf<com.digitaltracer.switchboard.api.models.Activity?>(null)
         private set
     /** The opt-in summary of [away]; on failure the facts stay. */
