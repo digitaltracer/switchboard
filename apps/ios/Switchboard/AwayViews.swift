@@ -76,12 +76,12 @@ struct AwayCard: View {
     }
 }
 
-/// An agent page's "Since you looked": the facts in order, then its last reply.
+/// An agent page's "Since you looked": the facts in order, and its last reply when the page doesn't show it.
 struct AwayTimeline: View {
     let agent: Schemas.AwayAgentView
     let since: Int64
     let now: Int64
-    /// The agent's own latest reply from its conversation, when the page has it.
+    /// The agent's last reply, quoted under its last turn; nil when the page shows it already.
     var reply: String?
 
     var body: some View {
@@ -96,7 +96,7 @@ struct AwayTimeline: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(f.text).font(Face.geist(15, f.kind == "finished" ? .medium : .regular))
                                 .foregroundStyle(f.kind == "finished" ? Ink.ok : f.kind == "error" ? Ink.bad : Ink.ink)
-                            if f.kind == "finished", i == rows.lastIndex(where: { $0.kind == "finished" }), let r = reply ?? agent.lastReply {
+                            if f.kind == "finished", i == rows.lastIndex(where: { $0.kind == "finished" }), let r = reply {
                                 Text((try? AttributedString(markdown: "\"\(r)\"")) ?? AttributedString("\"\(r)\""))
                                     .font(Face.geist(15)).foregroundStyle(Ink.sub)
                             }
@@ -111,7 +111,7 @@ struct AwayTimeline: View {
             .padding(.horizontal, 16)
             .background(Ink.sf, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             .overlay { RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Ink.line) }
-            Note(text: "Facts the hub recorded, plus the agent's own last reply. No summarising model.").padding(.top, 8)
+            Note(text: reply == nil ? "Facts the hub recorded. No summarising model." : "Facts the hub recorded, plus the agent's own last reply. No summarising model.").padding(.top, 8)
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("sinceYouLooked")

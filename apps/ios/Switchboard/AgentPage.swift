@@ -34,6 +34,7 @@ struct AgentPage: View {
     @State private var notice: String?
     @State private var lifecycle = false
     @State private var details = false
+    @State private var desk = false
     @State private var renaming = false
     /// One request id per name tried, so a retry after a lost answer is the same request.
     @State private var renameIds: [String: String] = [:]
@@ -215,8 +216,7 @@ struct AgentPage: View {
                         }
                     }
                     if let act = model.away, let mine = model.away(for: machine, agent: session?.agentName ?? agentRef?.name, session: sessionId) {
-                        AwayTimeline(agent: mine, since: act.since, now: act.now,
-                                     reply: Turns.latest(convo.conversation.items).reply?.text)
+                        AwayTimeline(agent: mine, since: act.since, now: act.now, reply: replyShown ? nil : mine.lastReply)
                     }
                     if let target, let said = model.said[AppModel.saidKey(for: target)] {
                         SaidBubble(said: said).padding(.top, 14)
@@ -297,6 +297,12 @@ struct AgentPage: View {
 
     private var currentStatus: String { session?.agentStatus ?? info?.agentStatus ?? "unknown" }
 
+    /// Whether "Latest reply" shows, or is about to show, the agent's own reply.
+    private var replyShown: Bool {
+        !convo.ended && convo.unavailable == nil
+            && (!convo.conversation.isLoaded || Turns.latest(convo.conversation.items).reply != nil)
+    }
+
     @ViewBuilder
     private var latestReply: some View {
         let latest = Turns.latest(convo.conversation.items)
@@ -311,7 +317,9 @@ struct AgentPage: View {
             } else if !convo.conversation.isLoaded {
                 ConversationSkeleton(rows: 1)
             } else if let reply = latest.reply?.text {
-                Clamped(height: 286) { MarkdownText(text: reply) }
+                Clamped(height: 168) { MarkdownText(text: reply) }
+                    .contentShape(Rectangle())
+                    .onTapGesture { tab = .conversation }
             } else {
                 Note(text: "Nothing said yet.", color: Ink.sub)
             }
@@ -363,8 +371,12 @@ struct AgentPage: View {
     @ViewBuilder
     private var atYourDesk: some View {
         let app = backend == "hc"
-        SectionHead("At your desk")
-        VStack(spacing: 0) {
+        SectionHead(title: "At your desk") {
+            Button(desk ? "Hide" : "Show") { withAnimation(.snappy) { desk.toggle() } }
+                .font(Face.geist(13, .medium)).foregroundStyle(Ink.ac)
+                .accessibilityIdentifier("deskToggle")
+        }
+        if desk { VStack(spacing: 0) {
             FieldRow(app ? "Where" : "Where", value: "\(app ? "Herdr app" : "Herdr terminal") on \(machine)", first: true)
             if app {
                 if let name = space?.key.space { FieldRow("Space", value: name) }
@@ -377,7 +389,7 @@ struct AgentPage: View {
             }
             if let me { NameRow(name: ownName, offer: me.rename) { renaming = true } }
             Hairline()
-        }
+        } }
     }
 
     // Screen.

@@ -244,6 +244,9 @@ final class SwitchboardUITests: XCTestCase {
 
         // One of its agents was named when it started: the phone says so and offers no rename.
         app.staticTexts["docs"].tap()
+        let desk = app.buttons["deskToggle"]
+        for _ in 0..<4 where !(desk.exists && desk.isHittable) { app.swipeUp() }
+        desk.tap()
         let fixed = app.staticTexts["renameBlocked"]
         for _ in 0..<4 where !fixed.exists { app.swipeUp() }
         XCTAssertTrue(fixed.waitForExistence(timeout: 5), app.debugDescription)
