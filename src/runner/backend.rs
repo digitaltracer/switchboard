@@ -28,6 +28,8 @@ pub struct Facts {
     /// The pane id, or the core terminal's address.
     pub target: String,
     pub name: Option<String>,
+    /// On core, its name before the address is added to tell it from another agent of the same name.
+    pub own_name: Option<String>,
     pub kind: Option<String>,
     pub status: AgentStatus,
     pub cwd: Option<String>,
@@ -145,6 +147,7 @@ pub fn herdr_facts(
         ready: a.interactive_ready && !a.launch_pending,
         target: a.pane_id,
         name: a.name,
+        own_name: None,
         kind: a.agent,
         status: a.agent_status,
         cwd: a.cwd,

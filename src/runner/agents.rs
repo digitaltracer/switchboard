@@ -37,6 +37,7 @@ pub fn summaries(facts: Vec<Facts>, sessions: &HashMap<String, String>) -> Vec<A
             AgentSummary {
                 space: a.space,
                 space_id: a.space_id,
+                own_name: a.own_name,
                 // A session is renamed in the hub; its agent's own name never changes.
                 can_rename: a.can_rename && session_id.is_none(),
                 session_id,

@@ -2210,24 +2210,36 @@ async fn a_herdr_app_agent_is_renamed_by_its_tab_and_only_when_it_owns_one() {
     named["name"] = json!("review");
     fake.add(named);
     let shell = fake.add(json!({ "argv": ["/bin/zsh"], "labels": { "herdr.tab": "tb5" } }));
+    let mut elsewhere = tabbed("tb6");
+    elsewhere["labels"]["herdr.space"] = json!("sp2");
+    let t6 = fake.add(elsewhere);
     fake.set_doc(doc_with(json!([
         { "id": "sp1", "name": "repo", "color": "blue", "tabs": [
             tab_of("tb1", Value::Null, &[&t1]), tab_of("tb2", json!("pair"), &[&t2, &t3]),
             tab_of("tb4", json!("x"), &["t4"]), tab_of("tb5", json!("sh"), &[&shell]) ] },
+        { "id": "sp2", "name": "other", "tabs": [tab_of("tb6", json!("orchestrator"), &[&t6])] },
     ])));
     let listed: Vec<crate::proto::AgentSummary> =
         serde_json::from_value(r.sessions.handle(Op::Agents).await.unwrap()).unwrap();
-    let can: Vec<(&str, bool, Option<&str>)> = listed
+    let can: Vec<(&str, bool, Option<&str>, Option<&str>)> = listed
         .iter()
-        .map(|a| (a.name.as_str(), a.can_rename, a.space_id.as_deref()))
+        .map(|a| {
+            (
+                a.name.as_str(),
+                a.can_rename,
+                a.space_id.as_deref(),
+                a.own_name.as_deref(),
+            )
+        })
         .collect();
     assert_eq!(
         can,
         [
-            ("hc/t1", true, Some("sp1")),
-            ("hc/pair-t2", false, Some("sp1")),
-            ("hc/pair-t3", false, Some("sp1")),
-            ("hc/review", false, Some("sp1")),
+            ("hc/t1", true, Some("sp1"), Some("t1")),
+            ("hc/pair-t2", false, Some("sp1"), Some("pair")),
+            ("hc/pair-t3", false, Some("sp1"), Some("pair")),
+            ("hc/review", false, Some("sp1"), Some("review")),
+            ("hc/orchestrator", true, Some("sp2"), Some("orchestrator")),
         ]
     );
 
@@ -2264,9 +2276,11 @@ async fn a_herdr_app_agent_is_renamed_by_its_tab_and_only_when_it_owns_one() {
         ("hc/sh", "other", ErrorCode::NotFound),
         ("hc/t9", "other", ErrorCode::NotFound),
         ("vps/t1", "other", ErrorCode::NotFound),
-        // Names another agent shows, alone or told apart by its address.
+        // Names another agent in the same space has, alone or told apart by its address.
         ("hc/fix login", "review", ErrorCode::NameTaken),
         ("hc/fix login", "pair", ErrorCode::NameTaken),
+        // One another agent is listed by, its name and address together.
+        ("hc/fix login", "pair-t2", ErrorCode::NameTaken),
         ("hc/fix login", "a/b", ErrorCode::BadRequest),
         ("hc/fix login", " ", ErrorCode::BadRequest),
     ] {
@@ -2278,6 +2292,29 @@ async fn a_herdr_app_agent_is_renamed_by_its_tab_and_only_when_it_owns_one() {
         assert_eq!(e.code, code, "{agent} -> {name:?}: {e:?}");
     }
     assert_eq!(writes(), before, "a refusal writes nothing");
+
+    // A name another space has is fine; both are then listed with their address, by their own name.
+    let v = r
+        .sessions
+        .handle(rename_agent("hc/fix login", "orchestrator"))
+        .await
+        .unwrap();
+    assert_eq!(v["name"], "hc/orchestrator");
+    let listed: Vec<crate::proto::AgentSummary> =
+        serde_json::from_value(r.sessions.handle(Op::Agents).await.unwrap()).unwrap();
+    let both: Vec<(&str, Option<&str>)> = listed
+        .iter()
+        .filter(|a| a.own_name.as_deref() == Some("orchestrator"))
+        .map(|a| (a.name.as_str(), a.space_id.as_deref()))
+        .collect();
+    assert_eq!(
+        both,
+        [
+            ("hc/orchestrator-t1", Some("sp1")),
+            ("hc/orchestrator-t6", Some("sp2"))
+        ]
+    );
+
     let sent: Vec<String> = fake.methods();
     for typed in ["terminal.send", "terminal.keys", "terminal.label"] {
         assert!(

@@ -125,15 +125,20 @@ impl Sessions {
                     .agents()
                     .await
                     .map_err(|e| err(ErrorCode::Herdr, format!("herdr-core: {e}")))?;
-                // Two agents sharing a name are listed as `<name>-<address>`.
-                let shown = |f: &super::backend::Facts| {
-                    let n = f.local_name();
-                    n == name || n == format!("{name}-{}", f.target)
+                // As in the Herdr app, a name need only be its own within its space.
+                let same_space = |f: &super::backend::Facts| match (&f.space_id, &listed.space_id) {
+                    (Some(a), Some(b)) => a == b,
+                    _ => f.space == listed.space,
                 };
-                if all.iter().any(|f| f.target != listed.target && shown(f)) {
+                // Nor may it be how another is listed, as `<name>-<address>`.
+                if all.iter().any(|f| {
+                    f.target != listed.target
+                        && ((same_space(f) && f.own_name.as_deref() == Some(name))
+                            || (f.local_name() == name && f.own_name.as_deref() != Some(name)))
+                }) {
                     return Err(err(
                         ErrorCode::NameTaken,
-                        format!("another agent in the Herdr app is already called {name}"),
+                        format!("another agent in this space is already called {name}"),
                     ));
                 }
                 write_layout(core, |doc| {
