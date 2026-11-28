@@ -231,6 +231,94 @@ pub fn pending_call(path: &Path) -> Option<String> {
     (!last.done).then(|| last.id.clone())
 }
 
+/// A message waiting in Claude's queue: where the line that queued it starts, and what it says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Waiting {
+    offset: u64,
+    content: Option<String>,
+    at: Option<String>,
+}
+
+/// Plays the queue lines of `path` from `from`, a line start, to `to`, a page's end, onto
+/// `queue`, as Claude's own queue went: queued last, taken first, or pulled back. Further back
+/// than a window starts again from an empty queue, which can only leave some out. The bytes read.
+pub fn play_queue(path: &Path, from: u64, to: u64, queue: &mut Vec<Waiting>) -> io::Result<u64> {
+    let mut file = File::open(path)?;
+    let from = match to.checked_sub(from) {
+        Some(n) if n <= WINDOW => from,
+        _ => {
+            queue.clear();
+            line_start(&mut file, to.saturating_sub(WINDOW))?
+        }
+    };
+    let buf = read_range(&mut file, from, to)?;
+    let mut offset = from;
+    for line in buf.split(|&b| b == b'\n') {
+        let at = offset;
+        offset += line.len() as u64 + 1;
+        let Ok(line) = std::str::from_utf8(line) else {
+            continue;
+        };
+        if !line.contains("\"type\":\"queue-operation\"") {
+            continue;
+        }
+        let Ok(d) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let s = |k: &str| d.get(k).and_then(Value::as_str);
+        let oldest = |q: &mut Vec<Waiting>| {
+            if !q.is_empty() {
+                q.remove(0);
+            }
+        };
+        match s("operation") {
+            Some("enqueue") => queue.push(Waiting {
+                offset: at,
+                content: s("content").map(str::to_owned),
+                at: s("timestamp").map(str::to_owned),
+            }),
+            Some("dequeue") => oldest(queue),
+            Some("remove") => match s("content") {
+                Some(c) => {
+                    if let Some(i) = queue.iter().position(|w| w.content.as_deref() == Some(c)) {
+                        queue.remove(i);
+                    }
+                }
+                None => oldest(queue),
+            },
+            Some("popAll") => queue.clear(),
+            _ => {}
+        }
+    }
+    Ok(buf.len() as u64)
+}
+
+/// The waiting messages a conversation shows: the person's own and other terminals', not
+/// Claude's task notifications.
+pub fn queued_items(queue: &[Waiting]) -> Vec<TranscriptItem> {
+    queue
+        .iter()
+        .filter_map(|w| {
+            let m = said(w.content.as_deref()?)?;
+            Some(TranscriptItem {
+                id: format!("queued:{}", w.offset),
+                kind: m.kind.into(),
+                text: Some(clip(&m.text, MAX_TEXT)),
+                tool: None,
+                input: None,
+                output: None,
+                done: false,
+                failed: false,
+                at: w.at.clone(),
+                added: None,
+                removed: None,
+                ends_turn: false,
+                from: m.from,
+            })
+        })
+        .collect()
+}
+
 /// A log's last line and when it was written.
 pub type LastLine = (String, Option<String>);
 
@@ -260,7 +348,7 @@ pub fn last_line(path: &Path) -> io::Result<(Option<LastLine>, u64)> {
         .items
         .into_iter()
         .rev()
-        .find(|i| i.kind != "user" && i.text.is_some());
+        .find(|i| !matches!(i.kind.as_str(), "user" | "peer") && i.text.is_some());
     let line = last.and_then(|i| {
         let text = crate::redact::redact_str(i.text.as_deref()?);
         let line = text.lines().find(|l| !l.trim().is_empty())?;
@@ -297,6 +385,7 @@ fn page(start: u64, end: u64, body: &[u8]) -> TranscriptPage {
         items: items.into_iter().map(|(_, i)| i).collect(),
         start,
         end,
+        queued: Vec::new(),
     }
 }
 
@@ -336,6 +425,7 @@ fn parse<'a>(lines: impl IntoIterator<Item = (u64, &'a str)>) -> Vec<(u64, Trans
             "\"type\":\"user\"",
             "\"type\":\"assistant\"",
             "\"type\":\"system\"",
+            "\"queued_command\"",
         ]
         .iter()
         .any(|t| line.contains(t))
@@ -367,9 +457,15 @@ fn parse<'a>(lines: impl IntoIterator<Item = (u64, &'a str)>) -> Vec<(u64, Trans
             added: None,
             removed: None,
             ends_turn: false,
+            from: None,
         };
-        let content = d.pointer("/message/content");
-        match d.get("type").and_then(Value::as_str) {
+        let queued = queued_prompt(&d);
+        let content = queued.or_else(|| d.pointer("/message/content"));
+        let kind = match queued {
+            Some(_) => Some("user"),
+            None => d.get("type").and_then(Value::as_str),
+        };
+        match kind {
             Some("system") => {
                 if d.get("subtype").and_then(Value::as_str) == Some("compact_boundary") {
                     out.push((
@@ -403,8 +499,14 @@ fn parse<'a>(lines: impl IntoIterator<Item = (u64, &'a str)>) -> Vec<(u64, Trans
                     match b.get("type").and_then(Value::as_str) {
                         Some("text") => {
                             let text = b.get("text").and_then(Value::as_str).unwrap_or_default();
-                            if let Some((kind, text)) = said(text) {
-                                out.push((offset, item(id, kind, clip(&text, MAX_TEXT))));
+                            if let Some(m) = said(text) {
+                                out.push((
+                                    offset,
+                                    TranscriptItem {
+                                        from: m.from,
+                                        ..item(id, m.kind, clip(&m.text, MAX_TEXT))
+                                    },
+                                ));
                             }
                         }
                         Some("image") => {
@@ -505,6 +607,19 @@ fn parse<'a>(lines: impl IntoIterator<Item = (u64, &'a str)>) -> Vec<(u64, Trans
     out
 }
 
+/// A message the owner sent while Claude worked, logged when Claude takes it in mid-turn;
+/// task notifications and subagent hand-backs arrive the same way and are Claude's own.
+fn queued_prompt(d: &Value) -> Option<&Value> {
+    let a = d.get("attachment")?;
+    let s = |k: &str| a.pointer(k).and_then(Value::as_str);
+    (d.get("type").and_then(Value::as_str) == Some("attachment")
+        && s("/type") == Some("queued_command")
+        && s("/commandMode") == Some("prompt")
+        && matches!(s("/origin/kind"), None | Some("human")))
+    .then(|| a.get("prompt"))
+    .flatten()
+}
+
 /// One Codex log entry: a message, or a tool call or its result. Reasoning and the context
 /// Codex adds for itself are left out.
 fn codex(
@@ -535,6 +650,7 @@ fn codex(
         added: None,
         removed: None,
         ends_turn: false,
+        from: None,
     };
     match s("type") {
         Some("message") => {
@@ -545,15 +661,18 @@ fn codex(
                 let text = b.get("text").and_then(Value::as_str).unwrap_or_default();
                 let shown = match s("role") {
                     Some("user") if !text.trim_start().starts_with("# AGENTS.md") => said(text),
-                    Some("assistant") if !text.trim().is_empty() => {
-                        Some(("assistant", text.trim().to_owned()))
-                    }
+                    Some("assistant") if !text.trim().is_empty() => Some(Said {
+                        kind: "assistant",
+                        text: text.trim().to_owned(),
+                        from: None,
+                    }),
                     _ => None,
                 };
-                if let Some((kind, text)) = shown {
+                if let Some(m) = shown {
                     let item = TranscriptItem {
-                        ends_turn: kind == "assistant" && s("phase") == Some("final_answer"),
-                        ..new(format!("{id}:{i}"), kind, Some(clip(&text, MAX_TEXT)))
+                        ends_turn: m.kind == "assistant" && s("phase") == Some("final_answer"),
+                        from: m.from,
+                        ..new(format!("{id}:{i}"), m.kind, Some(clip(&m.text, MAX_TEXT)))
                     };
                     out.push((offset, item));
                 }
@@ -658,16 +777,39 @@ fn codex_output(o: Option<&Value>) -> String {
     }
 }
 
+/// A message as a user line shows it.
+struct Said {
+    kind: &'static str,
+    text: String,
+    /// The terminal that sent a `peer` message.
+    from: Option<String>,
+}
+
 /// What a user line shows: a prompt, a `!` command or a slash command, all the person's own
-/// messages. Other tagged lines (command output, reminders, notifications) are Claude's own and
-/// shown nowhere.
-fn said(text: &str) -> Option<(&'static str, String)> {
+/// messages, or a message another terminal sent with `hc`. Other tagged lines (command output,
+/// reminders, notifications) are Claude's own and shown nowhere.
+fn said(text: &str) -> Option<Said> {
     let text = text.trim();
+    let user = |text: String| {
+        Some(Said {
+            kind: "user",
+            text,
+            from: None,
+        })
+    };
     if text.is_empty() {
         return None;
     }
     if !text.starts_with('<') {
-        return Some(("user", text.to_owned()));
+        return user(text.to_owned());
+    }
+    if let Some(m) = PEER.captures(text) {
+        let body = m["body"].trim();
+        return (!body.is_empty()).then(|| Said {
+            kind: "peer",
+            text: body.to_owned(),
+            from: Some(m["from"].to_owned()),
+        });
     }
     let tag = |name: &str| {
         let open = format!("<{name}>");
@@ -675,12 +817,17 @@ fn said(text: &str) -> Option<(&'static str, String)> {
         Some(rest[..rest.find(&format!("</{name}>"))?].trim().to_owned())
     };
     if let Some(cmd) = tag("bash-input") {
-        return Some(("user", format!("! {cmd}")));
+        return user(format!("! {cmd}"));
     }
     let name = tag("command-name")?;
     let args = tag("command-args").unwrap_or_default();
-    Some(("user", format!("{name} {args}").trim().to_owned()))
+    user(format!("{name} {args}").trim().to_owned())
 }
+
+/// A message `hc send` delivered, `<hc from="t6t">…</hc>`, as the whole line.
+static PEER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?s)\A<hc\s+from="(?P<from>[^"]+)"[^>]*>(?P<body>.*)</hc>\z"#).unwrap()
+});
 
 fn result_text(content: Option<&Value>) -> String {
     match content {

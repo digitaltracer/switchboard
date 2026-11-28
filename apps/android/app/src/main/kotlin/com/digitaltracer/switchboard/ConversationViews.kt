@@ -73,6 +73,11 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.scale
@@ -319,10 +324,11 @@ fun ConversationFeed(model: AppModel, convo: ConversationModel, speaker: String,
     val scope0 = rememberCoroutineScope()
     val loadEarlier = { scope0.launch { model.hub?.let { convo.loadEarlier(it) } }; Unit }
     val items = convo.conversation.items
+    val queued = convo.conversation.queued
     val list = rememberLazyListState()
     var opened by remember { mutableStateOf(false) }
     // Start at the latest, and keep up with new items unless scrolled back.
-    LaunchedEffect(items.lastOrNull()?.id) {
+    LaunchedEffect(items.lastOrNull()?.id, queued.lastOrNull()?.id) {
         if (items.isEmpty()) return@LaunchedEffect
         val before = list.layoutInfo
         val atEnd = before.visibleItemsInfo.lastOrNull()?.index?.let { it >= before.totalItemsCount - 3 } ?: true
@@ -373,6 +379,7 @@ fun ConversationFeed(model: AppModel, convo: ConversationModel, speaker: String,
             items(Turns.entries(items), key = { it.id }) { EntryRow(it, speaker) }
             if (convo.conversation.isLoaded) {
                 status?.let { s -> item { StatusLine(s) } }
+                items(queued, key = { it.id }) { QueuedRow(it, speaker) }
                 error?.let { e -> item { Note(e, color = palette.warn) } }
             }
         }
@@ -415,6 +422,7 @@ fun Clamped(max: Dp, content: @Composable () -> Unit) {
 private fun EntryRow(entry: Turns.Entry, speaker: String) {
     when (entry) {
         is Turns.Entry.User -> ItemRow(entry.item)
+        is Turns.Entry.Peer -> PeerBubble(entry.item)
         is Turns.Entry.Note -> ItemRow(entry.item)
         is Turns.Entry.Reply -> Column(Modifier.padding(top = 4.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(
@@ -425,6 +433,47 @@ private fun EntryRow(entry: Turns.Entry, speaker: String) {
         }
         is Turns.Entry.Progress -> MarkdownText(entry.item.text.orEmpty(), ReplyTone.Progress)
         is Turns.Entry.Work -> WorkRow(entry)
+    }
+}
+
+/** A message another terminal sent the agent: who it's from, then what it said, outlined apart from yours. */
+@Composable
+private fun PeerBubble(item: TranscriptItem) {
+    val line = palette.line
+    Column(
+        Modifier.fillMaxWidth().padding(top = 4.dp).semantics(mergeDescendants = true) {},
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text(
+            listOfNotNull("From ${item.from ?: "another terminal"}", item.at?.let(Turns::time)).joinToString(" · ").uppercase(),
+            style = Type.section, color = palette.mut,
+        )
+        Box(
+            Modifier.padding(end = 48.dp).drawBehind {
+                val r = 18.dp.toPx()
+                drawRoundRect(
+                    line, cornerRadius = CornerRadius(r, r),
+                    style = Stroke(1.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(4.dp.toPx(), 3.dp.toPx()))),
+                )
+            }.padding(horizontal = 14.dp, vertical = 10.dp),
+        ) { MarkdownText(item.text.orEmpty()) }
+    }
+}
+
+/** A message waiting for the agent to take it in: faded, with a clock and "Queued" under it. */
+@Composable
+private fun QueuedRow(item: TranscriptItem, speaker: String) {
+    val mine = item.kind != "peer"
+    Column(
+        Modifier.fillMaxWidth().semantics(mergeDescendants = true) {}.testTag("queued"),
+        horizontalAlignment = if (mine) Alignment.End else Alignment.Start,
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Box(Modifier.alpha(0.5f)) { if (mine) MeBubble(item.text.orEmpty()) else PeerBubble(item) }
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            Icon(Icons.Outlined.Schedule, null, Modifier.size(14.dp), tint = palette.mut)
+            Text("Queued · $speaker reads it after this step", style = Type.meta, color = palette.mut)
+        }
     }
 }
 
@@ -503,6 +552,7 @@ private fun TagChip(tag: Turns.Tag) {
 fun ItemRow(item: TranscriptItem) {
     when (item.kind) {
         "user" -> SelectionContainer { MeBubble(item.text.orEmpty()) }
+        "peer" -> PeerBubble(item)
         "assistant" -> MarkdownText(item.text.orEmpty())
         "tool" -> ToolRow(item)
         else -> Text(item.text.orEmpty(), Modifier.fillMaxWidth(), style = Type.meta, color = palette.mut, textAlign = TextAlign.Center)

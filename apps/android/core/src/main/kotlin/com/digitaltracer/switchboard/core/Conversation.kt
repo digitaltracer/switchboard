@@ -14,6 +14,8 @@ data class Conversation(
     val start: Long? = null,
     /** Where to continue from. */
     val end: Long = 0,
+    /** Messages the agent has yet to take in, oldest first, as the latest page left them. */
+    val queued: List<TranscriptItem> = emptyList(),
     /** Tool results whose call is on a page not loaded yet. */
     private val results: Map<String, TranscriptItem> = emptyMap(),
 ) {
@@ -23,7 +25,7 @@ data class Conversation(
     companion object {
         /** The latest page, in place of everything loaded so far. */
         fun of(page: Transcript): Conversation =
-            Conversation(start = page.start, end = page.end).merge(page.items, atFront = false)
+            Conversation(start = page.start, end = page.end, queued = page.queued.orEmpty()).merge(page.items, atFront = false)
 
         /** A later copy replaces an item; a bare result fills in its call. */
         private fun combine(old: TranscriptItem, new: TranscriptItem): TranscriptItem =
@@ -32,7 +34,7 @@ data class Conversation(
 
     /** A page asked for after [end]. One that doesn't start there skipped some, so it replaces. */
     fun append(page: Transcript, askedAfter: Long): Conversation =
-        if (page.start != askedAfter) of(page) else copy(end = page.end).merge(page.items, atFront = false)
+        if (page.start != askedAfter) of(page) else copy(end = page.end, queued = page.queued.orEmpty()).merge(page.items, atFront = false)
 
     /** A page asked for before [start]. */
     fun prepend(page: Transcript): Conversation = copy(start = page.start).merge(page.items, atFront = true)

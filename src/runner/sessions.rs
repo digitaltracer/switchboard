@@ -28,7 +28,7 @@ use crate::herdr::types::{
 };
 use crate::herdr::{Client, HerdrError};
 use crate::hook::wire::SecretFile;
-use crate::proto::{ErrorCode, Event, Op, OwnedSession, ProtoError};
+use crate::proto::{ErrorCode, Event, Op, OwnedSession, ProtoError, TranscriptPage};
 pub use core_start::{CoreStarts, LAUNCHER, SESSION_LABEL};
 
 const AGENT_START_TIMEOUT_MS: u64 = 60_000;
@@ -720,17 +720,40 @@ impl Sessions {
                 .await
             }
         };
-        let page = tokio::task::spawn_blocking(move || {
-            transcript::read_page(&path, after, before).map_err(|e| {
+        let logs = self.logs.clone();
+        let mut page = tokio::task::spawn_blocking(move || {
+            let mut page = transcript::read_page(&path, after, before).map_err(|e| {
                 err(
                     ErrorCode::Internal,
                     format!("reading the conversation: {e}"),
                 )
-            })
+            })?;
+            if before.is_none() {
+                page.queued = logs.queued(&path, page.end);
+            }
+            Ok::<_, ProtoError>(page)
         })
         .await
         .map_err(|e| err(ErrorCode::Internal, e.to_string()))??;
+        self.name_senders(&mut page);
         Ok(serde_json::to_value(page).expect("serializes"))
+    }
+
+    /// Names each message another terminal sent by that terminal, where this machine's core knows it.
+    fn name_senders(&self, page: &mut TranscriptPage) {
+        let Some(core) = self.core() else {
+            return;
+        };
+        for from in page
+            .items
+            .iter_mut()
+            .chain(&mut page.queued)
+            .filter_map(|i| i.from.as_mut())
+        {
+            if let Some(n) = core.sender(from) {
+                *from = n;
+            }
+        }
     }
 
     /// An agent's log: a Claude agent's found through the Claude running in its pane, else the

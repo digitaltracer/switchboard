@@ -166,6 +166,7 @@ struct ConversationFeed: View {
                     ForEach(Turns.entries(convo.conversation.items)) { EntryRow(entry: $0, speaker: speaker) }
                     if convo.conversation.isLoaded {
                         if let status { StatusLine(status: status) }
+                        ForEach(convo.conversation.queued, id: \.id) { QueuedRow(item: $0, speaker: speaker) }
                         if let error = convo.error { Note(text: error, color: Ink.warn) }
                     }
                     Color.clear.frame(height: 1).id(Self.end)
@@ -180,6 +181,9 @@ struct ConversationFeed: View {
             // nothing until scrolled; new messages follow only if you were at the end.
             .onChange(of: convo.conversation.items.last?.id, initial: true) { old, _ in
                 if old == nil || atEnd { proxy.scrollTo(Self.end, anchor: .bottom) }
+            }
+            .onChange(of: convo.conversation.queued.last?.id) {
+                if atEnd { proxy.scrollTo(Self.end, anchor: .bottom) }
             }
             .overlay(alignment: .bottom) {
                 if !atEnd {
@@ -369,6 +373,7 @@ struct EntryRow: View {
     var body: some View {
         switch entry {
         case .user(let item), .note(let item): ItemRow(item: item)
+        case .peer(let item): PeerBubble(item: item)
         case .reply(let item):
             VStack(alignment: .leading, spacing: 6) {
                 Text([speaker, item.at.flatMap(Turns.time)].compactMap { $0 }.joined(separator: " · ").uppercased())
@@ -381,6 +386,52 @@ struct EntryRow: View {
         case .progress(let item): MarkdownText(text: item.text ?? "", tone: .progress)
         case .work(let work): WorkRow(work: work)
         }
+    }
+}
+
+/// A message another terminal sent the agent: who it's from, then what it said, outlined apart
+/// from yours.
+struct PeerBubble: View {
+    let item: Conversation.Item
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(["From \(item.from ?? "another terminal")", item.at.flatMap(Turns.time)].compactMap { $0 }.joined(separator: " · ").uppercased())
+                .font(Face.section)
+                .tracking(0.84)
+                .foregroundStyle(Ink.mut)
+            MarkdownText(text: item.text ?? "")
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .strokeBorder(Ink.line, style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+                .padding(.trailing, 48)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.top, 4)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// A message waiting for the agent to take it in: faded, with a clock and "Queued" under it.
+struct QueuedRow: View {
+    let item: Conversation.Item
+    let speaker: String
+
+    var body: some View {
+        let mine = item.kind != "peer"
+        VStack(alignment: mine ? .trailing : .leading, spacing: 6) {
+            Group {
+                if mine { MeBubble(text: item.text ?? "") } else { PeerBubble(item: item) }
+            }
+            .opacity(0.5)
+            Label("Queued · \(speaker) reads it after this step", systemImage: "clock")
+                .font(Face.meta)
+                .foregroundStyle(Ink.mut)
+        }
+        .frame(maxWidth: .infinity, alignment: mine ? .trailing : .leading)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("queued")
     }
 }
 
@@ -472,6 +523,8 @@ struct ItemRow: View {
         switch item.kind {
         case "user":
             MeBubble(text: item.text ?? "")
+        case "peer":
+            PeerBubble(item: item)
         case "assistant":
             MarkdownText(text: item.text ?? "")
         case "tool":
