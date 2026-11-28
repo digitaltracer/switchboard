@@ -17,7 +17,17 @@ final class LiveController {
     private var shown: LiveBoard?
     private var observing = false
 
-    private var activity: Activity<AgentsActivity>? { Activity<AgentsActivity>.activities.first }
+    /// The card on screen, stale ones included; if there are several, the newest, and the rest end.
+    private func card() async -> Activity<AgentsActivity>? {
+        let shown = Activity<AgentsActivity>.activities.filter { $0.activityState == .active || $0.activityState == .stale }
+        var started = Self.started
+        let now = Date()
+        for a in shown where started[a.id] == nil { started[a.id] = now }
+        Self.started = started
+        guard let id = LiveCards.keep(shown.map(\.id), started: started, now: now) else { return nil }
+        for a in shown where a.id != id { await Self.end(a.id, nil) }
+        return shown.first { $0.id == id }
+    }
 
     /// Starts following token changes; called at launch, since iOS may start a card through
     /// the hub's push and wake the app only to learn its token.
@@ -67,7 +77,7 @@ final class LiveController {
     func register() async {
         guard let hub, ActivityAuthorizationInfo().areActivitiesEnabled,
               let key = try? LiveKey.shared.loadOrCreate().publicKey.x963Representation else { return }
-        let live = activity.flatMap { $0.activityState == .active ? $0 : nil }
+        let live = await card()
         let now = (key: key, start: startToken, activity: live?.pushToken, at: live.flatMap { Self.started[$0.id] }, mode: LiveShowMode.current)
         if let sent, sent.key == now.key, sent.start == now.start, sent.activity == now.activity, sent.at == now.at, sent.mode == now.mode { return }
         if (try? await hub.setLive(key: now.key, startToken: now.start, activityToken: now.activity, startedAt: now.at, mode: now.mode)) != nil {
@@ -115,7 +125,7 @@ final class LiveController {
               let blob = try? LiveSeal.seal(JSONEncoder().encode(board), to: key.publicKey) else { return }
         let content = ActivityContent(state: AgentsActivity.ContentState(b: blob), staleDate: Date().addingTimeInterval(3600))
         quietSince = board.isQuiet ? (quietSince ?? Date()) : nil
-        let live = activity.flatMap { $0.activityState == .active ? $0 : nil }
+        let live = await card()
         let step = LiveShowMode.current.decide(board, cardShowing: live != nil, quietSince: quietSince)
         if let a = live {
             let id = a.id
@@ -125,11 +135,10 @@ final class LiveController {
                 if step == .end {
                     await Self.end(id, content)
                     shown = nil
-                } else if shown.map({ !$0.sameAs(board) }) ?? true {
+                } else if a.activityState == .stale || shown.map({ !$0.sameAs(board) }) ?? true {
                     await Self.update(id, content)
                     shown = board
                 }
-                Self.started[id] = Self.started[id] ?? Date()
                 return
             }
         }

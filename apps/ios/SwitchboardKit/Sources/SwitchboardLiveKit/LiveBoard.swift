@@ -119,6 +119,19 @@ public enum LiveShowMode: String, CaseIterable, Sendable {
 
 public enum LiveCardStep: Equatable, Sendable { case show, end, none }
 
+/// The one card to keep when iOS shows several; the others are ended.
+public enum LiveCards {
+    /// The newest by start, a card first seen now counting as new; on a tie, the later in `ids`.
+    public static func keep(_ ids: [String], started: [String: Date], now: Date = Date()) -> String? {
+        var best: (id: String, at: Date)?
+        for id in ids {
+            let at = started[id] ?? now
+            if best.map({ at >= $0.at }) ?? true { best = (id, at) }
+        }
+        return best?.id
+    }
+}
+
 /// Which of the card's states a board is in, as the design names them.
 public enum LiveMood: Equatable, Sendable {
     case calm

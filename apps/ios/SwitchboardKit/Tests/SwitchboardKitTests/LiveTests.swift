@@ -98,3 +98,13 @@ func liveVector() throws -> [String: Any] {
     #expect(w.decide(quiet, cardShowing: true, quietSince: now.addingTimeInterval(-15 * 60), now: now) == .end)
     #expect(LiveShowMode.always.decide(quiet, cardShowing: false, quietSince: now.addingTimeInterval(-9999), now: now) == .show)
 }
+
+@Test func ofSeveralCardsTheNewestIsKept() {
+    let now = Date(timeIntervalSince1970: 10_000)
+    let old = now.addingTimeInterval(-7200)
+    #expect(LiveCards.keep([], started: [:], now: now) == nil)
+    #expect(LiveCards.keep(["a", "b"], started: ["a": old, "b": now.addingTimeInterval(-60)], now: now) == "b")
+    #expect(LiveCards.keep(["b", "a"], started: ["a": old, "b": now.addingTimeInterval(-60)], now: now) == "b")
+    #expect(LiveCards.keep(["a", "hub"], started: ["a": old], now: now) == "hub", "one the hub started is new")
+    #expect(LiveCards.keep(["x", "y"], started: [:], now: now) == "y", "a tie keeps the later")
+}
