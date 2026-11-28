@@ -10,6 +10,8 @@ public struct Conversation: Equatable, Sendable {
     public private(set) var start: Int64?
     /// Where to continue from.
     public private(set) var end: Int64 = 0
+    /// Messages the agent has yet to take in, oldest first, as the latest page left them.
+    public private(set) var queued: [Item] = []
     /// Tool results whose call is on a page not loaded yet.
     private var results: [String: Item] = [:]
 
@@ -24,6 +26,7 @@ public struct Conversation: Equatable, Sendable {
         results = [:]
         start = page.start
         end = page.end
+        queued = page.queued ?? []
         merge(page.items, atFront: false)
     }
 
@@ -31,6 +34,7 @@ public struct Conversation: Equatable, Sendable {
     public mutating func append(_ page: Schemas.Transcript, askedAfter after: Int64) {
         guard page.start == after else { return replace(with: page) }
         end = page.end
+        queued = page.queued ?? []
         merge(page.items, atFront: false)
     }
 

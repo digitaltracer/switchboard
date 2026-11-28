@@ -68,6 +68,7 @@ private func items(_ json: String) throws -> [Conversation.Item] {
     let kinds = Turns.entries(list).map { e -> String in
         switch e {
         case .user: "user"
+        case .peer: "peer"
         case .reply: "reply"
         case .progress: "progress"
         case .work: "work"
@@ -89,6 +90,7 @@ private func items(_ json: String) throws -> [Conversation.Item] {
     let kinds = Turns.entries(list).map { e -> String in
         switch e {
         case .user: "user"
+        case .peer: "peer"
         case .reply: "reply"
         case .progress: "progress"
         case .work: "work"
@@ -96,4 +98,19 @@ private func items(_ json: String) throws -> [Conversation.Item] {
         }
     }
     #expect(kinds == ["user", "reply", "work", "reply", "note", "reply"])
+}
+
+@Test func aMessageFromAnotherTerminalIsItsOwnEntryAndNotYours() throws {
+    let list = try items(#"""
+    [{"id":"u1","kind":"user","text":"fix it","done":false,"failed":false},
+     {"id":"a1","kind":"assistant","text":"Looking.","done":false,"failed":false},
+     {"id":"p1","kind":"peer","text":"check feasibility first","from":"planner","done":false,"failed":false},
+     {"id":"t1","kind":"tool","tool":"Read","text":"Read a.rs","done":true,"failed":false},
+     {"id":"a2","kind":"assistant","text":"Feasible.","done":false,"failed":false}]
+    """#)
+    let entries = Turns.entries(list)
+    #expect(entries.map(\.id) == ["u1", "a1", "p1", "work:t1", "a2"])
+    guard case .peer(let p) = entries[2] else { Issue.record("expected peer"); return }
+    #expect(p.from == "planner")
+    guard case .reply = entries[1] else { Issue.record("a reply before a peer message isn't on the way"); return }
 }

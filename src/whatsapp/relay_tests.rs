@@ -130,6 +130,7 @@ impl Script {
                         items: items.clone(),
                         start: 0,
                         end: 100,
+                        queued: Vec::new(),
                     })
                     .unwrap(),
                 ),

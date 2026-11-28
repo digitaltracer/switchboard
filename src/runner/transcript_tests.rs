@@ -101,6 +101,59 @@ fn a_log_reads_as_a_conversation_without_the_noise() {
     );
 }
 
+fn queued(uuid: &str, mode: &str, origin: Value, prompt: Value) -> String {
+    line(
+        json!({"type": "attachment", "uuid": uuid, "isSidechain": false,
+                "timestamp": "2026-11-22T19:21:48Z",
+                "attachment": {"type": "queued_command", "prompt": prompt, "commandMode": mode,
+                               "origin": origin, "humanTurn": true}}),
+    )
+}
+
+#[test]
+fn a_message_sent_while_claude_works_shows_where_it_was_taken_in() {
+    let text = [
+        user("u1", json!("fix the build")),
+        assistant("a1", json!([{"type": "tool_use", "id": "t1", "name": "Bash",
+                                "input": {"command": "cargo build"}}])),
+        line(json!({"type": "queue-operation", "operation": "enqueue", "content": "also run clippy"})),
+        line(json!({"type": "queue-operation", "operation": "remove", "content": "also run clippy"})),
+        user("r1", json!([{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}])),
+        queued("q1", "prompt", json!({"kind": "human"}), json!("also run clippy")),
+        queued("q2", "prompt", Value::Null, json!([
+            {"type": "text", "text": "[Image #1] like this"},
+            {"type": "image", "source": {"type": "base64", "data": "AA=="}},
+        ])),
+        queued("n1", "task-notification", json!({"kind": "task-notification"}),
+               json!("<task-notification>done</task-notification>")),
+        queued("p1", "prompt", json!({"kind": "peer", "from": "a1"}), json!("a subagent's report")),
+        assistant("a2", json!([{"type": "text", "text": "Built, and clippy is clean."}])),
+    ]
+    .concat();
+    let (_d, path) = log(&text);
+    let page = read_page(&path, None, None).unwrap();
+    let s = |k: &str, t: &str| (k.to_owned(), Some(t.to_owned()));
+    assert_eq!(
+        shown(&page),
+        [
+            s("user", "fix the build"),
+            s("tool", "Ran cargo build"),
+            s("user", "also run clippy"),
+            s("user", "[Image #1] like this"),
+            s("note", "Attached an image."),
+            s("assistant", "Built, and clippy is clean."),
+        ]
+    );
+    assert!(
+        page.items[1].done,
+        "the step before it still gets its result"
+    );
+    assert_eq!(
+        (page.items[2].id.as_str(), page.items[2].at.as_deref()),
+        ("q1:0", Some("2026-11-22T19:21:48Z"))
+    );
+}
+
 #[test]
 fn pages_continue_after_and_go_back_before_on_line_boundaries() {
     let text = conversation();
@@ -586,4 +639,122 @@ fn the_last_line_reads_only_the_end_of_a_big_log() {
     let (line, read) = last_line(&path).unwrap();
     assert_eq!(line.unwrap().0, "Latest");
     assert!(read <= TAIL + 1, "{read}");
+}
+
+#[test]
+fn a_message_from_another_terminal_shows_who_sent_it() {
+    let text = [
+        user(
+            "h1",
+            json!("<hc from=\"t6t\">Change of order: check first.</hc>"),
+        ),
+        queued(
+            "h2",
+            "prompt",
+            json!({"kind": "human"}),
+            json!("<hc from=\"t9\">\nreview done\n</hc>"),
+        ),
+        user("h3", json!("<hc from=\"t6t\"></hc>")),
+        user("h4", json!("<hc from=\"t6t\">half <hc")),
+    ]
+    .concat();
+    let (_d, path) = log(&text);
+    let page = read_page(&path, None, None).unwrap();
+    let got: Vec<_> = page
+        .items
+        .iter()
+        .map(|i| (i.kind.as_str(), i.text.as_deref(), i.from.as_deref()))
+        .collect();
+    assert_eq!(
+        got,
+        [
+            ("peer", Some("Change of order: check first."), Some("t6t")),
+            ("peer", Some("review done"), Some("t9")),
+        ],
+        "an empty or unclosed one shows nothing"
+    );
+    assert_eq!(
+        last_line(&path).unwrap().0,
+        None,
+        "it isn't the agent's own line"
+    );
+}
+
+fn queue_op(op: &str, content: Option<&str>) -> String {
+    let mut v =
+        json!({"type": "queue-operation", "operation": op, "timestamp": "2026-11-22T19:20:00Z"});
+    if let Some(c) = content {
+        v["content"] = json!(c);
+    }
+    line(v)
+}
+
+fn waiting(path: &Path) -> Vec<(String, Option<String>)> {
+    let end = std::fs::metadata(path).unwrap().len();
+    let mut q = Vec::new();
+    play_queue(path, 0, end, &mut q).unwrap();
+    queued_items(&q)
+        .into_iter()
+        .map(|i| (i.kind, i.text))
+        .collect()
+}
+
+#[test]
+fn the_queue_is_what_claude_has_yet_to_take_in() {
+    let s = |k: &str, t: &str| (k.to_owned(), Some(t.to_owned()));
+    let note = "<task-notification><task-id>a1</task-id></task-notification>";
+    let (_d, path) = log(&[
+        queue_op("enqueue", Some("first")),
+        queue_op("enqueue", Some(note)),
+        queue_op("enqueue", Some("<hc from=\"t9\">from a peer</hc>")),
+        queue_op("enqueue", Some("! git status")),
+    ]
+    .concat());
+    assert_eq!(
+        waiting(&path),
+        [
+            s("user", "first"),
+            s("peer", "from a peer"),
+            s("user", "! git status")
+        ],
+        "Claude's own notifications wait unseen"
+    );
+    let mut text = std::fs::read_to_string(&path).unwrap();
+    for op in [
+        queue_op("dequeue", None),
+        queue_op("remove", Some("! git status")),
+        queue_op("remove", None),
+    ] {
+        text.push_str(&op);
+    }
+    std::fs::write(&path, &text).unwrap();
+    assert_eq!(
+        waiting(&path),
+        [s("peer", "from a peer")],
+        "taken at the turn's end, absorbed mid-turn, and taken without saying which"
+    );
+    text.push_str(&queue_op("enqueue", Some("second")));
+    text.push_str(&queue_op("popAll", None));
+    std::fs::write(&path, &text).unwrap();
+    assert!(waiting(&path).is_empty(), "pulled back to edit");
+}
+
+#[test]
+fn a_queue_further_back_than_a_window_starts_again() {
+    let pad = line(json!({"type": "progress", "pad": "x".repeat(WINDOW as usize)}));
+    let (_d, path) = log(&[
+        queue_op("enqueue", Some("old")),
+        pad,
+        queue_op("enqueue", Some("new")),
+    ]
+    .concat());
+    let end = std::fs::metadata(&path).unwrap().len();
+    let mut q = Vec::new();
+    play_queue(&path, 0, end, &mut q).unwrap();
+    let texts: Vec<_> = queued_items(&q)
+        .into_iter()
+        .filter_map(|i| i.text)
+        .collect();
+    assert_eq!(texts, ["new"]);
+    assert!(queued_items(&q)[0].id.starts_with("queued:"));
 }

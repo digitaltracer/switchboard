@@ -99,6 +99,20 @@ impl Core {
         self.inner.lock().unwrap().terminals.get(address).cloned()
     }
 
+    /// What a message from terminal `address` is signed with: its agent's name as listed, else
+    /// the terminal's own name. None for another machine's or an unknown one.
+    pub fn sender(&self, address: &str) -> Option<String> {
+        if address.contains('/') {
+            return None;
+        }
+        let listed = self.facts().unwrap_or_default();
+        listed
+            .into_iter()
+            .find(|a| a.target == address)
+            .map(|a| a.local_name())
+            .or_else(|| self.terminal(address)?.name.filter(|n| !n.is_empty()))
+    }
+
     pub fn is_synced(&self) -> bool {
         self.inner.lock().unwrap().synced
     }

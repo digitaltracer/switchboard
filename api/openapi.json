@@ -5222,6 +5222,13 @@
             "format": "int64",
             "description": "Pass as `after` for what comes next. A page asked for with `after` that doesn't start\nthere skipped some: replace what's shown instead of appending.",
             "minimum": 0
+          },
+          "queued": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TranscriptItem"
+            },
+            "description": "Messages waiting for the agent to take them in, oldest first, as of `end`: what to show\nas queued now, replacing any shown before. Only on pages that reach the conversation's\nend; absent when none wait. Older hubs leave it out."
           }
         }
       },
@@ -5239,7 +5246,7 @@
           },
           "kind": {
             "type": "string",
-            "description": "`user`, `assistant`, `tool` or `note`."
+            "description": "`user`, `assistant`, `tool`, `note`, or `peer` for a message another terminal sent the\nagent. Show a kind you don't know as a note."
           },
           "text": {
             "type": [
@@ -5303,6 +5310,13 @@
           "ends_turn": {
             "type": "boolean",
             "description": "The reply the agent ended its turn with: its answer, even when work follows that something\nelse started. Older hubs leave it out."
+          },
+          "from": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who sent a `peer` message: the sending terminal's agent name, else its id."
           }
         }
       }

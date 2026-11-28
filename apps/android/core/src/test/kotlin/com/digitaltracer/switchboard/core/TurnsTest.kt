@@ -92,4 +92,21 @@ class TurnsTest {
         assertEquals(listOf("/compact", "/council", "/commit", "/ship"), SkillSearch.filter(skills, "/co").map { it.name })
         assertTrue(SkillSearch.isTyping("/co") && !SkillSearch.isTyping("/commit fix it") && !SkillSearch.isTyping("hi"))
     }
+
+    @Test
+    fun aMessageFromAnotherTerminalIsItsOwnEntryAndNotYours() {
+        val list = items(
+            """
+            [{"id":"u1","kind":"user","text":"fix it","done":false,"failed":false},
+             {"id":"a1","kind":"assistant","text":"Looking.","done":false,"failed":false},
+             {"id":"p1","kind":"peer","text":"check feasibility first","from":"planner","done":false,"failed":false},
+             {"id":"t1","kind":"tool","tool":"Read","text":"Read a.rs","done":true,"failed":false},
+             {"id":"a2","kind":"assistant","text":"Feasible.","done":false,"failed":false}]
+            """,
+        )
+        val entries = Turns.entries(list)
+        assertEquals(listOf("u1", "a1", "p1", "work:t1", "a2"), entries.map { it.id })
+        assertEquals("planner", (entries[2] as Turns.Entry.Peer).item.from)
+        assertTrue(entries[1] is Turns.Entry.Reply, "a reply before a peer message isn't on the way")
+    }
 }

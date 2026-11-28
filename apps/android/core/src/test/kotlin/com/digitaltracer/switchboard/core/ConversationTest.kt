@@ -50,4 +50,24 @@ class ConversationTest {
         assertEquals(listOf("a9"), c.items.map { it.id })
         assertEquals(5000L, c.start)
     }
+
+    @Test
+    fun whatWaitsInTheQueueIsWhatTheLatestPageSays() {
+        var c = Conversation.of(page("""
+            {"start":0,"end":100,"items":[{"id":"u1","kind":"user","text":"fix it","done":false,"failed":false}],
+             "queued":[{"id":"queued:90","kind":"user","text":"also run clippy","done":false,"failed":false}]}
+        """))
+        assertEquals(listOf("also run clippy"), c.queued.map { it.text })
+
+        // An earlier page says nothing about the queue now.
+        c = c.prepend(page("""{"start":0,"end":0,"items":[]}"""))
+        assertEquals(1, c.queued.size)
+
+        // Taken in: it's in the conversation and waits no more.
+        c = c.append(page("""
+            {"start":100,"end":200,"items":[{"id":"q1:0","kind":"user","text":"also run clippy","done":false,"failed":false}]}
+        """), askedAfter = 100)
+        assertTrue(c.queued.isEmpty())
+        assertEquals(listOf("u1", "q1:0"), c.items.map { it.id })
+    }
 }
