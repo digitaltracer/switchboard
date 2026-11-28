@@ -91,7 +91,7 @@ private fun AwayRow(model: AppModel, a: AwayAgentView, now: Long) {
     }
 }
 
-/** An agent page's "Since you looked": the facts in order, then its last reply. */
+/** An agent page's "Since you looked": the facts in order, and [reply] when the page doesn't show it. */
 @Composable
 fun AwayTimeline(agent: AwayAgentView, since: Long, now: Long, reply: String? = null) {
     val time = DateFormat.getTimeInstance(DateFormat.SHORT)
@@ -110,7 +110,7 @@ fun AwayTimeline(agent: AwayAgentView, since: Long, now: Long, reply: String? = 
                             color = when (f.kind) { "finished" -> palette.ok; "error" -> palette.bad; else -> palette.ink },
                         )
                         if (f.kind == "finished" && i == rows.indexOfLast { it.kind == "finished" }) {
-                            (reply ?: agent.lastReply)?.let { r ->
+                            reply?.let { r ->
                                 // A reply's markdown links read as their text here.
                                 val plain = r.replace(Regex("""\[([^\]]+)]\([^)]*\)"""), "$1").replace("**", "")
                                 Text("\"$plain\"", style = Type.text, color = palette.sub)
@@ -120,7 +120,7 @@ fun AwayTimeline(agent: AwayAgentView, since: Long, now: Long, reply: String? = 
                 }
             }
         }
-        Note("Facts the hub recorded, plus the agent's own last reply. No summarising model.", Modifier.padding(top = 8.dp))
+        Note(if (reply == null) "Facts the hub recorded. No summarising model." else "Facts the hub recorded, plus the agent's own last reply. No summarising model.", Modifier.padding(top = 8.dp))
     }
 }
 
