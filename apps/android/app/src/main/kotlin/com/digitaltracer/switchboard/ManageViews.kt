@@ -18,7 +18,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -42,8 +47,13 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
+import com.digitaltracer.switchboard.core.AgentSpace
+import com.digitaltracer.switchboard.core.HerdrSession
 import com.digitaltracer.switchboard.core.Names
 import com.digitaltracer.switchboard.core.Offer
+import com.digitaltracer.switchboard.core.isHerdrAgent
+import com.digitaltracer.switchboard.core.nameInSpace
+import com.digitaltracer.switchboard.core.rename
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
@@ -145,5 +155,55 @@ fun NameRow(name: String, offer: Offer, rename: () -> Unit) {
             Note(offer.why, Modifier.padding(bottom = 11.dp).testTag("renameBlocked"), palette.sub)
         }
         Offer.Hidden -> {}
+    }
+}
+
+/** Long-press on an agent's row: Rename, or why it can't be renamed from the phone. */
+@Composable
+fun RenameMenu(model: AppModel, agent: HerdrSession.Agent, row: @Composable (longPress: (() -> Unit)?) -> Unit) {
+    val name = (agent as? HerdrSession.Agent.Task)?.session?.label ?: agent.nameInSpace
+    RenameMenu(name, agent.rename, agent.isHerdrAgent, { new, id -> model.rename(agent, new, id) }, row)
+}
+
+/** Long-press on a space's row: Rename, or why it can't be renamed from the phone. */
+@Composable
+fun RenameMenu(model: AppModel, space: AgentSpace, row: @Composable (longPress: (() -> Unit)?) -> Unit) =
+    RenameMenu(space.key.space ?: space.title, space.rename, false, { new, id -> model.rename(space, new, id) }, row)
+
+@Composable
+private fun RenameMenu(
+    name: String, offer: Offer, herdrAgent: Boolean, save: suspend (String, String) -> Unit,
+    row: @Composable (longPress: (() -> Unit)?) -> Unit,
+) {
+    if (offer == Offer.Hidden) return row(null)
+    var menu by remember { mutableStateOf(false) }
+    var renaming by remember { mutableStateOf(false) }
+    // One request id per name tried, so a retry after a lost answer is the same request.
+    val ids = remember { mutableMapOf<String, String>() }
+    Box {
+        row { menu = true }
+        DropdownMenu(menu, { menu = false }) {
+            if (offer is Offer.No) {
+                DropdownMenuItem(
+                    {
+                        Column {
+                            Text("Rename", style = Type.field, color = palette.mut)
+                            Text(offer.why, style = Type.meta, color = palette.mut)
+                        }
+                    },
+                    {}, enabled = false,
+                )
+            } else {
+                DropdownMenuItem({ Text("Rename", style = Type.field) }, {
+                    menu = false
+                    renaming = true
+                }, Modifier.testTag("renameMenu"), leadingIcon = { Icon(Icons.Outlined.Edit, null, tint = palette.ink) })
+            }
+        }
+    }
+    if (renaming) {
+        RenameSheet("Rename $name", name, herdrAgent, dismiss = { renaming = false }) { new ->
+            save(new, ids.getOrPut(new) { java.util.UUID.randomUUID().toString() })
+        }
     }
 }

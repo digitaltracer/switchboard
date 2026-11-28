@@ -108,11 +108,11 @@ val HerdrSession.Agent.route: Route?
 
 /** One space, as a row of the Spaces list. */
 @Composable
-fun SpaceRow(model: AppModel, space: AgentSpace, showMachine: Boolean, first: Boolean) {
+fun SpaceRow(model: AppModel, space: AgentSpace, showMachine: Boolean, first: Boolean) = RenameMenu(model, space) { longPress ->
     InboxRow(
         space.title, if (showMachine) "${space.summary} · ${space.key.machine}" else space.summary,
         Modifier.testTag("space-${space.title}"), dim = space.isEnded, first = first,
-        onClick = { model.path.add(Route.Space(space.key)) },
+        onClick = { model.path.add(Route.Space(space.key)) }, onLongClick = longPress,
         leading = { StatusGlyph(space.glyph) },
         trailing = { WhereTag(space.backend) },
     )
@@ -231,12 +231,12 @@ fun SpaceScreen(model: AppModel, voice: Voice, key: AgentSpace.Key) {
 }
 
 @Composable
-private fun AgentRow(model: AppModel, a: HerdrSession.Agent, first: Boolean) {
+private fun AgentRow(model: AppModel, a: HerdrSession.Agent, first: Boolean) = RenameMenu(model, a) { longPress ->
     val status = a.status
     InboxRow(
         a.nameInSpace, a.subtitle, Modifier.testTag("agent-${a.nameInSpace}"),
         subtitleColor = if (status.glyph == Glyph.Need) palette.warn else null, dim = a.isEnded, first = first,
-        onClick = a.route?.let { r -> { model.path.add(r) } },
+        onClick = a.route?.let { r -> { model.path.add(r) } }, onLongClick = longPress,
         leading = { StatusGlyph(if (a.isEnded) Glyph.End else status.glyph) },
         trailing = if (a.route != null) ({ Chevron() }) else null,
     )
