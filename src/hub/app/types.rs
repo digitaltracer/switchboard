@@ -1087,6 +1087,12 @@ pub struct AgentView {
     /// it out.
     #[schema(required = false)]
     pub can_rename: bool,
+    /// For one in the Herdr app, its own name. `name` adds its address when another agent shares
+    /// the name; inside its space this one is shown. Absent from an older hub or runner.
+    /// Untrusted text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    pub own_name: Option<String>,
 }
 
 /// Which Herdr hosts an agent, from the session it runs in.

@@ -895,6 +895,7 @@ pub async fn list_agents(
             space: a.space,
             space_id: a.space_id,
             can_rename: a.can_rename,
+            own_name: a.own_name,
         })
         .collect();
     let ended = st
