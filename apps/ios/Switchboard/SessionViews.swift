@@ -70,11 +70,14 @@ struct AgentLink<Label: View>: View {
     @ViewBuilder let label: Label
 
     var body: some View {
-        switch agent {
-        case .task(let s): NavigationLink(value: s.id) { label }
-        case .live(let a): NavigationLink(value: AgentRef(machine: a.machineId, name: a.name)) { label }
-        case .ended: label
+        Group {
+            switch agent {
+            case .task(let s): NavigationLink(value: s.id) { label }
+            case .live(let a): NavigationLink(value: AgentRef(machine: a.machineId, name: a.name)) { label }
+            case .ended: label
+            }
         }
+        .renameMenu(agent: agent)
     }
 }
 
@@ -94,6 +97,7 @@ struct SpaceRow: View {
             }
         }
         .buttonStyle(.plain)
+        .renameMenu(space: space)
         .accessibilityIdentifier("space-\(space.title)")
     }
 }
