@@ -93,12 +93,13 @@ impl Store {
         .await
     }
 
-    /// Records a card the hub started through the push-to-start token.
+    /// Records a card the hub started through the push-to-start token; the phone reports its token.
     pub async fn live_started(&self, device_id: &str, at: i64) -> Result<()> {
         let device_id = device_id.to_owned();
         self.call(move |c| {
             c.execute(
-                "UPDATE live_registrations SET activity_started_at = ?2 WHERE device_id = ?1",
+                "UPDATE live_registrations SET activity_token = NULL, activity_started_at = ?2
+                 WHERE device_id = ?1",
                 params![device_id, at],
             )?;
             Ok(())

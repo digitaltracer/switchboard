@@ -330,3 +330,34 @@ fn always_keeps_the_card_and_renews_it_before_eight_hours() {
     };
     assert_eq!(live.event, "start");
 }
+
+#[test]
+fn a_replaced_card_ends_once_the_phone_reports_the_new_one() {
+    let board = calm();
+    let waiting = iphone(LiveRegistration {
+        start_token: Some("s".into()),
+        activity_started_at: Some(100),
+        ..Default::default()
+    });
+    assert_eq!(retire(&waiting, "old", &board, 200), Plan::Skip);
+    let same = iphone(LiveRegistration {
+        activity_token: Some("old".into()),
+        ..waiting.reg.clone()
+    });
+    assert_eq!(retire(&same, "old", &board, 200), Plan::Skip);
+    let reported = iphone(LiveRegistration {
+        activity_token: Some("new".into()),
+        ..waiting.reg.clone()
+    });
+    let Plan::Send { token, live } = retire(&reported, "old", &board, 200) else {
+        panic!("ended");
+    };
+    assert_eq!((token.as_str(), live.event.as_str()), ("old", "end"));
+    let plain = open(&key(), live.blob.as_deref().unwrap()).unwrap();
+    assert_eq!(serde_json::from_slice::<Board>(&plain).unwrap(), board);
+    let android = LiveTarget {
+        push_provider: PushProvider::Fcm,
+        ..reported
+    };
+    assert_eq!(retire(&android, "old", &board, 200), Plan::Skip);
+}

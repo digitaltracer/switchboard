@@ -2040,6 +2040,19 @@ async fn a_phone_registers_its_card_and_reads_the_masked_board() {
         ),
         (Some("ab"), Some("cd"), Some(5))
     );
+    // A card the hub starts replaces this one: its token waits for the phone.
+    r.svc.store().live_started(&device, 9).await.unwrap();
+    let started = r
+        .svc
+        .store()
+        .live_registration(&device)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (started.activity_token, started.activity_started_at),
+        (None, Some(9))
+    );
     assert_eq!(r.svc.store().live_targets().await.unwrap().len(), 1);
     assert!(!reg.always, "while working is the default");
     let always = put(json!({"live_key": live_key, "mode": "always"})).await;

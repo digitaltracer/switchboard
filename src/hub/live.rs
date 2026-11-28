@@ -42,6 +42,8 @@ pub struct LiveLoop<S> {
     /// Per device, the board it last got and when.
     sent: HashMap<String, (Board, i64)>,
     quiet: HashMap<String, Quiet>,
+    /// Per device, the card a push-to-start replaced and when, ended once the new one reports in.
+    replaced: HashMap<String, (String, i64)>,
 }
 
 /// What one device should get now, if anything.
@@ -148,22 +150,58 @@ fn end(t: &LiveTarget, board: &Board, now: i64) -> Plan {
             },
             None => Plan::Skip,
         },
-        PushProvider::Apns => {
-            let (Some(token), Some(key)) = (
-                &t.reg.activity_token,
-                t.reg.live_key.as_deref().and_then(decode_key),
-            ) else {
-                return Plan::Skip;
-            };
-            let plain = serde_json::to_vec(board).expect("serializes");
-            match crate::live::seal(&key, &plain) {
-                Ok(blob) => Plan::Send {
-                    token: token.clone(),
-                    live: live(Some(blob)),
-                },
-                Err(_) => Plan::Skip,
-            }
+        PushProvider::Apns => match &t.reg.activity_token {
+            Some(token) => end_card(t, token, board, now),
+            None => Plan::Skip,
+        },
+    }
+}
+
+/// Ends the card a push-to-start replaced, once the phone has reported a different one.
+pub fn retire(t: &LiveTarget, old: &str, board: &Board, now: i64) -> Plan {
+    match &t.reg.activity_token {
+        Some(new) if t.push_provider == PushProvider::Apns && new != old => {
+            end_card(t, old, board, now)
         }
+        _ => Plan::Skip,
+    }
+}
+
+fn end_card(t: &LiveTarget, token: &str, board: &Board, now: i64) -> Plan {
+    let Some(key) = t.reg.live_key.as_deref().and_then(decode_key) else {
+        return Plan::Skip;
+    };
+    let plain = serde_json::to_vec(board).expect("serializes");
+    match crate::live::seal(&key, &plain) {
+        Ok(blob) => Plan::Send {
+            token: token.into(),
+            live: LivePush {
+                event: "end".into(),
+                blob: Some(blob),
+                urgent: false,
+                alert: false,
+                timestamp: now,
+                stale_at: now,
+            },
+        },
+        Err(_) => Plan::Skip,
+    }
+}
+
+fn push(t: &LiveTarget, token: &str, live: LivePush) -> Push {
+    Push {
+        device_id: t.device_id.clone(),
+        kind: OutboxKind::Live,
+        session_id: None,
+        approval_id: None,
+        attention_id: None,
+        token: Some(token.into()),
+        env: t.push_env.unwrap_or(PushEnv::Production),
+        provider: t.push_provider,
+        payload: live_payload(&live),
+        collapse_id: "live".into(),
+        expires_at: live.stale_at,
+        live: Some(live),
     }
 }
 
@@ -181,6 +219,7 @@ impl<S: Sender> LiveLoop<S> {
             sender,
             sent: HashMap::new(),
             quiet: HashMap::new(),
+            replaced: HashMap::new(),
         }
     }
 
@@ -214,7 +253,22 @@ impl<S: Sender> LiveLoop<S> {
         }
         self.sent
             .retain(|d, _| targets.iter().any(|t| &t.device_id == d));
+        self.replaced.retain(|d, (_, at)| {
+            now - *at < MAX_CARD_SECS && targets.iter().any(|t| &t.device_id == d)
+        });
         for t in &targets {
+            if let Some((old, _)) = self.replaced.get(&t.device_id)
+                && let Plan::Send { token, live } = retire(t, old, &board, now)
+            {
+                match self.sender.send(&push(t, &token, live)).await {
+                    SendOutcome::Retry(e) => {
+                        tracing::debug!(device = %t.device_id, error = %e, "replaced card not ended yet");
+                    }
+                    _ => {
+                        self.replaced.remove(&t.device_id);
+                    }
+                }
+            }
             let Plan::Send { token, live } = plan(
                 t,
                 &board,
@@ -226,29 +280,20 @@ impl<S: Sender> LiveLoop<S> {
             };
             let start = live.event == "start";
             let ending = live.event == "end";
-            let push = Push {
-                device_id: t.device_id.clone(),
-                kind: OutboxKind::Live,
-                session_id: None,
-                approval_id: None,
-                attention_id: None,
-                token: Some(token.clone()),
-                env: t.push_env.unwrap_or(PushEnv::Production),
-                provider: t.push_provider,
-                payload: live_payload(&live),
-                collapse_id: "live".into(),
-                expires_at: live.stale_at,
-                live: Some(live),
-            };
-            match self.sender.send(&push).await {
+            match self.sender.send(&push(t, &token, live)).await {
                 SendOutcome::Sent => {
                     self.sent.insert(t.device_id.clone(), (board.clone(), now));
                     if ending && let Some(q) = self.quiet.get_mut(&t.device_id) {
                         q.ended = true;
                     }
-                    if start && let Err(e) = self.svc.store().live_started(&t.device_id, now).await
-                    {
-                        tracing::warn!(error = %e, "recording a started card");
+                    if start {
+                        if let Some(old) = &t.reg.activity_token {
+                            self.replaced
+                                .insert(t.device_id.clone(), (old.clone(), now));
+                        }
+                        if let Err(e) = self.svc.store().live_started(&t.device_id, now).await {
+                            tracing::warn!(error = %e, "recording a started card");
+                        }
                     }
                 }
                 SendOutcome::Unregistered(e) => {
