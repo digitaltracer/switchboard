@@ -317,44 +317,51 @@ private fun Now(
             a is HerdrSession.Agent.Task && a.session.hookFailed -> "Stuck at a dialog · answer it at its terminal"
             else -> a.title?.takeIf { it != a.nameInSpace }?.let { "Waiting for you · $it" } ?: "Waiting for you"
         }
-        InboxRow(
-            item.label, subtitle, Modifier.testTag("needs-${item.label}"), subtitleColor = palette.warn, first = i == 0 && approvals.size <= 1,
-            onClick = {
-                when (a) {
-                    is HerdrSession.Agent.Live -> model.path.add(
-                        Route.Decision(a.agent.machineId, a.agent.name, item.label, listOfNotNull(agentName(a.agent.kind), a.agent.machineId).joinToString(" · ")),
-                    )
-                    else -> a.route?.let { model.path.add(it) }
-                }
-            },
-            leading = { StatusGlyph(Glyph.Need) }, trailing = { WhereTag(item.space.backend) },
-        )
+        RenameMenu(model, a) { longPress ->
+            InboxRow(
+                item.label, subtitle, Modifier.testTag("needs-${item.label}"), subtitleColor = palette.warn, first = i == 0 && approvals.size <= 1,
+                onLongClick = longPress,
+                onClick = {
+                    when (a) {
+                        is HerdrSession.Agent.Live -> model.path.add(
+                            Route.Decision(a.agent.machineId, a.agent.name, item.label, listOfNotNull(agentName(a.agent.kind), a.agent.machineId).joinToString(" · ")),
+                        )
+                        else -> a.route?.let { model.path.add(it) }
+                    }
+                },
+                leading = { StatusGlyph(Glyph.Need) }, trailing = { WhereTag(item.space.backend) },
+            )
+        }
     }
     if (working.isNotEmpty()) {
         SectionHead("Working", "${working.size}")
         working.forEachIndexed { i, item ->
             val line = lastLines[item.id]
-            InboxRow(
-                item.label, line ?: item.agent.title?.takeIf { it != item.agent.nameInSpace } ?: "Working",
-                Modifier.testTag("busy-${item.label}"), subtitleMono = line != null, first = i == 0,
-                onClick = item.agent.route?.let { r -> { model.path.add(r) } },
-                leading = { StatusGlyph(Glyph.Work) }, trailing = { WhereTag(item.space.backend) },
-            )
+            RenameMenu(model, item.agent) { longPress ->
+                InboxRow(
+                    item.label, line ?: item.agent.title?.takeIf { it != item.agent.nameInSpace } ?: "Working",
+                    Modifier.testTag("busy-${item.label}"), subtitleMono = line != null, first = i == 0,
+                    onClick = item.agent.route?.let { r -> { model.path.add(r) } }, onLongClick = longPress,
+                    leading = { StatusGlyph(Glyph.Work) }, trailing = { WhereTag(item.space.backend) },
+                )
+            }
         }
     }
     if (finished.isNotEmpty()) {
         SectionHead("Finished today", "${finished.size}")
         finished.forEachIndexed { i, item ->
-            InboxRow(
-                item.label, lastLines[item.id] ?: item.agent.title ?: item.agent.subtitle, first = i == 0,
-                onClick = item.agent.route?.let { r -> { model.path.add(r) } },
-                leading = { StatusGlyph(if (item.agent.isEnded) Glyph.End else Glyph.Done) },
-                trailing = {
-                    val a = item.agent
-                    if (a is HerdrSession.Agent.Task && item.agent.isEnded) Text(Ago.short(a.session.updatedAt), style = Type.meta, color = palette.mut)
-                    else WhereTag(item.space.backend)
-                },
-            )
+            RenameMenu(model, item.agent) { longPress ->
+                InboxRow(
+                    item.label, lastLines[item.id] ?: item.agent.title ?: item.agent.subtitle, first = i == 0,
+                    onClick = item.agent.route?.let { r -> { model.path.add(r) } }, onLongClick = longPress,
+                    leading = { StatusGlyph(if (item.agent.isEnded) Glyph.End else Glyph.Done) },
+                    trailing = {
+                        val a = item.agent
+                        if (a is HerdrSession.Agent.Task && item.agent.isEnded) Text(Ago.short(a.session.updatedAt), style = Type.meta, color = palette.mut)
+                        else WhereTag(item.space.backend)
+                    },
+                )
+            }
         }
     }
     if (nothingLive && finished.isEmpty() && approvals.isEmpty()) {

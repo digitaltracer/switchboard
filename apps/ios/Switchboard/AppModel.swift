@@ -50,7 +50,7 @@ final class AppModel {
     private(set) var agents: [Schemas.AgentView] = []
     /// Those that ended in the last day.
     private(set) var ended: [Schemas.EndedAgent] = []
-    /// What agents did while this phone was away, until "Mark as seen".
+    /// What agents did while this phone was away, until "Mark all read".
     private(set) var away: Schemas.Activity?
     /// The opt-in summary of `away`; on failure the facts stay.
     private(set) var awaySummary: String?
@@ -375,6 +375,28 @@ final class AppModel {
     /// A session goes by a new label: text that names nothing still goes to it.
     func renamed(session s: Schemas.Session) {
         if current?.sessionId == s.id { current = .session(s) }
+    }
+
+    /// Renames from a list's long-press. A session's new label arrives with the next session list.
+    func rename(_ agent: HerdrSession.Agent, to name: String, requestId: String) async throws {
+        guard let hub else { return }
+        switch agent {
+        case .task(let s):
+            _ = try await hub.renameSession(s.id, name: name)
+        case .live(let a):
+            let listed = try await hub.renameAgent(machine: a.machineId, agent: a.name, name: name, requestId: requestId)
+            renamed(agent: a.name, to: listed, machine: a.machineId)
+            await refreshAgents()
+        case .ended:
+            return
+        }
+    }
+
+    func rename(_ space: AgentSpace, to name: String, requestId: String) async throws {
+        guard let hub, let id = space.spaceId else { return }
+        _ = try await hub.renameSpace(machine: space.key.machine, herdrSession: space.key.session, spaceId: id, name: name,
+                                      requestId: requestId)
+        await refreshAgents()
     }
 
     /// Every space with its agents, the Herdr app's and the Herdr terminal's alike.

@@ -20,6 +20,8 @@ import com.digitaltracer.switchboard.core.AgentSpace
 import com.digitaltracer.switchboard.core.DeviceKeys
 import com.digitaltracer.switchboard.core.Hub
 import com.digitaltracer.switchboard.core.HubError
+import com.digitaltracer.switchboard.core.HerdrSession
+import com.digitaltracer.switchboard.core.spaceId
 import com.digitaltracer.switchboard.core.TileLines
 import com.digitaltracer.switchboard.core.KeyRole
 import com.digitaltracer.switchboard.core.Pairing
@@ -122,7 +124,7 @@ class AppModel(context: Context, val keys: DeviceKeys) {
     var ended by mutableStateOf<List<EndedAgent>>(emptyList())
         private set
 
-    /** What agents did while this phone was away, until "Mark as seen". */
+    /** What agents did while this phone was away, until "Mark all read". */
     var away by mutableStateOf<com.digitaltracer.switchboard.api.models.Activity?>(null)
         private set
     /** The opt-in summary of [away]; on failure the facts stay. */
@@ -246,6 +248,27 @@ class AppModel(context: Context, val keys: DeviceKeys) {
     /** A session goes by a new label: text that names nothing still goes to it. */
     fun renamedSession(s: com.digitaltracer.switchboard.api.models.Session) {
         if (current?.sessionId == s.id) current = com.digitaltracer.switchboard.core.sessionTarget(s)
+    }
+
+    /** Renames from a list's long-press. A session's new label arrives with the next session list. */
+    suspend fun rename(agent: HerdrSession.Agent, name: String, requestId: String) {
+        val hub = hub ?: return
+        when (agent) {
+            is HerdrSession.Agent.Task -> hub.renameSession(agent.session.id, name)
+            is HerdrSession.Agent.Live -> {
+                val listed = hub.renameAgent(agent.agent.machineId, agent.agent.name, name, requestId)
+                renamedAgent(agent.agent.machineId, agent.agent.name, listed)
+                refreshAgents()
+            }
+            is HerdrSession.Agent.Ended -> {}
+        }
+    }
+
+    suspend fun rename(space: AgentSpace, name: String, requestId: String) {
+        val hub = hub ?: return
+        val id = space.spaceId ?: return
+        hub.renameSpace(space.key.machine, space.key.session, id, name, requestId)
+        refreshAgents()
     }
 
     /** What the back button is called: where it goes. */

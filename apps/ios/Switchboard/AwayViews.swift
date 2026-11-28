@@ -2,7 +2,7 @@ import SwiftUI
 import SwitchboardKit
 
 /// The Inbox card "While you were away": each agent that did something since the phone last had
-/// the app open, needs-you first, until "Mark as seen". An opt-in summary replaces the rows.
+/// the app open, needs-you first, until "Mark all read". An opt-in summary replaces the rows.
 struct AwayCard: View {
     @Environment(AppModel.self) private var model
     let activity: Schemas.Activity
@@ -14,7 +14,9 @@ struct AwayCard: View {
             HStack(alignment: .firstTextBaseline) {
                 Text("While you were away").font(Face.geist(17, .semibold)).foregroundStyle(Ink.ink)
                 Spacer()
-                Text(span).font(Face.meta).foregroundStyle(Ink.mut)
+                Button("Mark all read") { withAnimation(.snappy) { model.markAwaySeen() } }
+                    .font(Face.geist(14, .medium)).foregroundStyle(Ink.ac)
+                    .accessibilityIdentifier("markAwaySeen")
             }
             .padding(16)
             if let summary = model.awaySummary {
@@ -28,15 +30,10 @@ struct AwayCard: View {
                 }
             }
             Hairline()
-            HStack {
-                Text(model.awaySummary == nil ? "Since you last opened the app" : "Summarised by Claude, from the hub's facts")
-                    .font(Face.meta).foregroundStyle(Ink.mut)
-                Spacer()
-                Button("Mark as seen") { withAnimation(.snappy) { model.markAwaySeen() } }
-                    .font(Face.geist(14, .medium)).foregroundStyle(Ink.ac)
-                    .accessibilityIdentifier("markAwaySeen")
-            }
-            .padding(16)
+            Text("\(model.awaySummary == nil ? "Since you last opened the app" : "Summarised by Claude, from the hub's facts") · \(span)")
+                .font(Face.meta).foregroundStyle(Ink.mut)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(16)
         }
         .background(Ink.sf, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay { RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(Ink.line) }
@@ -79,12 +76,12 @@ struct AwayCard: View {
     }
 }
 
-/// An agent page's "Since you looked": the facts in order, then its last reply.
+/// An agent page's "Since you looked": the facts in order, and its last reply when the page doesn't show it.
 struct AwayTimeline: View {
     let agent: Schemas.AwayAgentView
     let since: Int64
     let now: Int64
-    /// The agent's own latest reply from its conversation, when the page has it.
+    /// The agent's last reply, quoted under its last turn; nil when the page shows it already.
     var reply: String?
 
     var body: some View {
@@ -99,7 +96,7 @@ struct AwayTimeline: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(f.text).font(Face.geist(15, f.kind == "finished" ? .medium : .regular))
                                 .foregroundStyle(f.kind == "finished" ? Ink.ok : f.kind == "error" ? Ink.bad : Ink.ink)
-                            if f.kind == "finished", i == rows.lastIndex(where: { $0.kind == "finished" }), let r = reply ?? agent.lastReply {
+                            if f.kind == "finished", i == rows.lastIndex(where: { $0.kind == "finished" }), let r = reply {
                                 Text((try? AttributedString(markdown: "\"\(r)\"")) ?? AttributedString("\"\(r)\""))
                                     .font(Face.geist(15)).foregroundStyle(Ink.sub)
                             }
@@ -114,7 +111,7 @@ struct AwayTimeline: View {
             .padding(.horizontal, 16)
             .background(Ink.sf, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             .overlay { RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Ink.line) }
-            Note(text: "Facts the hub recorded, plus the agent's own last reply. No summarising model.").padding(.top, 8)
+            Note(text: reply == nil ? "Facts the hub recorded. No summarising model." : "Facts the hub recorded, plus the agent's own last reply. No summarising model.").padding(.top, 8)
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("sinceYouLooked")

@@ -620,7 +620,9 @@ extension Schemas.AgentView {
     }
 
     /// Its Herdr name without the session; with none, its terminal title, then its kind, then its pane.
+    /// In the Herdr app, its own name, without the address added when another space shares it.
     public var agentLabel: String {
+        if let own = ownName?.trimmingCharacters(in: .whitespacesAndNewlines), !own.isEmpty { return own }
         let last = name.split(separator: "/").last.map(String.init) ?? name
         if isNamed { return last }
         if let title = shownTitle { return title }

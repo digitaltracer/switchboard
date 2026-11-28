@@ -464,6 +464,7 @@ pub fn listing<'a>(
             Some(Facts {
                 server: Some(SERVER.into()),
                 target: t.address.clone(),
+                own_name: Some(display.clone()),
                 name: Some(display),
                 kind: Some(kind),
                 status,

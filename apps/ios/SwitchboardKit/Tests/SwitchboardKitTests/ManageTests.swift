@@ -156,3 +156,13 @@ private func spaces(_ sessions: [Schemas.Session] = [], _ agents: [Schemas.Agent
     let start = try body("start_session")
     #expect(start["space_id"] as? String == "sp1" && start["backend"] as? String == "hc")
 }
+
+@Test func twoHerdrAppAgentsSharingANameShowItInTheirOwnSpaces() throws {
+    let a = try agent("hc/orchestrator-t12", extra: #","space":"udp-backend","own_name":"orchestrator""#)
+    let b = try agent("hc/orchestrator-t32", extra: #","space":"switchboard","own_name":"orchestrator""#)
+    #expect(a.displayName == "udp-backend › orchestrator")
+    #expect(b.displayName == "switchboard › orchestrator")
+    #expect(HerdrSession.Agent.live(b).nameInSpace == "orchestrator", "the rename sheet starts from the plain name")
+    // An older hub or runner sends no own name: the listed one stays.
+    #expect(try agent("hc/orchestrator-t32", extra: #","space":"switchboard""#).agentLabel == "orchestrator-t32")
+}

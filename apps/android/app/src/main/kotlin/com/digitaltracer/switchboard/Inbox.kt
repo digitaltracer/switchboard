@@ -225,10 +225,16 @@ fun InboxRow(
     dim: Boolean = false,
     first: Boolean = false,
     onClick: (() -> Unit)? = null,
+    onLongClick: (() -> Unit)? = null,
     leading: (@Composable () -> Unit)? = null,
     trailing: (@Composable RowScope.() -> Unit)? = null,
 ) {
-    Column(modifier.fillMaxWidth().then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)) {
+    val tap = when {
+        onLongClick != null -> Modifier.combinedClickable(onLongClick = onLongClick, onClick = onClick ?: {})
+        onClick != null -> Modifier.clickable(onClick = onClick)
+        else -> Modifier
+    }
+    Column(modifier.fillMaxWidth().then(tap)) {
         if (!first) Hairline()
         Row(Modifier.fillMaxWidth().heightIn(min = 60.dp).padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             leading?.let { it(); Spacer(Modifier.width(12.dp)) }

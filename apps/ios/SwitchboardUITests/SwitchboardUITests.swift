@@ -207,6 +207,15 @@ final class SwitchboardUITests: XCTestCase {
         app.buttons["Spaces"].tap()
         let atlas = app.buttons["space-atlas-web"]
         XCTAssertTrue(atlas.waitForExistence(timeout: 15), app.debugDescription)
+        // A long press on its row offers Rename, which opens the same sheet as its page.
+        atlas.press(forDuration: 1.2)
+        let renameItem = app.buttons["Rename"].firstMatch
+        XCTAssertTrue(renameItem.waitForExistence(timeout: 5), app.debugDescription)
+        snapshot(app, "space-long-press")
+        renameItem.tap()
+        XCTAssertTrue(app.textFields["renameField"].waitForExistence(timeout: 5), app.debugDescription)
+        app.buttons["Cancel"].firstMatch.tap()
+        XCTAssertTrue(app.textFields["renameField"].waitForNonExistence(timeout: 5))
         atlas.tap()
         let here = app.buttons["newAgentHere"]
         XCTAssertTrue(here.waitForExistence(timeout: 10), app.debugDescription)
@@ -244,6 +253,9 @@ final class SwitchboardUITests: XCTestCase {
 
         // One of its agents was named when it started: the phone says so and offers no rename.
         app.staticTexts["docs"].tap()
+        let desk = app.buttons["deskToggle"]
+        for _ in 0..<4 where !(desk.exists && desk.isHittable) { app.swipeUp() }
+        desk.tap()
         let fixed = app.staticTexts["renameBlocked"]
         for _ in 0..<4 where !fixed.exists { app.swipeUp() }
         XCTAssertTrue(fixed.waitForExistence(timeout: 5), app.debugDescription)

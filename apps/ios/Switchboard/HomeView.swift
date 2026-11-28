@@ -357,6 +357,7 @@ struct HomeView: View {
             }
         }
         .buttonStyle(.plain)
+        .renameMenu(agent: item.agent)
         .accessibilityIdentifier("needs-\(item.label)")
     }
 

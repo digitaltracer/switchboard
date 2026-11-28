@@ -437,6 +437,10 @@ pub struct AgentSummary {
     /// `Op::RenameAgent` can rename it. `CAP_MANAGE`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub can_rename: bool,
+    /// In the Herdr app, its own name: `name` adds the address when another agent shares it.
+    /// Untrusted text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub own_name: Option<String>,
 }
 
 /// One agent from `Op::Activity`: the first line of the last thing it said or did, masked.

@@ -42,14 +42,14 @@ import kotlinx.coroutines.launch
 
 /**
  * The Inbox card "While you were away": each agent that did something since the phone last had
- * the app open, needs-you first, until "Mark as seen". An opt-in summary replaces the rows.
+ * the app open, needs-you first, until "Mark all read". An opt-in summary replaces the rows.
  */
 @Composable
 fun AwayCard(model: AppModel, activity: Activity) {
     Column(Modifier.fillMaxWidth().padding(bottom = 14.dp).card(18.dp, palette.sf).border(1.dp, palette.line, RoundedCornerShape(18.dp)).testTag("awayCard")) {
         Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("While you were away", Modifier.weight(1f), style = Type.title.copy(fontWeight = FontWeight.SemiBold), color = palette.ink)
-            Text(AwayDigest.duration(activity.now - activity.since), style = Type.meta, color = palette.mut)
+            Text("Mark all read", Modifier.clickable { model.markAwaySeen() }.testTag("markAwaySeen"), style = Type.meta.copy(fontWeight = FontWeight.Medium), color = palette.ac)
         }
         val summary = model.awaySummary
         if (summary != null) {
@@ -58,13 +58,10 @@ fun AwayCard(model: AppModel, activity: Activity) {
             activity.agents.forEach { a -> AwayRow(model, a, activity.now) }
         }
         Hairline()
-        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                if (summary == null) "Since you last opened the app" else "Summarised by Claude, from the hub's facts",
-                Modifier.weight(1f), style = Type.meta, color = palette.mut,
-            )
-            Text("Mark as seen", Modifier.clickable { model.markAwaySeen() }.testTag("markAwaySeen"), style = Type.meta.copy(fontWeight = FontWeight.Medium), color = palette.ac)
-        }
+        Text(
+            "${if (summary == null) "Since you last opened the app" else "Summarised by Claude, from the hub's facts"} · ${AwayDigest.duration(activity.now - activity.since)}",
+            Modifier.padding(16.dp), style = Type.meta, color = palette.mut,
+        )
     }
 }
 
@@ -94,7 +91,7 @@ private fun AwayRow(model: AppModel, a: AwayAgentView, now: Long) {
     }
 }
 
-/** An agent page's "Since you looked": the facts in order, then its last reply. */
+/** An agent page's "Since you looked": the facts in order, and [reply] when the page doesn't show it. */
 @Composable
 fun AwayTimeline(agent: AwayAgentView, since: Long, now: Long, reply: String? = null) {
     val time = DateFormat.getTimeInstance(DateFormat.SHORT)
@@ -113,7 +110,7 @@ fun AwayTimeline(agent: AwayAgentView, since: Long, now: Long, reply: String? = 
                             color = when (f.kind) { "finished" -> palette.ok; "error" -> palette.bad; else -> palette.ink },
                         )
                         if (f.kind == "finished" && i == rows.indexOfLast { it.kind == "finished" }) {
-                            (reply ?: agent.lastReply)?.let { r ->
+                            reply?.let { r ->
                                 // A reply's markdown links read as their text here.
                                 val plain = r.replace(Regex("""\[([^\]]+)]\([^)]*\)"""), "$1").replace("**", "")
                                 Text("\"$plain\"", style = Type.text, color = palette.sub)
@@ -123,7 +120,7 @@ fun AwayTimeline(agent: AwayAgentView, since: Long, now: Long, reply: String? = 
                 }
             }
         }
-        Note("Facts the hub recorded, plus the agent's own last reply. No summarising model.", Modifier.padding(top = 8.dp))
+        Note(if (reply == null) "Facts the hub recorded. No summarising model." else "Facts the hub recorded, plus the agent's own last reply. No summarising model.", Modifier.padding(top = 8.dp))
     }
 }
 

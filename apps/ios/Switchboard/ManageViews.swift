@@ -121,3 +121,61 @@ struct NameRow: View {
         }
     }
 }
+
+/// Long-press on an agent's or a space's row: Rename, or why it can't be renamed from the phone.
+struct RenameMenu: ViewModifier {
+    @Environment(AppModel.self) private var model
+    let name: String
+    let offer: Offer
+    var herdrAgent = false
+    /// Sends the new name with its request id; throws to keep the sheet open.
+    let save: (AppModel, String, String) async throws -> Void
+    @State private var renaming = false
+    /// One request id per name tried, so a retry after a lost answer is the same request.
+    @State private var ids: [String: String] = [:]
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        switch offer {
+        case .hidden:
+            content
+        case .yes, .no:
+            // A row has no fill of its own; give the lifted copy one, a little wider than the text.
+            content
+                .padding(.horizontal, 12)
+                .background(Ink.bg)
+                .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .padding(.horizontal, -12)
+                .contextMenu {
+                    if case .no(let why) = offer {
+                        Button {} label: { Text("Rename"); Text(why) }.disabled(true)
+                    } else {
+                        Button { renaming = true } label: { Label("Rename", systemImage: "pencil") }
+                            .accessibilityIdentifier("renameMenu")
+                    }
+                }
+                .sheet(isPresented: $renaming) {
+                    RenameSheet(title: "Rename \(name)", current: name, herdrAgent: herdrAgent) { new in
+                        let id = ids[new] ?? UUID().uuidString
+                        ids[new] = id
+                        try await save(model, new, id)
+                    }
+                }
+        }
+    }
+}
+
+extension View {
+    func renameMenu(agent: HerdrSession.Agent) -> some View {
+        let name = if case .task(let s) = agent { s.label } else { agent.nameInSpace }
+        return modifier(RenameMenu(name: name, offer: agent.rename, herdrAgent: agent.isHerdrAgent) { model, new, id in
+            try await model.rename(agent, to: new, requestId: id)
+        })
+    }
+
+    func renameMenu(space: AgentSpace) -> some View {
+        modifier(RenameMenu(name: space.key.space ?? space.title, offer: space.rename) { model, new, id in
+            try await model.rename(space, to: new, requestId: id)
+        })
+    }
+}

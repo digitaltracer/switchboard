@@ -2869,6 +2869,10 @@
           "can_rename": {
             "type": "boolean",
             "description": "`POST /agents/rename` can rename it. False for one in the Herdr app whose name was fixed\nwhen it started or that shares its tab; rename those at the machine. Older hubs leave\nit out."
+          },
+          "own_name": {
+            "type": "string",
+            "description": "For one in the Herdr app, its own name. `name` adds its address when another agent shares\nthe name; inside its space this one is shown. Absent from an older hub or runner.\nUntrusted text."
           }
         }
       },

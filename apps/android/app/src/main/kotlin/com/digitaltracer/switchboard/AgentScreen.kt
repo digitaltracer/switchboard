@@ -256,7 +256,10 @@ fun AgentScreen(model: AppModel, voice: Voice, listen: Listen, source: Conversat
                     target?.let { model.said[AppModel.saidKey(it)] }?.let { Box(Modifier.padding(top = 14.dp)) { SaidBubble(it) } }
                     val act = model.away
                     model.awayFor(machine, s?.agentName ?: (source as? ConversationSource.Agent)?.name, sessionId)?.let { mine ->
-                        if (act != null) AwayTimeline(mine, act.since, act.now, Turns.latest(convo.conversation.items).reply?.text)
+                        // Quoted only when "Latest reply" can't show it.
+                        val shown = !convo.ended && convo.unavailable == null &&
+                            (!convo.conversation.isLoaded || Turns.latest(convo.conversation.items).reply != null)
+                        if (act != null) AwayTimeline(mine, act.since, act.now, if (shown) null else mine.lastReply)
                     }
                     s?.pendingApprovals?.forEach { a -> Box(Modifier.padding(top = 14.dp)) { ApprovalCard(model, a, s, decided = { refresh() }) } }
                     if (watch != null && pane != null) {
@@ -267,7 +270,7 @@ fun AgentScreen(model: AppModel, voice: Voice, listen: Listen, source: Conversat
                         Text(it, style = Type.title3, color = palette.ink)
                     }
                     val c = changes
-                    LatestReply(convo, hideFiles = c != null && c.files.isNotEmpty())
+                    LatestReply(convo, hideFiles = c != null && c.files.isNotEmpty()) { tab = AgentTab.Conversation }
                     if (c != null && c.files.isNotEmpty()) {
                         val open = sessionId?.let { id -> { i: Int -> model.path.add(Route.Diff(id, c.files.map { it.path }, i)); Unit } }
                         val added = c.files.sumOf { it.added ?: 0 }
@@ -349,13 +352,13 @@ fun AgentScreen(model: AppModel, voice: Voice, listen: Listen, source: Conversat
 }
 
 @Composable
-private fun DetailsLink(open: Boolean, show: String = "Details", hide: String = "Hide details", toggle: () -> Unit) {
-    Text(if (open) hide else show, Modifier.clickable(onClick = toggle).padding(start = 8.dp), style = Type.meta.copy(fontWeight = FontWeight.Medium), color = palette.ac)
+private fun DetailsLink(open: Boolean, show: String = "Details", hide: String = "Hide details", modifier: Modifier = Modifier, toggle: () -> Unit) {
+    Text(if (open) hide else show, modifier.clickable(onClick = toggle).padding(start = 8.dp), style = Type.meta.copy(fontWeight = FontWeight.Medium), color = palette.ac)
 }
 
 /** The latest reply, its tags, and the ways into the whole conversation and the screen. */
 @Composable
-private fun LatestReply(convo: ConversationModel, hideFiles: Boolean) {
+private fun LatestReply(convo: ConversationModel, hideFiles: Boolean, open: () -> Unit) {
     val latest = Turns.latest(convo.conversation.items)
     SectionHead("Latest reply", latest.at?.let(Turns::time))
     Column(Modifier.testTag("latest")) {
@@ -365,7 +368,7 @@ private fun LatestReply(convo: ConversationModel, hideFiles: Boolean) {
             convo.ended -> Note("This session has ended.", color = palette.sub)
             why != null -> Note("No conversation to show ($why). Its screen is under Screen.", color = palette.sub)
             !convo.conversation.isLoaded -> ConversationSkeleton(rows = 1)
-            reply != null -> Clamped(286.dp) { MarkdownText(reply) }
+            reply != null -> Box(Modifier.clickable(onClick = open)) { Clamped(168.dp) { MarkdownText(reply) } }
             else -> Note("Nothing said yet.", color = palette.sub)
         }
     }
@@ -394,7 +397,9 @@ fun AtYourDesk(
     more: @Composable () -> Unit = {},
 ) {
     val app = backend == "hc"
-    SectionHead("At your desk")
+    var open by remember { mutableStateOf(false) }
+    SectionHead("At your desk", action = { DetailsLink(open, "Show", "Hide", Modifier.testTag("deskToggle")) { open = !open } })
+    if (!open) return
     FieldRow("Where", "${if (app) "Herdr app" else "Herdr terminal"} on $machine", first = true)
     if (app) {
         space?.key?.space?.let { FieldRow("Space", it) }

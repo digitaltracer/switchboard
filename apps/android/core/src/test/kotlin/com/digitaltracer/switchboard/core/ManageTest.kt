@@ -195,4 +195,15 @@ class ManageTest {
         val start = body("start_session")
         assertEquals("sp1" to "hc", start.text("space_id") to start.text("backend"))
     }
+
+    @Test
+    fun twoHerdrAppAgentsSharingANameShowItInTheirOwnSpaces() {
+        val a = agent("hc/orchestrator-t12", ""","space":"udp-backend","own_name":"orchestrator"""")
+        val b = agent("hc/orchestrator-t32", ""","space":"switchboard","own_name":"orchestrator"""")
+        assertEquals("udp-backend › orchestrator", a.displayName)
+        assertEquals("switchboard › orchestrator", b.displayName)
+        assertEquals("orchestrator", HerdrSession.Agent.Live(b).nameInSpace, "the rename sheet starts from the plain name")
+        // An older hub or runner sends no own name: the listed one stays.
+        assertEquals("orchestrator-t32", agent("hc/orchestrator-t32", ""","space":"switchboard"""").agentLabel)
+    }
 }

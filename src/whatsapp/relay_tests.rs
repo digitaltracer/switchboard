@@ -88,6 +88,7 @@ impl Script {
             space_id: None,
             can_rename: false,
             error: false,
+            own_name: None,
         });
     }
 
